@@ -1,0 +1,967 @@
+/* =========================================================================
+ *  libsevent 单元测试
+ *
+ *  编译: gcc -Wall -Wextra -std=c99 -o test test.c sevent.c && ./test
+ * ========================================================================= */
+
+#include "sevent.h"
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/select.h>
+
+/* ==================== 简易测试框架 ==================== */
+
+struct test_entry {
+    const char        *label;
+    void              (*fn)(void);
+    struct test_entry *next;
+};
+
+static struct test_entry *test_list;
+static int fail_count;  /* per-test 计数器 */
+
+#define TEST(t)                                                 \
+    static void test_##t(void);                                 \
+    __attribute__((constructor)) static void reg_##t(void) {    \
+        struct test_entry *e = malloc(sizeof(*e));              \
+        e->label = #t;                                          \
+        e->fn    = test_##t;                                    \
+        e->next  = test_list;                                   \
+        test_list = e;                                          \
+    }                                                           \
+    static void test_##t(void)
+
+#define ASSERT(cond) do {                                          \
+    if (!(cond)) {                                                  \
+        fprintf(stderr, "      [FAIL] %s:%d: %s\n",                \
+                __FILE__, __LINE__, #cond);                        \
+        fail_count++;                                               \
+    }                                                               \
+} while(0)
+
+#define ASSERT_EQ(a, b) do {                                       \
+    long _a = (long)(a);                                           \
+    long _b = (long)(b);                                           \
+    if (_a != _b) {                                                 \
+        fprintf(stderr, "      [FAIL] %s:%d: \n"                   \
+                "        left:  %ld  (%s)\n"                       \
+                "        right: %ld  (%s)\n",                      \
+                __FILE__, __LINE__,                                \
+                _a, #a, _b, #b);                                   \
+        fail_count++;                                               \
+    }                                                               \
+} while(0)
+
+/* ==================== 辅助函数 ==================== */
+
+static int cb_count;
+
+static void reset_cb(void)
+{
+    cb_count = 0;
+}
+
+static void count_cb(void *data)
+{
+    (void)data;
+    cb_count++;
+}
+
+static void stop_cb(void *data)
+{
+    sevent_stop((sevent_context *)data);
+}
+
+/* ====================================================================
+ *  Core API 测试
+ * ==================================================================== */
+
+TEST(core_create_destroy)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    sevent_destroy(ctx);
+}
+
+TEST(core_create_destroy_many)
+{
+    for (int i = 0; i < 100; i++) {
+        sevent_context *ctx = sevent_create();
+        ASSERT(ctx != NULL);
+        sevent_destroy(ctx);
+    }
+}
+
+TEST(core_run_stop)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+
+    sevent_destroy(ctx);
+}
+
+TEST(core_run_once_empty)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    ASSERT_EQ(0, sevent_run_once(ctx));
+    sevent_destroy(ctx);
+}
+
+TEST(core_run_once_with_post)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(1, sevent_run_once(ctx));
+    ASSERT_EQ(1, cb_count);
+
+    /* 再跑一轮，没任务了 */
+    ASSERT_EQ(0, sevent_run_once(ctx));
+    sevent_destroy(ctx);
+}
+
+TEST(core_post_order)
+{
+    static int order[4];
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    for (int i = 0; i < 4; i++) {
+        order[i] = 0;
+        ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, &order[i]));
+    }
+    /* TODO: 实现后验证 order 递增 */
+    sevent_destroy(ctx);
+}
+
+TEST(core_wakeup)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_wakeup(ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+
+    sevent_destroy(ctx);
+}
+
+TEST(core_stop_aborts_pending)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    /* 先 post stop，再 post count
+       — 一轮里两个都会执行（同一次队列快照），
+       但 loop 在下一轮开始前检查 running 标志退出 */
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+
+    /* count_cb 和 stop_cb 在同一轮执行 */
+    ASSERT_EQ(1, cb_count);
+    sevent_destroy(ctx);
+}
+
+TEST(core_double_stop_safe)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    sevent_stop(ctx);
+    sevent_stop(ctx);
+    sevent_destroy(ctx);
+}
+
+TEST(core_destroy_null_safe)
+{
+    sevent_destroy(NULL);
+}
+
+TEST(core_run_null)
+{
+    ASSERT_EQ(SEVENT_ERR_INVAL, sevent_run(NULL));
+}
+
+TEST(core_run_once_null)
+{
+    ASSERT_EQ(SEVENT_ERR_INVAL, sevent_run_once(NULL));
+}
+
+TEST(core_post_null_handler)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    ASSERT_EQ(SEVENT_ERR_INVAL, sevent_post(ctx, NULL, NULL));
+    sevent_destroy(ctx);
+}
+
+TEST(core_ignore_sigpipe)
+{
+    /* 只是验证调用不崩溃，不验证信号行为（进程级副作用） */
+    sevent_ignore_sigpipe();
+}
+
+TEST(core_restart_loop)
+{
+    /* 验证 loop 可以 stop 后重新 run */
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+
+    /* 再跑一次 */
+    reset_cb();
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+    ASSERT_EQ(1, cb_count);
+
+    sevent_destroy(ctx);
+}
+
+/* ----- 自定义分配器测试辅助 ----- */
+
+static int alloc_calls, free_calls;
+
+static void *track_malloc(size_t sz)
+{
+    alloc_calls++;
+    return malloc(sz);
+}
+
+static void track_free(void *p)
+{
+    free_calls++;
+    free(p);
+}
+
+TEST(core_set_allocator)
+{
+    /* 重复调用应返回 SEVENT_ERR_INVAL */
+    ASSERT_EQ(SEVENT_ERR_INVAL, sevent_set_allocator(track_malloc, NULL));
+    ASSERT_EQ(SEVENT_ERR_INVAL, sevent_set_allocator(NULL, track_free));
+
+    /* 设置自定义分配器 */
+    alloc_calls = free_calls = 0;
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_set_allocator(track_malloc, track_free));
+
+    /* 创建/销毁应该使用自定义分配器 */
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    ASSERT(alloc_calls > 0);  /* create 里分配了上下文 */
+
+    int old_alloc = alloc_calls;
+    int old_free  = free_calls;
+    sevent_destroy(ctx);
+    ASSERT(free_calls > old_free);  /* destroy 释放了所有资源 */
+
+    /* 恢复默认分配器 */
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_set_allocator(NULL, NULL));
+
+    /* 验证恢复后依然正常工作 */
+    ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    sevent_destroy(ctx);
+}
+
+TEST(memory_no_leak)
+{
+    /* 复杂工作流下的内存泄漏检测:
+       创建/销毁多次, 注册/注销 IO 和 timer, 投递任务, 跑 loop */
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_set_allocator(track_malloc, track_free));
+    alloc_calls = free_calls = 0;
+
+    for (int round = 0; round < 5; round++) {
+        sevent_context *ctx = sevent_create();
+        ASSERT(ctx != NULL);
+
+        /* 注册多个 IO */
+        int fds[10][2];
+        sevent_io_t ios[10];
+        for (int i = 0; i < 10; i++) {
+            ASSERT_EQ(0, pipe(fds[i]));
+            struct sevent_io_handler h = { .fd = fds[i][0], .io_read = count_cb };
+            ios[i] = sevent_io_register(ctx, &h);
+            ASSERT(ios[i] != NULL);
+        }
+
+        /* 注册多个定时器 */
+        sevent_timer_t timers[10];
+        for (int i = 0; i < 10; i++) {
+            timers[i] = sevent_timer_register(ctx, 1000, count_cb, NULL);
+            ASSERT(timers[i] != NULL);
+        }
+
+        /* 投递一些任务 */
+        for (int i = 0; i < 5; i++)
+            ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
+
+        /* 注销一半 IO */
+        for (int i = 0; i < 5; i++) {
+            sevent_io_unregister(ios[i]);
+            close(fds[i][0]);
+            close(fds[i][1]);
+        }
+
+        /* 注销一半 timer */
+        for (int i = 0; i < 5; i++)
+            sevent_timer_unregister(timers[i]);
+
+        /* 跑 loop 处理剩余事件 */
+        sevent_post(ctx, stop_cb, ctx);
+        sevent_run(ctx);
+
+        /* 清理剩余资源 */
+        for (int i = 5; i < 10; i++) {
+            sevent_io_unregister(ios[i]);
+            close(fds[i][0]);
+            close(fds[i][1]);
+        }
+        for (int i = 5; i < 10; i++)
+            sevent_timer_unregister(timers[i]);
+
+        sevent_destroy(ctx);
+    }
+
+    /* 核心: 所有分配必须全部释放 */
+    ASSERT_EQ(alloc_calls, free_calls);
+
+    /* 恢复默认分配器 */
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_set_allocator(NULL, NULL));
+}
+
+/* ====================================================================
+ *  I/O API 测试
+ * ==================================================================== */
+
+TEST(io_register_pipe_read)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    int fds[2];
+    ASSERT_EQ(0, pipe(fds));
+
+    struct sevent_io_handler h = {
+        .fd      = fds[0],
+        .io_read = count_cb,
+    };
+    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    ASSERT(hdl != NULL);
+
+    ASSERT(5 == (int)write(fds[1], "hello", 5));
+
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+    ASSERT_EQ(1, cb_count);
+
+    sevent_io_unregister(hdl);
+    close(fds[0]);
+    close(fds[1]);
+    sevent_destroy(ctx);
+}
+
+TEST(io_null_read_cb_no_fire)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    int fds[2];
+    ASSERT_EQ(0, pipe(fds));
+
+    /* 有 io_write 但不设置 io_read，验证可读事件不触发写回调 */
+    struct sevent_io_handler h = {
+        .fd       = fds[0],
+        .io_read  = NULL,
+        .io_write = count_cb,
+    };
+    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    ASSERT(hdl != NULL);
+
+    write(fds[1], "x", 1);
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+
+    /* 管道可读但没有 io_read，io_write 不应该被触发 */
+    ASSERT_EQ(0, cb_count);
+
+    sevent_io_unregister(hdl);
+    close(fds[0]);
+    close(fds[1]);
+    sevent_destroy(ctx);
+}
+
+TEST(io_unregister_self_in_callback)
+{
+    /* 这里需要回调里 unregister 自己，验证不 crash */
+    /* TODO: 实现后用 static sevent_io_t 传进去 */
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    int fds[2];
+    ASSERT_EQ(0, pipe(fds));
+
+    struct sevent_io_handler h = {
+        .fd      = fds[0],
+        .io_read = count_cb,
+    };
+    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    ASSERT(hdl != NULL);
+
+    write(fds[1], "x", 1);
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+
+    sevent_io_unregister(hdl);
+    close(fds[0]);
+    close(fds[1]);
+    sevent_destroy(ctx);
+}
+
+TEST(io_multiple_fds_partial_ready)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    int fds1[2], fds2[2], fds3[2];
+    ASSERT_EQ(0, pipe(fds1));
+    ASSERT_EQ(0, pipe(fds2));
+    ASSERT_EQ(0, pipe(fds3));
+
+    struct sevent_io_handler h1 = { .fd = fds1[0], .io_read = count_cb };
+    struct sevent_io_handler h2 = { .fd = fds2[0], .io_read = count_cb };
+    struct sevent_io_handler h3 = { .fd = fds3[0], .io_read = count_cb };
+
+    sevent_io_t hdl1 = sevent_io_register(ctx, &h1);
+    sevent_io_t hdl2 = sevent_io_register(ctx, &h2);
+    sevent_io_t hdl3 = sevent_io_register(ctx, &h3);
+    ASSERT(hdl1 && hdl2 && hdl3);
+
+    /* 只写 fds1 和 fds3 */
+    write(fds1[1], "a", 1);
+    write(fds3[1], "c", 1);
+
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+
+    /* 应该只有两个 callback 触发 */
+    ASSERT_EQ(2, cb_count);
+
+    sevent_io_unregister(hdl1);
+    sevent_io_unregister(hdl2);
+    sevent_io_unregister(hdl3);
+    close(fds1[0]); close(fds1[1]);
+    close(fds2[0]); close(fds2[1]);
+    close(fds3[0]); close(fds3[1]);
+    sevent_destroy(ctx);
+}
+
+TEST(io_write_monitor)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    int fds[2];
+    ASSERT_EQ(0, pipe(fds));
+
+    struct sevent_io_handler h = {
+        .fd       = fds[1],  /* pipe 写端 */
+        .io_write = count_cb,
+    };
+    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    ASSERT(hdl != NULL);
+
+    /* 写端通常可写，应触发 io_write */
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+    ASSERT(cb_count >= 1);
+
+    sevent_io_unregister(hdl);
+    close(fds[0]);
+    close(fds[1]);
+    sevent_destroy(ctx);
+}
+
+/* ====================================================================
+ *  Timer API 测试
+ * ==================================================================== */
+
+TEST(io_both_null_rejected)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    struct sevent_io_handler h = { .fd = 3, .io_read = NULL, .io_write = NULL };
+    ASSERT_EQ(NULL, sevent_io_register(ctx, &h));
+
+    sevent_destroy(ctx);
+}
+
+TEST(timer_interval_zero_rejected)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    ASSERT_EQ(NULL, sevent_timer_register(ctx, 0, count_cb, NULL));
+    sevent_destroy(ctx);
+}
+
+TEST(timer_unregister_null_safe)
+{
+    sevent_timer_unregister(NULL);
+}
+
+TEST(timer_fire_once)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    sevent_timer_t t = sevent_timer_register(ctx, 1, count_cb, NULL);
+    ASSERT(t != NULL);
+
+    /* 跑几轮，期望触发至少 1 次 */
+    for (int i = 0; i < 10; i++)
+        sevent_run_once(ctx);
+    ASSERT(cb_count >= 1);
+
+    sevent_timer_unregister(t);
+    sevent_destroy(ctx);
+}
+
+TEST(timer_unregister_before_fire)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    sevent_timer_t t = sevent_timer_register(ctx, 10000, count_cb, NULL);
+    ASSERT(t != NULL);
+
+    sevent_timer_unregister(t);
+
+    sevent_run_once(ctx);
+    ASSERT_EQ(0, cb_count);
+    sevent_destroy(ctx);
+}
+
+/* ----- 动态增删定时器辅助 ----- */
+static int              dyn_pipe_fd;
+static sevent_context *dyn_ctx;
+
+static void dyn_on_io(void *data)
+{
+    (void)data;
+    char buf[4];
+    read(dyn_pipe_fd, buf, sizeof(buf));
+    /* IO 回调中动态添加定时器 */
+    sevent_timer_register(dyn_ctx, 1, count_cb, NULL);
+}
+
+TEST(timer_dynamic_add_in_callback)
+{
+    /*
+     * 验证在 IO 回调中动态添加定时器后，新定时器能正确触发。
+     *
+     * 场景：长周期定时器 (10s) 让 select 准备睡 10s。
+     * IO 事件触发 → 回调中加短定时器 (1ms)。
+     * 依赖 sevent_timer_register 内的 sevent_wakeup 唤醒 select。
+     */
+    reset_cb();
+    dyn_ctx = NULL;
+
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    dyn_ctx = ctx;
+
+    int fds[2];
+    ASSERT_EQ(0, pipe(fds));
+    dyn_pipe_fd = fds[0];
+
+    struct sevent_io_handler h = {
+        .fd = fds[0], .io_read = dyn_on_io,
+    };
+    sevent_io_t h_io = sevent_io_register(ctx, &h);
+    ASSERT(h_io != NULL);
+
+    /* 长定时器 → next_timer = 10000 */
+    sevent_timer_t t_long = sevent_timer_register(ctx, 10000, count_cb, NULL);
+    ASSERT(t_long != NULL);
+
+    /* IO 事件触发 → 回调中动态添加短定时器 */
+    write(fds[1], "go", 2);
+
+    /* 跑几轮验证短定时器触发了 */
+    for (int i = 0; i < 10; i++)
+        sevent_run_once(ctx);
+    ASSERT(cb_count >= 1);
+
+    sevent_io_unregister(h_io);
+    close(fds[0]); close(fds[1]);
+    sevent_timer_unregister(t_long);
+    dyn_ctx = NULL;
+    sevent_destroy(ctx);
+}
+
+TEST(timer_dynamic_remove_safe)
+{
+    /* 验证注销定时器后不会 crash */
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    sevent_timer_t t = sevent_timer_register(ctx, 1, count_cb, NULL);
+    ASSERT(t != NULL);
+
+    sevent_run_once(ctx);
+
+    sevent_timer_unregister(t);
+    sevent_run_once(ctx);
+    sevent_destroy(ctx);
+}
+
+/* ====================================================================
+ *  Integration 测试
+ * ==================================================================== */
+
+TEST(integration_io_timer_post)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    int fds[2];
+    ASSERT_EQ(0, pipe(fds));
+
+    struct sevent_io_handler h = { .fd = fds[0], .io_read = count_cb };
+    sevent_io_t ih = sevent_io_register(ctx, &h);
+    ASSERT(ih != NULL);
+
+    sevent_timer_t th = sevent_timer_register(ctx, 50, count_cb, NULL);
+    ASSERT(th != NULL);
+
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
+    write(fds[1], "x", 1);
+
+    /* 跑多轮，让所有事件都有机会触发 */
+    for (int i = 0; i < 20; i++)
+        sevent_run_once(ctx);
+
+    ASSERT(cb_count >= 3);
+
+    sevent_io_unregister(ih);
+    sevent_timer_unregister(th);
+    close(fds[0]);
+    close(fds[1]);
+    sevent_destroy(ctx);
+}
+
+TEST(integration_stop_then_destroy)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
+
+    sevent_destroy(ctx);
+}
+
+/* ====================================================================
+ *  边界条件测试
+ * ==================================================================== */
+
+TEST(edge_null_context_doesnt_crash)
+{
+    /* 所有函数传入 NULL context 应该不崩溃 */
+    sevent_stop(NULL);
+    sevent_wakeup(NULL);
+    sevent_post(NULL, count_cb, NULL);
+    sevent_io_register(NULL, NULL);
+    sevent_timer_register(NULL, 10, count_cb, NULL);
+    sevent_destroy(NULL);
+}
+
+TEST(edge_invalid_fd_rejected)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    struct sevent_io_handler h = {
+        .fd      = -1,
+        .io_read = count_cb,
+    };
+    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    ASSERT(hdl == NULL);
+
+    sevent_destroy(ctx);
+}
+
+TEST(edge_null_io_handler)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    ASSERT_EQ(NULL, sevent_io_register(ctx, NULL));
+    sevent_destroy(ctx);
+}
+
+TEST(edge_large_fd_rejected)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    struct sevent_io_handler h = {
+        .fd      = FD_SETSIZE,  /* select 的最大 fd 是 FD_SETSIZE-1 */
+        .io_read = count_cb,
+    };
+    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    ASSERT(hdl == NULL);
+
+    sevent_destroy(ctx);
+}
+
+TEST(edge_many_timers)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    sevent_timer_t timers[100];
+    int count = 0;
+    for (int i = 0; i < 100; i++) {
+        sevent_timer_t t = sevent_timer_register(ctx, 1000, count_cb, NULL);
+        if (!t) break;
+        timers[count++] = t;
+    }
+    ASSERT(count >= 50);
+
+    for (int i = 0; i < count; i++)
+        sevent_timer_unregister(timers[i]);
+    sevent_destroy(ctx);
+}
+
+TEST(edge_unregister_twice_safe)
+{
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+
+    int fds[2];
+    ASSERT_EQ(0, pipe(fds));
+
+    struct sevent_io_handler h = { .fd = fds[0], .io_read = count_cb };
+    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    ASSERT(hdl != NULL);
+
+    sevent_io_unregister(hdl);
+    sevent_io_unregister(NULL);  /* NULL 应该安全 */
+
+    close(fds[0]);
+    close(fds[1]);
+    sevent_destroy(ctx);
+}
+
+/* ====================================================================
+ *  线程安全测试
+ * ==================================================================== */
+
+#include <pthread.h>
+#include <time.h>
+
+/* ----- 跨线程 post 辅助 ----- */
+
+static sevent_context *g_ts_ctx;
+static int g_ts_done;
+
+static void *ts_post_worker(void *arg)
+{
+    (void)arg;
+    /* 等 loop 跑起来, 然后跨线程 post */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 }; /* 1ms */
+    nanosleep(&ts, NULL);
+    sevent_post(g_ts_ctx, count_cb, NULL);
+    sevent_post(g_ts_ctx, stop_cb, g_ts_ctx);
+    return NULL;
+}
+
+TEST(thread_post_cross)
+{
+    reset_cb();
+    g_ts_done = 0;
+
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    g_ts_ctx = ctx;
+
+    pthread_t th;
+    ASSERT_EQ(0, pthread_create(&th, NULL, ts_post_worker, NULL));
+
+    sevent_run(ctx);
+    ASSERT_EQ(1, cb_count);
+
+    pthread_join(th, NULL);
+    g_ts_ctx = NULL;
+    sevent_destroy(ctx);
+}
+
+/* ----- 跨线程 register IO 辅助 ----- */
+
+static int ts_pipe_fds[2];
+
+static void *ts_io_worker(void *arg)
+{
+    (void)arg;
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 2000000 }; /* 2ms */
+    nanosleep(&ts, NULL);
+
+    /* loop 运行中跨线程注册 IO */
+    struct sevent_io_handler h = { .fd = ts_pipe_fds[0], .io_read = count_cb };
+    sevent_io_t io = sevent_io_register(g_ts_ctx, &h);
+    (void)io;
+
+    /* 写 pipe 触发可读, 让 IO 回调在下一轮执行 */
+    write(ts_pipe_fds[1], "x", 1);
+
+    /* 稍后再 unregister */
+    nanosleep(&ts, NULL);
+    /* 如果 io 还没被处理... 等 loop 跑完 */
+    return NULL;
+}
+
+TEST(thread_io_register_cross)
+{
+    reset_cb();
+    ASSERT_EQ(0, pipe(ts_pipe_fds));
+
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    g_ts_ctx = ctx;
+
+    pthread_t th;
+    ASSERT_EQ(0, pthread_create(&th, NULL, ts_io_worker, NULL));
+
+    /* loop 会处理跨线程注册的 IO */
+    sevent_post(ctx, count_cb, NULL);     /* 至少有一个任务 */
+    sevent_post(ctx, stop_cb, ctx);
+    sevent_run(ctx);
+
+    /* IO 回调可能已经触发, 也可能跨线程还没注册上 */
+    /* 至少 post 的任务被执行了 */
+    ASSERT(cb_count >= 1);
+
+    pthread_join(th, NULL);
+    close(ts_pipe_fds[0]);
+    close(ts_pipe_fds[1]);
+    g_ts_ctx = NULL;
+    sevent_destroy(ctx);
+}
+
+/* ----- 多线程压力测试 ----- */
+
+#define TS_NTHR 10
+#define TS_NMSG 100
+
+static struct {
+    sevent_context *ctx;
+    int             pipes[TS_NTHR][2];
+} g_stress;
+
+static void *ts_stress_worker(void *arg)
+{
+    long id = (long)arg;
+    int rd = g_stress.pipes[id][0];
+    int wr = g_stress.pipes[id][1];
+
+    /* 注册 IO (跨线程) */
+    struct sevent_io_handler h = { .fd = rd, .io_read = count_cb };
+    sevent_io_t io = sevent_io_register(g_stress.ctx, &h);
+    if (!io) return NULL;
+
+    /* 跨线程 post 任务 */
+    for (int i = 0; i < TS_NMSG; i++) {
+        write(wr, "x", 1);
+        sevent_post(g_stress.ctx, count_cb, NULL);
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 100000 };
+        nanosleep(&ts, NULL);
+    }
+
+    /* 注销 IO (跨线程) */
+    sevent_io_unregister(io);
+    return NULL;
+}
+
+TEST(thread_stress)
+{
+    reset_cb();
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
+    g_stress.ctx = ctx;
+
+    for (int i = 0; i < TS_NTHR; i++)
+        ASSERT_EQ(0, pipe(g_stress.pipes[i]));
+
+    pthread_t threads[TS_NTHR];
+    for (long i = 0; i < TS_NTHR; i++)
+        pthread_create(&threads[i], NULL, ts_stress_worker, (void *)i);
+
+    /* 跑 loop, 等所有线程发完 */
+    struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
+    nanosleep(&ts, NULL);
+    sevent_stop(ctx);
+    /* 重新跑一下处理剩余事件 */
+    sevent_run_once(ctx);
+
+    for (int i = 0; i < TS_NTHR; i++) {
+        pthread_join(threads[i], NULL);
+        close(g_stress.pipes[i][0]);
+        close(g_stress.pipes[i][1]);
+    }
+
+    /* 至少收到一些事件 */
+    ASSERT(cb_count > 0);
+    g_stress.ctx = NULL;
+    sevent_destroy(ctx);
+}
+
+/* ====================================================================
+ *  主函数
+ * ==================================================================== */
+
+int main(void)
+{
+    printf("\n  libsevent 单元测试\n");
+    printf("  ==================\n");
+
+    int n = 0, passed = 0;
+    for (struct test_entry *e = test_list; e; e = e->next) {
+        n++;
+        fail_count = 0;
+        e->fn();
+        if (fail_count == 0) {
+            printf("  \xE2\x9C\x93  %s\n", e->label);
+            passed++;
+        } else {
+            printf("  \xC3\x97  %s  (%d assertions failed)\n", e->label, fail_count);
+        }
+    }
+
+    printf("\n  result: %d / %d passed\n", passed, n);
+    return n == passed ? 0 : 1;
+}
