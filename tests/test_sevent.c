@@ -250,7 +250,11 @@ TEST(post_cancel_after_run)
 /* 验证取消 NULL 安全 */
 TEST(post_cancel_null)
 {
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
     sevent_post_cancel(NULL, NULL);
+    sevent_post_cancel(ctx, NULL);  /* ctx 有效, h=NULL */
+    sevent_destroy(ctx);
 }
 
 /* ----- 回调内取消辅助 ----- */
@@ -685,8 +689,11 @@ TEST(timer_interval_zero_rejected)
 
 TEST(timer_unregister_null_safe)
 {
-    /* NULL 句柄不崩溃 (安全网), 虽无实际意义 */
+    sevent_context *ctx = sevent_create();
+    ASSERT(ctx != NULL);
     sevent_timer_unregister(NULL, NULL);
+    sevent_timer_unregister(ctx, NULL);  /* ctx 有效, h=NULL */
+    sevent_destroy(ctx);
 }
 
 TEST(timer_fire_once)
