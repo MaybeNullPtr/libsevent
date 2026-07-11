@@ -9,11 +9,12 @@ extern "C" {
 
 /* ==================== libsevent - 轻量 select 事件循环 ====================
  *
- * loop 顺序: I/O(select) → 异步任务(post) → 定时器
+ * 循环顺序: I/O(select) → 异步任务(post) → 定时器
  *
  * 限制:
  *   - select 上限: fd < FD_SETSIZE (通常 1024)
- *   - 非线程安全: sevent_context (需按下方分类调用)
+ *   - 非线程安全: sevent_context 需按下方分类调用
+ *   - 所有回调在 loop 线程同步执行, 应避免长时间阻塞
  *
  * 线程安全分类:
  *   [跨线程, 内部锁]   sevent_post / sevent_io_register
@@ -23,7 +24,19 @@ extern "C" {
  *   [loop 线程]        回调函数 (io_read / io_write / timer_fn / handler)
  *   [串行]             sevent_create / sevent_destroy / sevent_run
  *                      sevent_run_once / sevent_set_allocator
+ *
+ * 句柄生命周期:
+ *   - IO / Timer: 由用户主动 unregister 释放, 释放前始终有效
+ *   - Post:       run_posts 阶段自动释放, 执行后句柄失效;
+ *                 sevent_post_cancel 多次调用安全 (幂等)
  * ========================================================================= */
+
+/* ==================== 版本 ==================== */
+
+#define SEVENT_VERSION_MAJOR 1
+#define SEVENT_VERSION_MINOR 0
+#define SEVENT_VERSION_PATCH 0
+#define SEVENT_VERSION       "1.0.0"
 
 /* ==================== 错误码 ==================== */
 
@@ -37,10 +50,12 @@ typedef void *(*sevent_malloc_fn)(size_t size);
 typedef void  (*sevent_free_fn)(void *ptr);
 
 /*
- * 替换内部分配器, 需在 create 前调用.
- *   sevent_set_allocator(my_malloc, my_free)  — 设置
- *   sevent_set_allocator(NULL, NULL)          — 恢复默认 (libc)
- *   一个 NULL 一个非 NULL → 返回 SEVENT_ERR_INVAL
+ * 替换内部分配器.
+ * 前置条件: 应在 sevent_create 之前调用, loop 运行期间不应切换.
+ * 使用:     sevent_set_allocator(my_malloc, my_free) — 设置;
+ *           sevent_set_allocator(NULL, NULL)          — 恢复默认 (libc).
+ * 返回:     SEVENT_SUCCESS 或 SEVENT_ERR_INVAL (仅一个参数为 NULL).
+ * 线程:     串行.
  */
 int sevent_set_allocator(sevent_malloc_fn malloc_fn,
                          sevent_free_fn  free_fn);
@@ -57,6 +72,7 @@ typedef void (*sevent_timer_fn)(void *data);         /* 定时器到期触发 */
 typedef struct sevent_context sevent_context;        /* 事件循环上下文 */
 typedef struct sevent_io      *sevent_io_t;          /* IO 注册句柄 */
 typedef struct sevent_timer   *sevent_timer_t;       /* 定时器句柄 */
+typedef struct sevent_post    *sevent_post_t;        /* 异步任务句柄 */
 
 /* ==================== 公开结构体 ==================== */
 
@@ -70,46 +86,88 @@ struct sevent_io_handler
 
 /* ==================== Core API ==================== */
 
-/* 创建上下文, 返回 NULL 表示失败 */
+/*
+ * 创建事件循环上下文.
+ * 前置条件: 首次调用前可配置 sevent_set_allocator.
+ * 返回:     NULL 表示内存不足.
+ * 线程:     串行.
+ */
 sevent_context *sevent_create(void);
 
-/* 销毁上下文, 自动释放内部资源. 确保 loop 已停止 */
+/*
+ * 销毁上下文, 释放所有内部资源.
+ * 前置条件: loop 已停止 (sevent_run 已返回), 无其他线程正在操作此 ctx.
+ * 后置条件: ctx 指针不可再用于任何 API.
+ * 线程:     串行.
+ */
 void            sevent_destroy(sevent_context *ctx);
 
 /*
- * 阻塞运行事件循环, 直到 stop 被调用.
- * 返回: SEVENT_SUCCESS 或 SEVENT_ERR_INVAL
- * 线程: 一个 ctx 只能有一个线程调 run
+ * 阻塞运行事件循环, 直到 sevent_stop 被调用.
+ * 前置条件: ctx 已通过 sevent_create 创建, 无其他线程并发调用此函数.
+ * 返回:     SEVENT_SUCCESS 或 SEVENT_ERR_INVAL (参数无效).
+ * 线程:     串行 (单 loop 线程).
  */
 int             sevent_run(sevent_context *ctx);
 
 /*
- * 跑一轮事件循环.
- * 返回: 1 处理了事件 / 0 空闲 / <0 错误
- * 线程: loop 线程专用
+ * 执行一轮事件循环.
+ * 顺序: run_free_death → run_build_fdset → select → IO 回调
+ *       → post 任务 → 定时器.
+ * 返回: 1 (有事件处理) / 0 (空闲) / <0 (select 致命错误).
+ * 线程: loop 线程专用 (串行).
  */
 int             sevent_run_once(sevent_context *ctx);
 
-/* 请求退出事件循环. 回调内可安全调用. 跨线程安全 */
+/*
+ * 通知事件循环退出. 回调内可安全调用, 跨线程安全.
+ * 后置条件: 当前/下一轮 run_once 返回后, sevent_run 退出.
+ * 线程:     跨线程 (无锁, volatile 标志).
+ */
 void            sevent_stop(sevent_context *ctx);
 
-/* 唤醒事件循环, 让 select 立即返回. 跨线程安全 */
+/*
+ * 唤醒事件循环 (select 立即返回).
+ * 常用于跨线程通知 loop 有异步任务已入队.
+ * 线程: 跨线程 (无锁).
+ * 返回: SEVENT_SUCCESS 或 SEVENT_ERR_INVAL.
+ */
 int             sevent_wakeup(sevent_context *ctx);
 
 /*
- * 投递异步任务, loop 的 post 阶段按 FIFO 执行.
- * 回调内调用时新任务进入下一轮.
- * 跨线程安全 (内部锁)
+ * 投递异步任务, loop 的 post 阶段按 FIFO 顺序执行.
+ * 回调内调用时, 新任务在本轮继续执行 (post 阶段逐个处理).
+ * 返回: 句柄 (可用于 sevent_post_cancel) 或 NULL (内存不足).
+ * 线程: 跨线程 (内部锁, post_lock).
  */
-int             sevent_post(sevent_context *ctx,
+sevent_post_t   sevent_post(sevent_context *ctx,
                             sevent_handler_fn h, void *data);
+
+/*
+ * 取消未执行的异步任务.
+ * 如果任务已执行或句柄已失效, 无效果.
+ * ctx 非空, h 可为 NULL. 多次调用同一句柄安全 (幂等).
+ * 线程: 跨线程 (内部锁, post_lock).
+ */
+void            sevent_post_cancel(sevent_context *ctx, sevent_post_t h);
+
+/*
+ * 投递任务. 如果在 loop 线程内则立即执行, 否则入队等待.
+ * 立即执行时无句柄返回 (无需取消); 入队时返回 SEVENT_SUCCESS.
+ * 回调内调用为立即执行. 跨线程调用退化为 sevent_post.
+ * 线程: 跨线程 (loop 线程内直接调用, 其他线程走 post_lock).
+ * 返回: SEVENT_SUCCESS 或 SEVENT_ERR_NOMEM.
+ */
+int             sevent_dispatch(sevent_context *ctx,
+                                      sevent_handler_fn h, void *data);
 
 /* ==================== 信号 ==================== */
 
 /*
  * 忽略 SIGPIPE. 使用 TCP 时应在 main 启动时调用.
  * 避免 write 到已关闭连接时进程被 SIGPIPE 杀死.
- * 默认不改变信号处理. 跨线程安全
+ * 默认不改变信号处理方式.
+ * 线程: 跨线程 (无锁).
  */
 void            sevent_ignore_sigpipe(void);
 
@@ -117,26 +175,31 @@ void            sevent_ignore_sigpipe(void);
 
 /*
  * 注册 fd 监听.
- * 返回句柄或 NULL (参数无效 / fd>=FD_SETSIZE / 内存不足).
+ * 前置条件: fd 已创建, fd < FD_SETSIZE, 同一 fd 不能重复注册.
+ * 回调:     io_read / io_write 在 fd 可读/写时触发.
+ * 返回:     句柄, 或 NULL (参数无效 / fd>=FD_SETSIZE / fd 重复 / 内存不足).
  * h 的内容在调用后不再使用.
- * 跨线程安全 (内部锁)
+ * 线程:     跨线程 (内部锁, lock).
  */
 sevent_io_t     sevent_io_register(sevent_context *ctx,
                                    struct sevent_io_handler *h);
 
 /*
  * 注销 fd 监听, 释放内部资源.
- * 回调内 unregister 自己是安全的 (延迟释放).
- * 传入 NULL 无效果. 跨线程安全
+ * 未注册或已注销的句柄安全 (幂等). 回调内可安全调用 (延迟释放).
+ * h 必须为有效句柄 (来自 sevent_io_register).
+ * 线程: 跨线程 (内部锁, lock).
  */
-void            sevent_io_unregister(sevent_io_t h);
+void            sevent_io_unregister(sevent_context *ctx, sevent_io_t h);
 
 /* ==================== Timer API ==================== */
 
 /*
- * 注册循环定时器. interval_ms 后首次触发, 之后每 interval_ms 触发一次.
- * interval_ms == 0 → 返回 NULL.
- * 跨线程安全 (内部锁)
+ * 注册循环定时器.
+ * 前置条件: interval_ms > 0.
+ * 回调:     timer_fn 在到期后每 interval_ms 触发一次.
+ * 返回:     句柄, 或 NULL (interval_ms == 0 / 内存不足).
+ * 线程:     跨线程 (内部锁, lock).
  */
 sevent_timer_t  sevent_timer_register(sevent_context *ctx,
                                       unsigned int interval_ms,
@@ -144,10 +207,25 @@ sevent_timer_t  sevent_timer_register(sevent_context *ctx,
 
 /*
  * 注销定时器, 释放内部资源.
- * 回调内 unregister 自己是安全的 (延迟释放).
- * 传入 NULL 无效果. 跨线程安全
+ * 未注册或已注销的句柄安全 (幂等). 回调内可安全调用 (延迟释放).
+ * h 必须为有效句柄 (来自 sevent_timer_register).
+ * 线程: 跨线程 (内部锁, lock).
  */
-void            sevent_timer_unregister(sevent_timer_t h);
+void            sevent_timer_unregister(sevent_context *ctx, sevent_timer_t h);
+
+/* ==================== 可观测性 ==================== */
+
+/*
+ * 获取当前各类型活跃对象数量.
+ * io_count:    活跃的 IO 注册数.
+ * timer_count: 活跃的定时器数.
+ * post_count:  待处理的异步任务数 (pending 队列).
+ * 任一指针为 NULL 表示不关心该项, 取到的值仅为瞬间快照.
+ * 线程: 跨线程 (内部锁).
+ */
+void            sevent_get_counts(sevent_context *ctx,
+                                  int *io_count, int *timer_count,
+                                  int *post_count);
 
 #ifdef __cplusplus
 }

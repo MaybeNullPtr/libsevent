@@ -56,7 +56,7 @@ static void do_write(void *data);
 
 static void cli_reg_read(cli_t *c)
 {
-    if (c->hio) sevent_io_unregister(c->hio);
+    if (c->hio) sevent_io_unregister(c->ctx, c->hio);
     struct sevent_io_handler h = { .fd = c->fd, .io_read = on_read, .data = c };
     c->hio = sevent_io_register(c->ctx, &h);
     if (!c->hio) { fprintf(stderr,"reg_read fail\n"); exit(1); }
@@ -67,7 +67,7 @@ static void cli_reg_read(cli_t *c)
 
 static void cli_reg_write(cli_t *c)
 {
-    if (c->hio) sevent_io_unregister(c->hio);
+    if (c->hio) sevent_io_unregister(c->ctx, c->hio);
     struct sevent_io_handler h = { .fd = c->fd, .io_write = on_write, .data = c };
     c->hio = sevent_io_register(c->ctx, &h);
     if (!c->hio) { fprintf(stderr,"reg_write fail\n"); exit(1); }
@@ -115,7 +115,7 @@ static void on_write(void *data)
 done:
     g_fin++; g_err++;
     close(c->fd); c->fd = -1;
-    if (c->hio) { sevent_io_unregister(c->hio); c->hio = NULL; }
+    if (c->hio) { sevent_io_unregister(c->ctx, c->hio); c->hio = NULL; }
     if (g_fin >= g_ncli) sevent_stop(g_c[0].ctx);
 }
 
@@ -145,7 +145,7 @@ static void do_write(void *data)
 done:
     g_fin++; g_err++;
     close(c->fd); c->fd = -1;
-    if (c->hio) { sevent_io_unregister(c->hio); c->hio = NULL; }
+    if (c->hio) { sevent_io_unregister(c->ctx, c->hio); c->hio = NULL; }
     if (g_fin >= g_ncli) sevent_stop(g_c[0].ctx);
 }
 
@@ -181,7 +181,7 @@ done:
     if (c->err) g_err++;
     if (c->fd >= 0) close(c->fd);
     c->fd = -1;
-    if (c->hio) { sevent_io_unregister(c->hio); c->hio = NULL; }
+    if (c->hio) { sevent_io_unregister(c->ctx, c->hio); c->hio = NULL; }
     if (g_fin >= g_ncli) sevent_stop(g_c[0].ctx);
 }
 

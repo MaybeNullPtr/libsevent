@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  watch:
+    types: started
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    if: github.event.repository.owner.id == github.event.sender.id
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (POSIX)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (POSIX)
+        run: cmake --build build
+
+      - name: Test (POSIX)
+        run: cd build && ctest --output-on-failure
+
+      - name: Build (RTOS)
+        run: cmake -B build-rtos -DSEVENT_RTOS=ON -DSEVENT_ENABLE_EVENTFD=OFF -DSEVENT_ENABLE_PIPE=OFF -DCMAKE_BUILD_TYPE=Release && cmake --build build-rtos
+
+      - name: Test (wakeup config matrix)
+        run: bash tools/test-wakeup-configs.sh

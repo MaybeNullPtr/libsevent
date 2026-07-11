@@ -46,7 +46,7 @@ static void on_client_read(void *data)
             printf("[disconnect] fd=%d\n", c->fd);
         else
             perror("read");
-        sevent_io_unregister(c->h_io);
+        sevent_io_unregister(g_ctx, c->h_io);
         close(c->fd);
         free(c);
         return;
@@ -67,7 +67,7 @@ static void on_client_read(void *data)
         else if (errno != EAGAIN && errno != EINTR)
         {
             perror("write");
-            sevent_io_unregister(c->h_io);
+            sevent_io_unregister(g_ctx, c->h_io);
             close(c->fd);
             free(c);
             return;

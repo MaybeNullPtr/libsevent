@@ -1,7 +1,7 @@
 /* ==================== libsevent - select 事件循环 ========================
  *
  * loop 流程:
- *   1. select() 超时 = min(定时器剩余, 30ms)
+ *   1. select() 超时 = 最短定时器的剩余时间
  *   2. 遍历就绪 fd, 触发 io_read / io_write
  *   3. 执行 post 队列中的异步任务
  *   4. 检查定时器, 到期的触发 timer_fn
@@ -14,15 +14,7 @@
  * ========================================================================= */
 
 #include "sevent.h"
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/select.h>
-#include <time.h>
-#include <errno.h>
-#include <pthread.h>
+#include "sevent_platform.h"
 
 /* ==================== 可替换分配器 ==================== */
 
@@ -71,28 +63,36 @@ struct sevent_timer
     int                   deleted;        /* unregister 标记 */
 };
 
-struct task
+struct sevent_post
 {
-    struct task *next;
+    struct sevent_post *next;
     sevent_handler_fn cb;
     void        *data;
+    int          cancelled;
+    int          done;
+    struct sevent_context *ctx;  /* 跨线程 cancel 时用于加锁 */
 };
 
 struct sevent_context
 {
     volatile int running;
+    sevent_thread_t loop_thread;  /* loop 所在线程, 用于 dispatch 判断 */
     int wake_fds[2];
 
-    pthread_mutex_t lock;       /* 递归锁: io_list / timer_list / death lists */
-    pthread_mutex_t post_lock;  /* 普通锁: task 队列 */
+    sevent_mutex_t lock;       /* io_list / timer_list / death lists */
+    sevent_mutex_t post_lock;  /* task 队列 */
 
     struct sevent_io    *io_list;
-    struct sevent_io    *death_io;      /* IO 延迟释放链表 */
+    struct sevent_io    *death_io;      /* 已注销 IO, 下轮 loop 释放 */
     struct sevent_timer *timer_list;
-    struct sevent_timer *death_timer;   /* Timer 延迟释放链表 */
+    struct sevent_timer *death_timer;   /* 已注销定时器, 下轮 loop 释放 */
 
-    struct task    *task_head;
-    struct task    *task_tail;
+    struct sevent_post *post_pending;      /* FIFO 队列, post_lock 保护 */
+    struct sevent_post *post_pending_tail;
+
+    int io_count;             /* 活跃 IO 数量, lock 保护 */
+    int timer_count;          /* 活跃定时器数量, lock 保护 */
+    int post_pending_count;   /* 待处理 post 数量, post_lock 保护 */
 };
 
 /* ==================== 链表操作 ==================== */
@@ -127,49 +127,20 @@ static void timer_list_del(struct sevent_timer *n)
 
 /* ==================== 辅助函数 ==================== */
 
-static int pipe_nonblock(int fds[2])
-{
-    if (pipe(fds) < 0) return -1;
-    for (int i = 0; i < 2; i++) {
-        int fl = fcntl(fds[i], F_GETFL);
-        if (fl < 0) { close(fds[0]); close(fds[1]); return -1; }
-        if (fcntl(fds[i], F_SETFL, fl | O_NONBLOCK) < 0) {
-            close(fds[0]); close(fds[1]); return -1;
-        }
-    }
-    return 0;
-}
-
-static void drain_pipe(int fd)
-{
-    char buf[64];
-    while (read(fd, buf, sizeof(buf)) > 0) {}
-}
-
 static long ms_elapsed(const struct timespec *a, const struct timespec *b)
 {
     return (b->tv_sec  - a->tv_sec) * 1000L
          + (b->tv_nsec - a->tv_nsec) / 1000000L;
 }
 
-/* 释放 IO 延迟链表 (调用方已释放 lock) */
+/* 释放延迟链表 */
 static void free_death_io(struct sevent_io *list)
 {
-    while (list) {
-        struct sevent_io *n = list->next;
-        g_free(list);
-        list = n;
-    }
+    while (list) { struct sevent_io *n = list->next; g_free(list); list = n; }
 }
-
-/* 释放 Timer 延迟链表 (调用方已释放 lock) */
 static void free_death_timer(struct sevent_timer *list)
 {
-    while (list) {
-        struct sevent_timer *n = list->next;
-        g_free(list);
-        list = n;
-    }
+    while (list) { struct sevent_timer *n = list->next; g_free(list); list = n; }
 }
 
 /* ==================== Core API ==================== */
@@ -179,18 +150,16 @@ sevent_context *sevent_create(void)
     struct sevent_context *ctx = xzalloc(sizeof(*ctx));
     if (!ctx) return NULL;
 
+    ctx->loop_thread = (sevent_thread_t)-1;  /* sentinel: 未启动, 不匹配任何线程 */
+
     ctx->wake_fds[0] = ctx->wake_fds[1] = -1;
 
-    pthread_mutexattr_t attr;
-    pthread_mutexattr_init(&attr);
-    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-    pthread_mutex_init(&ctx->lock, &attr);
-    pthread_mutexattr_destroy(&attr);
-    pthread_mutex_init(&ctx->post_lock, NULL);
+    sevent_mutex_init(&ctx->lock);
+    sevent_mutex_init(&ctx->post_lock);
 
-    if (pipe_nonblock(ctx->wake_fds) < 0) {
-        pthread_mutex_destroy(&ctx->lock);
-        pthread_mutex_destroy(&ctx->post_lock);
+    if (sevent_wakeup_pair(ctx->wake_fds) < 0) {
+        sevent_mutex_destroy(&ctx->lock);
+        sevent_mutex_destroy(&ctx->post_lock);
         g_free(ctx);
         return NULL;
     }
@@ -204,8 +173,8 @@ void sevent_destroy(sevent_context *ctx)
 
     /* 释放所有异步任务 */
     {
-        struct task *t = ctx->task_head;
-        while (t) { struct task *n = t->next; g_free(t); t = n; }
+        struct sevent_post *t = ctx->post_pending;
+        while (t) { struct sevent_post *n = t->next; g_free(t); t = n; }
     }
 
     /* 释放 IO 活跃链表 */
@@ -229,8 +198,8 @@ void sevent_destroy(sevent_context *ctx)
     if (ctx->wake_fds[0] >= 0) close(ctx->wake_fds[0]);
     if (ctx->wake_fds[1] >= 0) close(ctx->wake_fds[1]);
 
-    pthread_mutex_destroy(&ctx->lock);
-    pthread_mutex_destroy(&ctx->post_lock);
+    sevent_mutex_destroy(&ctx->lock);
+    sevent_mutex_destroy(&ctx->post_lock);
     g_free(ctx);
 }
 
@@ -244,47 +213,51 @@ void sevent_stop(sevent_context *ctx)
 int sevent_wakeup(sevent_context *ctx)
 {
     if (!ctx) return SEVENT_ERR_INVAL;
-    char c = 0;
-    /* write 到 self-pipe: 纯唤醒通知, 可安全忽略写入失败 */
-    ssize_t r = write(ctx->wake_fds[1], &c, 1);
+    uint64_t val = 1;
+    /* write 到 wake fd: eventfd 要求 8 字节, pipe/socket 也兼容 */
+    ssize_t r = write(ctx->wake_fds[1], &val, sizeof(val));
     (void)r;
     return SEVENT_SUCCESS;
 }
 
-int sevent_post(sevent_context *ctx, sevent_handler_fn h, void *data)
+sevent_post_t sevent_post(sevent_context *ctx, sevent_handler_fn h, void *data)
 {
-    if (!ctx || !h) return SEVENT_ERR_INVAL;
+    if (!ctx || !h) return NULL;
 
-    struct task *t = g_malloc(sizeof(*t));
-    if (!t) return SEVENT_ERR_NOMEM;
+    struct sevent_post *t = g_malloc(sizeof(*t));
+    if (!t) return NULL;
     t->next = NULL; t->cb = h; t->data = data;
+    t->cancelled = 0; t->done = 0; t->ctx = ctx;
 
-    pthread_mutex_lock(&ctx->post_lock);
-    if (ctx->task_tail)
-        ctx->task_tail->next = t;
+    sevent_mutex_lock(&ctx->post_lock);
+    if (ctx->post_pending_tail)
+        ctx->post_pending_tail->next = t;
     else
-        ctx->task_head = t;
-    ctx->task_tail = t;
-    pthread_mutex_unlock(&ctx->post_lock);
+        ctx->post_pending = t;
+    ctx->post_pending_tail = t;
+    ctx->post_pending_count++;
+    sevent_mutex_unlock(&ctx->post_lock);
 
     sevent_wakeup(ctx);
-    return SEVENT_SUCCESS;
+    return t;
 }
 
 void sevent_ignore_sigpipe(void)
 {
+#ifndef SEVENT_NO_SIGPIPE
     struct sigaction sa = { .sa_handler = SIG_IGN };
     sigaction(SIGPIPE, &sa, NULL);
+#endif
 }
 
 /* ==================== run 阶段函数 ==================== */
 
 static void run_free_death(sevent_context *ctx)
 {
-    pthread_mutex_lock(&ctx->lock);
+    sevent_mutex_lock(&ctx->lock);
     struct sevent_io    *die_io  = ctx->death_io;    ctx->death_io    = NULL;
     struct sevent_timer *die_tmr = ctx->death_timer; ctx->death_timer = NULL;
-    pthread_mutex_unlock(&ctx->lock);
+    sevent_mutex_unlock(&ctx->lock);
     free_death_io(die_io);
     free_death_timer(die_tmr);
 }
@@ -301,7 +274,7 @@ static int run_build_fdset(sevent_context *ctx,
 {
     int n_io = 0, max_fd, has_io = 0;
 
-    pthread_mutex_lock(&ctx->lock);
+    sevent_mutex_lock(&ctx->lock);
 
     FD_ZERO(rfds);  FD_ZERO(wfds);
     FD_SET(ctx->wake_fds[0], rfds);
@@ -327,7 +300,7 @@ static int run_build_fdset(sevent_context *ctx,
         tv->tv_usec = (next_timer % 1000) * 1000;
     }
 
-    pthread_mutex_unlock(&ctx->lock);
+    sevent_mutex_unlock(&ctx->lock);
 
     *out_n_io      = n_io;
     *out_max_fd    = max_fd;
@@ -342,7 +315,7 @@ static void run_io_callbacks(sevent_context *ctx, int nfds,
 {
     if (nfds <= 0) return;
     if (FD_ISSET(ctx->wake_fds[0], rfds))
-        drain_pipe(ctx->wake_fds[0]);
+        sevent_wakeup_drain(ctx->wake_fds[0]);
 
     for (int i = 0; i < n_io; i++) {
         struct sevent_io *io = iosnap[i];
@@ -357,40 +330,100 @@ static void run_io_callbacks(sevent_context *ctx, int nfds,
     }
 }
 
+void sevent_post_cancel(sevent_context *ctx, sevent_post_t h)
+{
+    if (!ctx || !h) return;
+    /* 只查 pending 链表: 已出队的 post 正在执行或已 free.
+       指针比较安全, 不解引用野指针. */
+    sevent_mutex_lock(&ctx->post_lock);
+    for (struct sevent_post *p = ctx->post_pending; p; p = p->next)
+        if (p == h) { p->cancelled = 1; break; }
+    sevent_mutex_unlock(&ctx->post_lock);
+}
+
+int sevent_dispatch(sevent_context *ctx, sevent_handler_fn h, void *data)
+{
+    if (!ctx || !h) return SEVENT_ERR_INVAL;
+    if (sevent_thread_equal(ctx->loop_thread, sevent_thread_self())) {
+        h(data);
+        return SEVENT_SUCCESS;
+    }
+    return sevent_post(ctx, h, data) ? SEVENT_SUCCESS : SEVENT_ERR_NOMEM;
+}
+
 static void run_posts(sevent_context *ctx, int *fired)
 {
-    pthread_mutex_lock(&ctx->post_lock);
-    struct task *head = ctx->task_head;
-    ctx->task_head = NULL;
-    ctx->task_tail = NULL;
-    pthread_mutex_unlock(&ctx->post_lock);
+    /* 双队列: 将 pending 队列入队到本地 active, 新任务进 pending 下轮处理 */
+    sevent_mutex_lock(&ctx->post_lock);
+    struct sevent_post *active = ctx->post_pending;
+    ctx->post_pending = ctx->post_pending_tail = NULL;
+    ctx->post_pending_count = 0;
+    sevent_mutex_unlock(&ctx->post_lock);
 
-    while (head) {
-        struct task *next = head->next;
-        head->cb(head->data);
-        g_free(head);
-        head = next;
-        *fired = 1;
+    while (active) {
+        struct sevent_post *next = active->next;
+        int skip;
+        sevent_mutex_lock(&ctx->post_lock);
+        skip = active->cancelled;
+        if (!skip) active->done = 1;
+        sevent_mutex_unlock(&ctx->post_lock);
+
+        if (!skip) {
+            active->cb(active->data);
+            *fired = 1;
+        }
+        g_free(active);
+        active = next;
     }
 }
+
+#define MAX_EXPIRED_PER_TICK  32
+
+struct expire_entry {
+    struct sevent_timer *t;
+    int times;                   /* 需要连续触发多少次 */
+};
 
 static void run_timers(sevent_context *ctx, int has_timer,
                        long delta, int *fired)
 {
     if (!has_timer || delta <= 0) return;
-    pthread_mutex_lock(&ctx->lock);
+
+    struct expire_entry expired[MAX_EXPIRED_PER_TICK];
+    int n_expired = 0;
+
+    /* 阶段 A：持锁计算并收集到期 timer */
+    sevent_mutex_lock(&ctx->lock);
     for (struct sevent_timer *t = ctx->timer_list; t; t = t->next) {
         if (t->deleted) continue;
+
         t->remaining_ms -= (int)delta;
-        int safety = 0;
-        while (t->remaining_ms <= 0 && safety < 100) {
-            t->cb(t->data);
-            t->remaining_ms += t->interval_ms;
-            *fired = 1;
-            safety++;
+        int fire_count = 0;
+        while (t->remaining_ms <= 0 && fire_count < 100) {
+            fire_count++;
+            t->remaining_ms += (int)t->interval_ms;
+        }
+
+        if (fire_count > 0 && n_expired < MAX_EXPIRED_PER_TICK) {
+            expired[n_expired].t = t;
+            expired[n_expired].times = fire_count;
+            n_expired++;
+        } else if (fire_count > 0) {
+            /* 数组满了，设 0 让下轮 delta>0 立即补触发 */
+            t->remaining_ms = 0;
         }
     }
-    pthread_mutex_unlock(&ctx->lock);
+    sevent_mutex_unlock(&ctx->lock);
+
+    /* 阶段 B：无锁调用用户回调 */
+    for (int i = 0; i < n_expired; i++) {
+        struct sevent_timer *t = expired[i].t;
+        if (t->deleted) continue;      /* 回调前已被其他回调 unregister，跳过 */
+        for (int k = 0; k < expired[i].times; k++) {
+            t->cb(t->data);
+            *fired = 1;
+        }
+    }
 }
 
 /* ==================== run / run_once ==================== */
@@ -398,6 +431,7 @@ static void run_timers(sevent_context *ctx, int has_timer,
 int sevent_run_once(sevent_context *ctx)
 {
     if (!ctx) return SEVENT_ERR_INVAL;
+    ctx->loop_thread = sevent_thread_self();
 
     fd_set rfds, wfds;
     struct sevent_io *iosnap[FD_SETSIZE];
@@ -420,18 +454,21 @@ int sevent_run_once(sevent_context *ctx)
         clock_gettime(CLOCK_MONOTONIC, &t0);
 
         int nfds = select(max_fd + 1, &rfds, &wfds, NULL, tvp);
-        if (nfds < 0) {
-            if (errno == EINTR) { run_posts(ctx, &fired); return fired ? 1 : 0; }
-            return SEVENT_ERR_INVAL;
-        }
 
         struct timespec t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
         delta = ms_elapsed(&t0, &t1);
         if (delta < 0) delta = 0;
 
-        /* 阶段 3: IO 回调 */
-        run_io_callbacks(ctx, nfds, &rfds, &wfds, iosnap, n_io, &fired);
+        if (nfds < 0) {
+            if (errno != EINTR && errno != EBADF)
+                return SEVENT_ERR_INVAL;
+            /* EINTR (信号打断) / EBADF (fd 在 select 期间被 unregister+close):
+               跳过 IO 回调, fall through 到 posts + timers */
+        } else {
+            /* 阶段 3: IO 回调 */
+            run_io_callbacks(ctx, nfds, &rfds, &wfds, iosnap, n_io, &fired);
+        }
     }
 
     /* 阶段 4: 异步任务 */
@@ -470,32 +507,41 @@ sevent_io_t sevent_io_register(sevent_context *ctx, struct sevent_io_handler *h)
     io->ctx      = ctx;
     io->deleted  = 0;
 
-    pthread_mutex_lock(&ctx->lock);
+    sevent_mutex_lock(&ctx->lock);
     /* 去重: 不允许同一 fd 注册两次 */
     for (struct sevent_io *p = ctx->io_list; p; p = p->next) {
         if (p->fd == h->fd && !p->deleted) {
-            pthread_mutex_unlock(&ctx->lock);
+            sevent_mutex_unlock(&ctx->lock);
             g_free(io);
             return NULL;
         }
     }
     io_list_add(&ctx->io_list, io);
-    pthread_mutex_unlock(&ctx->lock);
+    ctx->io_count++;
+    sevent_mutex_unlock(&ctx->lock);
 
     sevent_wakeup(ctx);
     return io;
 }
 
-void sevent_io_unregister(sevent_io_t h)
+void sevent_io_unregister(sevent_context *ctx, sevent_io_t h)
 {
-    if (!h) return;
-    struct sevent_context *ctx = h->ctx;
-    pthread_mutex_lock(&ctx->lock);
-    h->deleted = 1;             /* 保护快照: 后续遍历跳过 */
-    io_list_del(h);
-    h->next = ctx->death_io;
-    ctx->death_io = h;
-    pthread_mutex_unlock(&ctx->lock);
+    if (!ctx || !h) return;
+    int found = 0;
+    sevent_mutex_lock(&ctx->lock);
+    for (struct sevent_io *p = ctx->io_list; p; p = p->next) {
+        if (p == h) {
+            h->deleted = 1;     /* 快照遍历时跳过 */
+            io_list_del(h);
+            ctx->io_count--;
+            h->next = ctx->death_io;
+            ctx->death_io = h;
+            found = 1;
+            break;
+        }
+    }
+    sevent_mutex_unlock(&ctx->lock);
+    if (found) sevent_wakeup(ctx);
 }
 
 /* ==================== Timer API ==================== */
@@ -516,22 +562,52 @@ sevent_timer_t sevent_timer_register(sevent_context *ctx,
     t->ctx          = ctx;
     t->deleted      = 0;
 
-    pthread_mutex_lock(&ctx->lock);
+    sevent_mutex_lock(&ctx->lock);
     timer_list_add(&ctx->timer_list, t);
-    pthread_mutex_unlock(&ctx->lock);
+    ctx->timer_count++;
+    sevent_mutex_unlock(&ctx->lock);
 
     sevent_wakeup(ctx);
     return t;
 }
 
-void sevent_timer_unregister(sevent_timer_t h)
+void sevent_timer_unregister(sevent_context *ctx, sevent_timer_t h)
 {
-    if (!h) return;
-    struct sevent_context *ctx = h->ctx;
-    pthread_mutex_lock(&ctx->lock);
-    h->deleted = 1;             /* 保护快照 */
-    timer_list_del(h);
-    h->next = ctx->death_timer;
-    ctx->death_timer = h;
-    pthread_mutex_unlock(&ctx->lock);
+    if (!ctx || !h) return;
+    if (!ctx) return;
+    sevent_mutex_lock(&ctx->lock);
+    /* 遍历活跃链表查找 h. 不在链表中说明已释放或从不属于此 ctx,
+       指针比较不依赖 h 有效性, 已释放句柄不会误匹配. */
+    for (struct sevent_timer *p = ctx->timer_list; p; p = p->next) {
+        if (p == h) {
+            h->deleted = 1;     /* 快照遍历时跳过 */
+            timer_list_del(h);
+            ctx->timer_count--;
+            h->next = ctx->death_timer;
+            ctx->death_timer = h;
+            break;
+        }
+    }
+    sevent_mutex_unlock(&ctx->lock);
+}
+
+/* ==================== 可观测性 ==================== */
+
+void sevent_get_counts(sevent_context *ctx,
+                       int *io_count, int *timer_count, int *post_count)
+{
+    if (!ctx) return;
+
+    if (io_count || timer_count) {
+        sevent_mutex_lock(&ctx->lock);
+        if (io_count)   *io_count   = ctx->io_count;
+        if (timer_count) *timer_count = ctx->timer_count;
+        sevent_mutex_unlock(&ctx->lock);
+    }
+
+    if (post_count) {
+        sevent_mutex_lock(&ctx->post_lock);
+        *post_count = ctx->post_pending_count;
+        sevent_mutex_unlock(&ctx->post_lock);
+    }
 }

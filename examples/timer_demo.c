@@ -122,9 +122,9 @@ int main(void)
            slow.count, slow.max_drift,
            slow.count > 0 ? slow.total_drift / slow.count : 0);
 
-    sevent_timer_unregister(t1);
-    sevent_timer_unregister(t2);
-    sevent_timer_unregister(t3);
+    sevent_timer_unregister(ctx, t1);
+    sevent_timer_unregister(ctx, t2);
+    sevent_timer_unregister(ctx, t3);
     sevent_destroy(ctx);
     return 0;
 }
