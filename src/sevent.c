@@ -68,9 +68,6 @@ struct sevent_post
     struct sevent_post *next;
     sevent_handler_fn cb;
     void        *data;
-    int          cancelled;
-    int          done;
-    struct sevent_context *ctx;  /* 跨线程 cancel 时用于加锁 */
 };
 
 struct sevent_context
@@ -220,14 +217,13 @@ int sevent_wakeup(sevent_context *ctx)
     return SEVENT_SUCCESS;
 }
 
-sevent_post_t sevent_post(sevent_context *ctx, sevent_handler_fn h, void *data)
+int sevent_post(sevent_context *ctx, sevent_handler_fn h, void *data)
 {
-    if (!ctx || !h) return NULL;
+    if (!ctx || !h) return SEVENT_ERR_INVAL;
 
     struct sevent_post *t = g_malloc(sizeof(*t));
-    if (!t) return NULL;
+    if (!t) return SEVENT_ERR_NOMEM;
     t->next = NULL; t->cb = h; t->data = data;
-    t->cancelled = 0; t->done = 0; t->ctx = ctx;
 
     sevent_mutex_lock(&ctx->post_lock);
     if (ctx->post_pending_tail)
@@ -239,7 +235,7 @@ sevent_post_t sevent_post(sevent_context *ctx, sevent_handler_fn h, void *data)
     sevent_mutex_unlock(&ctx->post_lock);
 
     sevent_wakeup(ctx);
-    return t;
+    return SEVENT_SUCCESS;
 }
 
 void sevent_ignore_sigpipe(void)
@@ -330,17 +326,6 @@ static void run_io_callbacks(sevent_context *ctx, int nfds,
     }
 }
 
-void sevent_post_cancel(sevent_context *ctx, sevent_post_t h)
-{
-    if (!ctx || !h) return;
-    /* 只查 pending 链表: 已出队的 post 正在执行或已 free.
-       指针比较安全, 不解引用野指针. */
-    sevent_mutex_lock(&ctx->post_lock);
-    for (struct sevent_post *p = ctx->post_pending; p; p = p->next)
-        if (p == h) { p->cancelled = 1; break; }
-    sevent_mutex_unlock(&ctx->post_lock);
-}
-
 int sevent_dispatch(sevent_context *ctx, sevent_handler_fn h, void *data)
 {
     if (!ctx || !h) return SEVENT_ERR_INVAL;
@@ -348,7 +333,7 @@ int sevent_dispatch(sevent_context *ctx, sevent_handler_fn h, void *data)
         h(data);
         return SEVENT_SUCCESS;
     }
-    return sevent_post(ctx, h, data) ? SEVENT_SUCCESS : SEVENT_ERR_NOMEM;
+    return sevent_post(ctx, h, data);
 }
 
 static void run_posts(sevent_context *ctx, int *fired)
@@ -362,16 +347,8 @@ static void run_posts(sevent_context *ctx, int *fired)
 
     while (active) {
         struct sevent_post *next = active->next;
-        int skip;
-        sevent_mutex_lock(&ctx->post_lock);
-        skip = active->cancelled;
-        if (!skip) active->done = 1;
-        sevent_mutex_unlock(&ctx->post_lock);
-
-        if (!skip) {
-            active->cb(active->data);
-            *fired = 1;
-        }
+        active->cb(active->data);
+        *fired = 1;
         g_free(active);
         active = next;
     }

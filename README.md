@@ -3,7 +3,7 @@
 [![CI](https://github.com/wanglb/libsevent/actions/workflows/ci.yml/badge.svg)](https://github.com/wanglb/libsevent/actions/workflows/ci.yml)
 
 ```c
-// 核心 API 就 16 个函数, 不搞虚的
+// 核心 API 就 15 个函数, 不搞虚的
 sevent_context *sevent_create(void);
 void            sevent_destroy(sevent_context *);
 int             sevent_run(sevent_context *);
@@ -11,8 +11,7 @@ int             sevent_run_once(sevent_context *);
 void            sevent_stop(sevent_context *);
 int             sevent_wakeup(sevent_context *);
 
-sevent_post_t   sevent_post(sevent_context *, sevent_handler_fn, void *);
-void            sevent_post_cancel(sevent_context *, sevent_post_t);
+int             sevent_post(sevent_context *, sevent_handler_fn, void *);
 int             sevent_dispatch(sevent_context *, sevent_handler_fn, void *);
 
 sevent_io_t     sevent_io_register(sevent_context *, struct sevent_io_handler *);
@@ -158,8 +157,7 @@ gcc -std=c99 -Ilibsevent/include -o demo demo.c \
 
 | 函数 | 说明 | 线程 |
 |------|------|------|
-| `sevent_post(ctx, cb, data)` | 投递 FIFO 任务, 返回句柄或 NULL | 跨线程(post_lock) |
-| `sevent_post_cancel(ctx, h)` | 取消未执行任务; 已执行或句柄失效则无效果. 幂等, h 可为 NULL | 跨线程(post_lock) |
+| `sevent_post(ctx, cb, data)` | 投递 FIFO 任务, 返回 SEVENT_SUCCESS 或错误码 | 跨线程(post_lock) |
 | `sevent_dispatch(ctx, cb, data)` | loop 线程内立即执行, 否则入队 post | 跨线程 |
 
 ### 句柄生命周期
@@ -167,7 +165,7 @@ gcc -std=c99 -Ilibsevent/include -o demo demo.c \
 | 句柄类型 | 何时失效 | 多次操作安全? |
 |----------|---------|-------------|
 | `sevent_io_t` / `sevent_timer_t` | 用户调 unregister 后, 下轮 loop 回收 | 是 (幂等) |
-| `sevent_post_t` | 任务执行后自动释放 | 是 (cancel 只查 pending) |
+| post 任务 | 执行后自动释放 | — |
 
 ### 内存分配器
 
@@ -251,6 +249,30 @@ void sevent_get_counts(sevent_context *ctx,
 | Wakeup | eventfd/pipe/UDP 自动降级 | 需用户实现 |
 
 编译: `cmake .. -DSEVENT_RTOS=ON` 后补充 `sevent_mutex_*` 和 `sevent_thread_*`.
+
+## C++ 封装 (coming)
+
+libsevent 提供 header-only 的 C++ 封装 `sevent.hpp`，三层架构按事件生命周期选择最合适的抽象：
+
+| 层 | 事件类型 | 回调形式 | 零堆分配 |
+|---|---------|---------|:-------:|
+| Layer 1 — RAII 基座 | 句柄资源管理 | — | ✅ |
+| Layer 2 — OOP 常驻事件 | IO / Timer | `IoWatcher::onRead` 虚函数 | ✅ |
+| Layer 3 — Lambda 瞬态任务 | Post | `std::function<void()>` | ❌ (一次 malloc) |
+
+```cpp
+// OOP 风格处理 IO（零堆分配），lambda 风格处理 Post
+class MyReader : public sevent::IoWatcher {
+    void onRead(sevent::EventLoop &loop) override { /* ... */ }
+};
+sevent::EventLoop loop;
+MyReader reader;
+loop.watch(sock_fd, &reader);
+loop.post([&]{ printf("async!\n"); });
+loop.run();
+```
+
+详见 [doc/cpp-wrapper-design.md](doc/cpp-wrapper-design.md)。
 
 ## 例子
 

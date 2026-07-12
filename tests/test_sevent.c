@@ -92,7 +92,7 @@ TEST(core_run_stop)
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
 
     sevent_destroy(ctx);
@@ -112,7 +112,7 @@ TEST(core_run_once_with_post)
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
     ASSERT_EQ(1, sevent_run_once(ctx));
     ASSERT_EQ(1, cb_count);
 
@@ -130,7 +130,7 @@ TEST(core_post_order)
 
     for (int i = 0; i < 4; i++) {
         order[i] = 0;
-        ASSERT(NULL != sevent_post(ctx, count_cb, &order[i]));
+        ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, &order[i]));
     }
     /* TODO: 实现后验证 order 递增 */
     sevent_destroy(ctx);
@@ -141,7 +141,7 @@ TEST(core_wakeup)
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_wakeup(ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
 
@@ -157,8 +157,8 @@ TEST(core_stop_aborts_pending)
     /* 先 post stop，再 post count
        — 一轮里两个都会执行（同一次队列快照），
        但 loop 在下一轮开始前检查 running 标志退出 */
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
-    ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
 
     /* count_cb 和 stop_cb 在同一轮执行 */
@@ -194,107 +194,11 @@ TEST(core_post_null_handler)
 {
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
-    ASSERT_EQ(NULL, sevent_post(ctx, NULL, NULL));
+    ASSERT_EQ(SEVENT_ERR_INVAL, sevent_post(ctx, NULL, NULL));
     sevent_destroy(ctx);
 }
 
-/* 验证 post 返回非空句柄 */
-TEST(post_handle_not_null)
-{
-    sevent_context *ctx = sevent_create();
-    ASSERT(ctx != NULL);
-    ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
-    /* 不执行, 仅验证返回句柄 */
-    sevent_destroy(ctx);
-}
-
-/* 验证取消未执行的任务 */
-TEST(post_cancel_before_run)
-{
-    reset_cb();
-    sevent_context *ctx = sevent_create();
-    ASSERT(ctx != NULL);
-
-    /* post 一个任务, 然后取消 */
-    sevent_post_t p = sevent_post(ctx, count_cb, NULL);
-    ASSERT(p != NULL);
-    sevent_post_cancel(ctx, p);
-
-    /* 跑 loop, 取消的任务不应触发 */
-    sevent_post(ctx, stop_cb, ctx);
-    sevent_run(ctx);
-    ASSERT_EQ(0, cb_count);
-    sevent_destroy(ctx);
-}
-
-/* 验证取消已执行的任务(无效果) */
-TEST(post_cancel_after_run)
-{
-    reset_cb();
-    sevent_context *ctx = sevent_create();
-    ASSERT(ctx != NULL);
-
-    sevent_post_t p = sevent_post(ctx, count_cb, NULL);
-    ASSERT(p != NULL);
-
-    /* 执行 */
-    sevent_post(ctx, stop_cb, ctx);
-    sevent_run(ctx);
-    ASSERT_EQ(1, cb_count);
-
-    /* 已执行后再取消: h 已 free, cancel 只查 pending 链表, 不崩溃 */
-    sevent_post_cancel(ctx, p);
-    sevent_destroy(ctx);
-}
-
-/* 验证取消 NULL 安全 */
-TEST(post_cancel_null)
-{
-    sevent_context *ctx = sevent_create();
-    ASSERT(ctx != NULL);
-    sevent_post_cancel(NULL, NULL);
-    sevent_post_cancel(ctx, NULL);  /* ctx 有效, h=NULL */
-    sevent_destroy(ctx);
-}
-
-/* ----- 回调内取消辅助 ----- */
-static sevent_post_t g_cancel_target;
-static int           g_cancel_ran;
-
-static void on_count_and_cancel(void *data)
-{
-    sevent_context *ctx = (sevent_context *)data;
-    /* B 在这里 post, 进入 pending (不是当前 active 队列), cancel 能找到 */
-    g_cancel_target = sevent_post(ctx, count_cb, NULL);
-    g_cancel_ran = 1;
-    sevent_post_cancel(ctx, g_cancel_target);
-    sevent_post(ctx, stop_cb, ctx);
-}
-
-/* 验证回调内取消另一任务: B 由回调内发 (在 pending 中), cancel 有效 */
-TEST(post_cancel_in_callback)
-{
-    reset_cb();
-    g_cancel_ran = 0;
-    g_cancel_target = NULL;
-
-    sevent_context *ctx = sevent_create();
-    ASSERT(ctx != NULL);
-
-    /* A: 入队. 回调内 发 B → cancel B → post stop */
-    ASSERT(NULL != sevent_post(ctx, on_count_and_cancel, ctx));
-
-    sevent_run(ctx);
-
-    /* A 执行了, B 被取消 */
-    ASSERT(g_cancel_ran);      /* A 确实执行了 */
-    ASSERT_EQ(0, cb_count);    /* B 没执行 */
-
-    g_cancel_target = NULL;
-    sevent_destroy(ctx);
-}
-
-/* 验证回调内 post 的任务在下轮执行 (双队列) */
+/* ===== 双队列 defer 测试 ===== */
 static int g_deferred_count;
 
 static void on_deferred_worker(void *data)
@@ -313,10 +217,10 @@ TEST(post_defer_to_next_iter)
     ASSERT(ctx != NULL);
 
     /* A: 在回调中 post 新任务 */
-    ASSERT(NULL != sevent_post(ctx, on_deferred_worker, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, on_deferred_worker, ctx));
 
     /* B: stop */
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
 
     /* run_once 应处理 A, A 再 post C. C 应进入下轮, 而不是本轮 */
     sevent_run_once(ctx);
@@ -384,13 +288,13 @@ TEST(core_restart_loop)
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
 
     /* 再跑一次 */
     reset_cb();
-    ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
     ASSERT_EQ(1, cb_count);
 
@@ -471,7 +375,7 @@ TEST(memory_no_leak)
 
         /* 投递一些任务 */
         for (int i = 0; i < 5; i++)
-            ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
+            ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
 
         /* 注销一半 IO */
         for (int i = 0; i < 5; i++) {
@@ -529,7 +433,7 @@ TEST(io_register_pipe_read)
 
     ASSERT(5 == (int)write(fds[1], "hello", 5));
 
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
     ASSERT_EQ(1, cb_count);
 
@@ -558,7 +462,7 @@ TEST(io_null_read_cb_no_fire)
     ASSERT(hdl != NULL);
 
     ASSERT_EQ(1, (int)write(fds[1], "x", 1));
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
 
     /* 管道可读但没有 io_read，io_write 不应该被触发 */
@@ -589,7 +493,7 @@ TEST(io_unregister_self_in_callback)
     ASSERT(hdl != NULL);
 
     ASSERT_EQ(1, (int)write(fds[1], "x", 1));
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
 
     sevent_io_unregister(ctx, hdl);
@@ -622,7 +526,7 @@ TEST(io_multiple_fds_partial_ready)
     ASSERT_EQ(1, (int)write(fds1[1], "a", 1));
     ASSERT_EQ(1, (int)write(fds3[1], "c", 1));
 
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
 
     /* 应该只有两个 callback 触发 */
@@ -654,7 +558,7 @@ TEST(io_write_monitor)
     ASSERT(hdl != NULL);
 
     /* 写端通常可写，应触发 io_write */
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
     ASSERT(cb_count >= 1);
 
@@ -981,7 +885,7 @@ TEST(integration_io_timer_post)
     sevent_timer_t th = sevent_timer_register(ctx, 50, count_cb, NULL);
     ASSERT(th != NULL);
 
-    ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
     ASSERT_EQ(1, (int)write(fds[1], "x", 1));
 
     /* 跑多轮，让所有事件都有机会触发 */
@@ -1002,7 +906,7 @@ TEST(integration_stop_then_destroy)
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    ASSERT(NULL != sevent_post(ctx, stop_cb, ctx));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, stop_cb, ctx));
     ASSERT_EQ(SEVENT_SUCCESS, sevent_run(ctx));
 
     sevent_destroy(ctx);
@@ -1137,29 +1041,6 @@ TEST(edge_timer_unregister_multiple)
     sevent_timer_unregister(ctx, t);
     sevent_timer_unregister(ctx, t);
     sevent_timer_unregister(ctx, t);
-
-    sevent_destroy(ctx);
-}
-
-TEST(edge_post_cancel_multiple)
-{
-    reset_cb();
-    sevent_context *ctx = sevent_create();
-    ASSERT(ctx != NULL);
-
-    sevent_post_t p = sevent_post(ctx, count_cb, NULL);
-    ASSERT(p != NULL);
-
-    /* 未执行前多次 cancel 应安全 */
-    sevent_post_cancel(ctx, p);
-    sevent_post_cancel(ctx, p);
-    sevent_post_cancel(ctx, p);
-
-    /* 执行后 cancel 也应安全 (只查 pending, 不崩溃) */
-    sevent_post(ctx, stop_cb, ctx);
-    sevent_run(ctx);
-    ASSERT_EQ(0, cb_count);
-    sevent_post_cancel(ctx, p);
 
     sevent_destroy(ctx);
 }
@@ -1483,9 +1364,9 @@ TEST(observability_post_count)
     sevent_get_counts(ctx, NULL, NULL, &post);
     ASSERT_EQ(0, post);
 
-    ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
-    ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
-    ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
     sevent_get_counts(ctx, NULL, NULL, &post);
     ASSERT_EQ(3, post);
 
@@ -1529,8 +1410,8 @@ TEST(observability_combined)
     sevent_timer_t t = sevent_timer_register(ctx, 100, count_cb, NULL);
     ASSERT(t != NULL);
 
-    ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
-    ASSERT(NULL != sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
+    ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
 
     sevent_get_counts(ctx, &io, &timer, &post);
     ASSERT_EQ(1, io);
@@ -1571,9 +1452,7 @@ TEST(observability_combined)
     T(core_run_null) T(core_run_once_null) T(core_post_null_handler)       \
     T(core_ignore_sigpipe) T(core_restart_loop) T(core_set_allocator)      \
     T(memory_no_leak)                                                       \
-    T(post_handle_not_null) T(post_cancel_before_run)                      \
-    T(post_cancel_after_run) T(post_cancel_null)                           \
-    T(post_cancel_in_callback) T(post_defer_to_next_iter)                  \
+    T(post_defer_to_next_iter)                                              \
     T(post_dispatch_same_thread) T(post_dispatch_cross_thread)             \
     T(io_register_pipe_read) T(io_null_read_cb_no_fire)                    \
     T(io_unregister_self_in_callback) T(io_multiple_fds_partial_ready)     \
@@ -1591,7 +1470,6 @@ TEST(observability_combined)
     T(edge_null_io_handler) T(edge_large_fd_rejected)                      \
     T(edge_many_timers) T(edge_unregister_twice_safe)                      \
     T(edge_io_unregister_multiple) T(edge_timer_unregister_multiple)       \
-    T(edge_post_cancel_multiple)                                            \
     T(edge_io_unregister_after_free) T(edge_timer_unregister_after_free)   \
     T(edge_io_unregister_wrong_ctx) T(edge_timer_unregister_wrong_ctx)     \
     T(observability_io_count) T(observability_timer_count)                \

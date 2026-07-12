@@ -17,9 +17,9 @@ extern "C" {
  *   - 所有回调在 loop 线程同步执行, 应避免长时间阻塞
  *
  * 线程安全分类:
- *   [跨线程, 内部锁]   sevent_post / sevent_io_register
- *                      sevent_io_unregister / sevent_timer_register
- *                      sevent_timer_unregister
+ *   [跨线程, 内部锁]   sevent_post / sevent_dispatch
+ *                      sevent_io_register / sevent_io_unregister
+ *                      sevent_timer_register / sevent_timer_unregister
  *   [跨线程, 无锁]     sevent_stop / sevent_wakeup / sevent_ignore_sigpipe
  *   [loop 线程]        回调函数 (io_read / io_write / timer_fn / handler)
  *   [串行]             sevent_create / sevent_destroy / sevent_run
@@ -27,8 +27,7 @@ extern "C" {
  *
  * 句柄生命周期:
  *   - IO / Timer: 由用户主动 unregister 释放, 释放前始终有效
- *   - Post:       run_posts 阶段自动释放, 执行后句柄失效;
- *                 sevent_post_cancel 多次调用安全 (幂等)
+ *   - Post:       run_posts 阶段自动释放, 执行后句柄失效
  * ========================================================================= */
 
 /* ==================== 版本 ==================== */
@@ -72,7 +71,6 @@ typedef void (*sevent_timer_fn)(void *data);         /* 定时器到期触发 */
 typedef struct sevent_context sevent_context;        /* 事件循环上下文 */
 typedef struct sevent_io      *sevent_io_t;          /* IO 注册句柄 */
 typedef struct sevent_timer   *sevent_timer_t;       /* 定时器句柄 */
-typedef struct sevent_post    *sevent_post_t;        /* 异步任务句柄 */
 
 /* ==================== 公开结构体 ==================== */
 
@@ -137,29 +135,20 @@ int             sevent_wakeup(sevent_context *ctx);
 /*
  * 投递异步任务, loop 的 post 阶段按 FIFO 顺序执行.
  * 回调内调用时, 新任务在本轮继续执行 (post 阶段逐个处理).
- * 返回: 句柄 (可用于 sevent_post_cancel) 或 NULL (内存不足).
+ * 返回: SEVENT_SUCCESS 或 SEVENT_ERR_NOMEM.
  * 线程: 跨线程 (内部锁, post_lock).
  */
-sevent_post_t   sevent_post(sevent_context *ctx,
+int             sevent_post(sevent_context *ctx,
                             sevent_handler_fn h, void *data);
 
 /*
- * 取消未执行的异步任务.
- * 如果任务已执行或句柄已失效, 无效果.
- * ctx 非空, h 可为 NULL. 多次调用同一句柄安全 (幂等).
- * 线程: 跨线程 (内部锁, post_lock).
- */
-void            sevent_post_cancel(sevent_context *ctx, sevent_post_t h);
-
-/*
  * 投递任务. 如果在 loop 线程内则立即执行, 否则入队等待.
- * 立即执行时无句柄返回 (无需取消); 入队时返回 SEVENT_SUCCESS.
  * 回调内调用为立即执行. 跨线程调用退化为 sevent_post.
  * 线程: 跨线程 (loop 线程内直接调用, 其他线程走 post_lock).
  * 返回: SEVENT_SUCCESS 或 SEVENT_ERR_NOMEM.
  */
 int             sevent_dispatch(sevent_context *ctx,
-                                      sevent_handler_fn h, void *data);
+                                sevent_handler_fn h, void *data);
 
 /* ==================== 信号 ==================== */
 
