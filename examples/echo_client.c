@@ -37,6 +37,7 @@ static void parse_args(int argc, char **argv)
 
 typedef struct {
     int   fd, rem, len, off, err, eagain;
+    long  bytes_read, bytes_written;
     char *buf;
     sevent_io_t hio;
     sevent_context *ctx;
@@ -104,7 +105,7 @@ static void on_write(void *data)
     cli_t *c = (cli_t *)data;
     while (c->off < c->len) {
         ssize_t w = write(c->fd, c->buf + c->off, (size_t)(c->len - c->off));
-        if (w > 0) c->off += (int)w;
+        if (w > 0) { c->off += (int)w; c->bytes_written += w; }
         else if (errno == EAGAIN || errno == EINTR) return;
         else { c->err = 1; goto done; }
     }
@@ -128,7 +129,7 @@ static void do_write(void *data)
 
     while (c->off < c->len) {
         ssize_t w = write(c->fd, c->buf + c->off, (size_t)(c->len - c->off));
-        if (w > 0) c->off += (int)w;
+        if (w > 0) { c->off += (int)w; c->bytes_written += w; }
         else if (errno == EAGAIN) {
             /* 写缓存满, 退化到 io_write 回调继续 */
             cli_reg_write(c);
@@ -155,10 +156,11 @@ static void on_read(void *data)
 {
     cli_t *c = (cli_t *)data;
 
-    /* 读取 echo 数据 */
+    /* 读取 echo 数据 (do_write 后 c->off == c->len, 需重置) */
+    c->off = 0;
     while (c->off < c->len) {
         ssize_t n = read(c->fd, c->buf + c->off, (size_t)(c->len - c->off));
-        if (n > 0) c->off += (int)n;
+        if (n > 0) { c->off += (int)n; c->bytes_read += n; }
         else if (n == 0) { c->err = 1; goto done; }
         else if (errno == EAGAIN || errno == EINTR) return;
         else { c->err = 1; goto done; }
@@ -179,7 +181,15 @@ static void on_read(void *data)
 done:
     g_fin++;
     if (c->err) g_err++;
-    if (c->fd >= 0) close(c->fd);
+    if (c->fd >= 0) {
+        /* 排空接收缓冲，防止 close() 发 RST */
+        char tmp[4096];
+        ssize_t dn;
+        do {
+            dn = read(c->fd, tmp, sizeof(tmp));
+        } while (dn > 0 || (dn < 0 && errno == EINTR));
+        close(c->fd);
+    }
     c->fd = -1;
     if (c->hio) { sevent_io_unregister(c->ctx, c->hio); c->hio = NULL; }
     if (g_fin >= g_ncli) sevent_stop(g_c[0].ctx);
@@ -254,6 +264,10 @@ int main(int argc, char **argv)
     printf("  sent:     %.0f KB (%.1f MB)\n", g_sent/1024.0, g_sent/1024.0/1024.0);
     printf("  recv:     %.0f KB\n", g_recv/1024.0);
     printf("  errors:   %d\n", g_err);
+    printf("\n  per-connection read/write:\n");
+    for (int i = 0; i < g_ncli; i++)
+        printf("    conn[%d]  read=%ld  wrote=%ld\n",
+               i, g_c[i].bytes_read, g_c[i].bytes_written);
     printf("  xput:     %.0f KB/s (%.1f MB/s)\n",
            g_sent/1024.0/el, g_sent/1024.0/1024.0/el);
     printf("  qps:      %.0f\n", (double)(g_sent/g_size)/el);

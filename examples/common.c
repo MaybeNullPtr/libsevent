@@ -42,4 +42,5 @@ void log_printf(const char *file, int line, const char *fmt, ...)
     va_end(args);
 
     printf("\n");
+    fflush(stdout);
 }
