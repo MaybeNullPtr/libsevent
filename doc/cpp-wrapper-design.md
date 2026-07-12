@@ -296,9 +296,12 @@ private:
 
 ### ⚠️ 生命周期铁律（IoWatcher / TimerWatcher）
 
-1. **watcher 对象存活必须长于 loop 运行期**（`loop.run()` 返回之前不能析构）
-2. 如果 watcher 是 self-owned（`delete this`），确保 `guard_.reset()` 在 `delete this` 之前调用
-3. `IoGuard`/`TimerGuard` 作为 watcher 的成员，析构时自动 unregister。watcher 析构 → guard 成员析构 → unregister，顺序自然安全
+1. **`IoGuard`/`TimerGuard` 必须在 `EventLoop` 析构之前 unregister。** 否则 `~IoGuard()` 访问 `ctx_` 时 `EventLoop` 已销毁，野指针崩溃。
+2. 两种安全模式：
+   - **栈/成员变量**：确保 `EventLoop` 声明在 watcher **之前**，C++ 反向析构时 watcher 先析构 → guard 先 unregister → 然后 EventLoop 才析构。
+   - **heap + delete this**：回调内 `guard_.reset()` 先 unregister，然后 `delete this`。此时 EventLoop 仍存活，安全。
+3. **self-owned 时** `guard_.reset()` 必须在 `delete this` 之前调用
+4. `watch()`/`timer()` 返回的 guard 为空时（注册失败），后续操作安全无效果
 
 ---
 
