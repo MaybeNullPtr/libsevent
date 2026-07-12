@@ -147,10 +147,14 @@ public:
     virtual void onWrite(EventLoop &loop) {}
     virtual ~IoWatcher() = default;
 
+    /** 返回正在监听的 fd, 注册前为 -1. */
+    int fd() const noexcept { return fd_; }
+
 protected:
     /* EventLoop::watch() 注册时设置, trampoline 回调通过此指针传入 loop 引用.
        用户无需自行存储 EventLoop&. */
     EventLoop *loop_ = nullptr;
+    int        fd_   = -1;
 };
 
 class TimerWatcher {
@@ -246,6 +250,7 @@ public:
         h.data     = w;
 
         w->loop_  = this;
+        w->fd_    = fd;
         auto *raw = sevent_io_register(ctx_, &h);
         return IoGuard(ctx_, raw);
     }
