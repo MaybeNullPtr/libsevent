@@ -49,6 +49,11 @@ set(SEVENT_SOURCES
     src/sevent_platform.c
 )
 
+# 示例公用代码 (日志 + Ctrl+C)
+set(EXAMPLE_COMMON
+    examples/common.c
+)
+
 add_library(sevent STATIC ${SEVENT_SOURCES})
 
 target_include_directories(sevent PUBLIC
@@ -127,6 +132,52 @@ add_executable(example-thread-worker
 )
 target_include_directories(example-thread-worker PRIVATE include)
 target_link_libraries(example-thread-worker PRIVATE Threads::Threads)
+
+# ---------- C++ examples ----------
+
+enable_language(CXX)
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+add_executable(example-echo-server-oop
+    examples/echo_server_oop.cpp
+    ${SEVENT_SOURCES}
+)
+target_include_directories(example-echo-server-oop PRIVATE include)
+target_link_libraries(example-echo-server-oop PRIVATE Threads::Threads)
+
+add_executable(example-timer-oop
+    examples/timer_oop.cpp
+    ${SEVENT_SOURCES}
+)
+target_include_directories(example-timer-oop PRIVATE include)
+target_link_libraries(example-timer-oop PRIVATE Threads::Threads)
+
+add_executable(example-post-lambda
+    examples/post_lambda.cpp
+    ${SEVENT_SOURCES}
+)
+target_include_directories(example-post-lambda PRIVATE include)
+target_link_libraries(example-post-lambda PRIVATE Threads::Threads)
+
+# ---- 示例公用代码 (日志 + Ctrl+C) 注入所有 example ----
+
+set(EXAMPLE_TARGETS
+    example-stdin-echo
+    example-timer-demo
+    example-echo-server
+    example-echo-client
+    example-http-server
+    example-chat-server
+    example-signal-demo
+    example-thread-worker
+    example-echo-server-oop
+    example-timer-oop
+    example-post-lambda
+)
+foreach(t ${EXAMPLE_TARGETS})
+    target_sources(${t} PRIVATE ${EXAMPLE_COMMON})
+endforeach()
 
 # ---------- install ----------
 
