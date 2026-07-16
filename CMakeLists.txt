@@ -13,6 +13,8 @@ add_compile_definitions(
 option(SEVENT_RTOS "Build for RTOS (bare-metal / no POSIX threads)" OFF)
 option(SEVENT_ENABLE_EVENTFD "Use eventfd for wakeup (Linux)" ON)
 option(SEVENT_ENABLE_PIPE     "Use pipe for wakeup (POSIX)" ON)
+option(SEVENT_WS_THREAD_SAFE
+    "WebSocket client with thread-safe API (adds per-connection mutex locking)" OFF)
 
 # eventfd 可用性检查 (符号存在 + 可链接)
 include(CheckSymbolExists)
@@ -62,6 +64,27 @@ target_include_directories(sevent PUBLIC
 )
 target_link_libraries(sevent PUBLIC Threads::Threads)
 
+# ---------- WebSocket 库 ----------
+
+set(WEBSOCKET_SOURCES
+    src/websockets/ws_sha1.c
+    src/websockets/ws_base64.c
+    src/websockets/ws_frame.c
+    src/websockets/ws_handshake.c
+    src/websockets/ws_conn.c
+)
+
+add_library(sevent_ws STATIC ${WEBSOCKET_SOURCES})
+target_include_directories(sevent_ws PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(sevent_ws PUBLIC sevent)
+
+if(SEVENT_WS_THREAD_SAFE)
+    target_compile_definitions(sevent_ws PRIVATE SEVENT_WS_THREAD_SAFE)
+endif()
+
 # ---------- tests ----------
 
 add_executable(test_sevent
@@ -79,6 +102,8 @@ add_custom_target(check
 
 enable_testing()
 add_test(NAME unit_tests COMMAND test_sevent)
+add_test(NAME ws_unit_tests COMMAND test-ws)
+add_test(NAME ws_conn_tests COMMAND test-ws-conn)
 
 # ---------- examples ----------
 
@@ -93,6 +118,27 @@ add_executable(example-timer-demo
     ${SEVENT_SOURCES}
 )
 target_include_directories(example-timer-demo PRIVATE include)
+
+# ---------- WebSocket tests ----------
+
+add_executable(test-ws
+    tests/test_ws.c
+    ${WEBSOCKET_SOURCES}
+    ${SEVENT_SOURCES}
+)
+target_include_directories(test-ws PRIVATE include)
+target_link_libraries(test-ws PRIVATE Threads::Threads)
+
+add_executable(test-ws-conn
+    tests/test_ws_conn.c
+    ${WEBSOCKET_SOURCES}
+    ${SEVENT_SOURCES}
+)
+target_include_directories(test-ws-conn PRIVATE include)
+target_link_libraries(test-ws-conn PRIVATE Threads::Threads)
+if(SEVENT_WS_THREAD_SAFE)
+    target_compile_definitions(test-ws-conn PRIVATE SEVENT_WS_THREAD_SAFE)
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -132,6 +178,19 @@ add_executable(example-thread-worker
 )
 target_include_directories(example-thread-worker PRIVATE include)
 target_link_libraries(example-thread-worker PRIVATE Threads::Threads)
+
+# ---------- WebSocket example ----------
+
+add_executable(example-ws-client
+    examples/ws_client.c
+    ${WEBSOCKET_SOURCES}
+    ${SEVENT_SOURCES}
+)
+target_include_directories(example-ws-client PRIVATE include)
+target_link_libraries(example-ws-client PRIVATE Threads::Threads)
+if(SEVENT_WS_THREAD_SAFE)
+    target_compile_definitions(example-ws-client PRIVATE SEVENT_WS_THREAD_SAFE)
+endif()
 
 # ---------- C++ examples ----------
 
@@ -174,6 +233,7 @@ set(EXAMPLE_TARGETS
     example-echo-server-oop
     example-timer-oop
     example-post-lambda
+    example-ws-client
 )
 foreach(t ${EXAMPLE_TARGETS})
     target_sources(${t} PRIVATE ${EXAMPLE_COMMON})
@@ -182,4 +242,6 @@ endforeach()
 # ---------- install ----------
 
 install(TARGETS sevent DESTINATION lib)
+install(TARGETS sevent_ws DESTINATION lib)
 install(FILES include/sevent.h DESTINATION include)
+install(FILES include/sevent_ws.h DESTINATION include)

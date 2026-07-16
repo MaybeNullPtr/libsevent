@@ -316,6 +316,7 @@ static void run_io_callbacks(sevent_context *ctx, int nfds,
     for (int i = 0; i < n_io; i++) {
         struct sevent_io *io = iosnap[i];
         if (io->deleted) continue;
+        if (io->fd < 0 || io->fd >= FD_SETSIZE) continue;
         if (io->read_cb && FD_ISSET(io->fd, rfds)) {
             io->read_cb(io->data);
             *fired = 1;
