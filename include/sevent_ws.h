@@ -46,7 +46,7 @@ typedef struct sevent_ws_conn sevent_ws_conn;
 /* ===== 回调类型 ===== */
 typedef void (*sevent_ws_on_open_fn)(void *user_data);
 typedef void (*sevent_ws_on_message_fn)(void *user_data, const void *msg,
-                                         size_t len, int binary);
+                                         size_t len, int binary, int fin);
 typedef void (*sevent_ws_on_close_fn)(void *user_data, uint16_t code,
                                        const char *reason, size_t reason_len);
 typedef void (*sevent_ws_on_error_fn)(void *user_data, int err);
@@ -58,6 +58,7 @@ struct sevent_ws_config {
     const char *path;               /* 路径 ("/ws") */
     const char *sub_protocol;       /* 子协议, NULL=不协商 */
     int         ping_interval_ms;   /* 心跳间隔(ms), 0=不启用 */
+    size_t      recv_buf_size;      /* 接收缓冲区初始大小, 0=默认 4096 */
 
     /* ---- 用户回调 ---- */
     sevent_ws_on_open_fn     on_open;

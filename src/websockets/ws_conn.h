@@ -72,11 +72,23 @@ struct sevent_ws_conn {
     /* ---- 握手状态 ---- */
     char              sec_ws_key[25];     /* base64 key */
 
-    /* ---- 接收缓冲 ---- */
-    uint8_t          *rx_buf;
-    size_t            rx_cap;
-    size_t            rx_len;
-    size_t            rx_consumed;  /* 已处理的偏移 */
+    /* ---- 接收缓冲 (固定大小, 从 config->recv_buf_size) ---- */
+    uint8_t          *recv_buf;
+    size_t            recv_cap;      /* 固定值, 初始化后不变 */
+    size_t            recv_len;      /* 有效数据长度 */
+    size_t            recv_pos;      /* 已消费偏移 */
+
+    /* ---- 大帧流式读取 (单帧 > recv_cap 时分块) ---- */
+    int               stream_active;
+    uint8_t           stream_opcode;
+    uint64_t          stream_remaining;
+    int               stream_fin;    /* 原始帧 FIN 位 */
+
+    /* ---- 分片累积 (RFC 6455 §5.4, frag_buf 大小 = recv_cap) ---- */
+    int               frag_pending;     /* 1=正在接收分片序列 */
+    uint8_t           frag_opcode;      /* 原始 opcode (TEXT/BINARY) */
+    uint8_t          *frag_buf;
+    size_t            frag_len;
 
     /* ---- 写队列 (Round 5 启用) ---- */
     struct ws_write_node *write_head;

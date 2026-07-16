@@ -22,9 +22,9 @@
 static sevent_context *g_ctx;
 static sevent_ws_conn *g_ws;
 
-static void on_message(void *u, const void *m, size_t l, int bin)
+static void on_message(void *u, const void *m, size_t l, int bin, int fin)
 {
-    (void)u;
+    (void)u;(void)fin;
     printf("\n[recv] ");
     if (bin)
         printf("(binary %zu bytes)", l);
