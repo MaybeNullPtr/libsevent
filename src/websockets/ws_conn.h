@@ -59,10 +59,6 @@ struct sevent_ws_conn {
     int               ping_interval_ms;
 
     /* ---- 用户回调 ---- */
-    void             *on_open_data;
-    void             *on_message_data;
-    void             *on_close_data;
-    void             *on_error_data;
     void             *user_data;
     sevent_ws_on_open_fn     on_open;
     sevent_ws_on_message_fn  on_message;

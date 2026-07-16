@@ -75,7 +75,7 @@ static void ws_enter_closed(struct sevent_ws_conn *c, uint16_t code,
     c->state = WS_STATE_CLOSED;
     ws_close_socket(c);
     if (c->on_close)
-        c->on_close(c->on_close_data ? c->on_close_data : c->user_data,
+        c->on_close(c->user_data,
                      code, reason, reason_len);
 }
 
@@ -83,7 +83,7 @@ static void ws_fatal(struct sevent_ws_conn *c, int err)
 {
     if (c->destroyed || c->state == WS_STATE_CLOSED) return;
     if (c->on_error)
-        c->on_error(c->on_error_data ? c->on_error_data : c->user_data, err);
+        c->on_error(c->user_data, err);
     if (c->destroyed) return;  /* on_error 中 destroy 了连接 */
     ws_enter_closed(c, 0, "", 0);
 }
@@ -111,7 +111,7 @@ static int recv_read(struct sevent_ws_conn *c)
 /* 大帧流式读取: 从 recv_buf 分块回调 payload */
 static void stream_consume(struct sevent_ws_conn *c)
 {
-    void *d = c->on_message_data ? c->on_message_data : c->user_data;
+    void *d = c->user_data;
     int is_bin = (c->stream_opcode == WS_OPCODE_BINARY);
 
     while (c->recv_pos < c->recv_len && c->stream_remaining > 0) {
@@ -277,7 +277,7 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
     /* 放不下时先 flush 当前积压 (fin=0) 腾空间 */
     if (c->frag_len + len > c->recv_cap) {
         if (c->on_message && c->frag_len > 0) {
-            void *d = c->on_message_data ? c->on_message_data : c->user_data;
+            void *d = c->user_data;
             int is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
             c->on_message(d, c->frag_buf, c->frag_len, is_bin, 0);
             if (c->destroyed) return 0;
@@ -293,7 +293,7 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
 static void frag_flush(struct sevent_ws_conn *c, int fin)
 {
     if (!c->on_message) { if (fin) { c->frag_pending = 0; c->frag_len = 0; } return; }
-    void *d = c->on_message_data ? c->on_message_data : c->user_data;
+    void *d = c->user_data;
     int is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
 
     while (c->frag_len >= c->recv_cap) {
@@ -346,7 +346,7 @@ static void process_frames(struct sevent_ws_conn *c)
             if (hdr.fin) {
                 /* 单帧消息 (不分块, 一次回调) */
                 if (c->on_message) {
-                    void *d = c->on_message_data ? c->on_message_data : c->user_data;
+                    void *d = c->user_data;
                     c->on_message(d, payload, (size_t)hdr.payload_len,
                                    (hdr.opcode == WS_OPCODE_BINARY) ? 1 : 0, 1);
                 }
@@ -458,7 +458,7 @@ static void on_handshake_data(void *data)
     c->state = WS_STATE_OPEN;
     ws_update_io(c, on_data);
     if (c->on_open)
-        c->on_open(c->on_open_data ? c->on_open_data : c->user_data);
+        c->on_open(c->user_data);
     /* 握手响应 + WS 帧粘包: 立即处理残留帧 */
     if (c->recv_len > c->recv_pos)
         process_frames(c);
