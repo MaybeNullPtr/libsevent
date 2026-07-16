@@ -38,11 +38,12 @@ static void ev_open(void *d)
     (void)d;
     g_ev = 1;
 }
-static void ev_msg(void *d, const void *m, size_t l, int b, int fin)
+static void ev_msg(void *d, const void *m, size_t l, int b, int fin, uint64_t total)
 {
     (void)d;
     (void)b;
     (void)fin;
+    (void)total;
     g_ev = 2;
     size_t c = l < 255 ? l : 255;
     memcpy(g_msg, m, c);
@@ -50,10 +51,11 @@ static void ev_msg(void *d, const void *m, size_t l, int b, int fin)
 }
 
 /* 分片测试专用回调: 累计调用次数 + 总长度 */
-static void ev_msg_frag(void *d, const void *m, size_t l, int b, int fin)
+static void ev_msg_frag(void *d, const void *m, size_t l, int b, int fin, uint64_t total)
 {
     (void)d;
     (void)b;
+    (void)total;
     g_ev = 2;
     g_frag_count++;
     g_frag_last_fin = fin;
@@ -82,11 +84,12 @@ static void ev_tick(void *d) { (void)d; }
 
 /* 粘包/分包测试专用: 计数 + 累积内容 */
 static int g_call_count;
-static void ev_msg_count(void *d, const void *m, size_t l, int b, int fin)
+static void ev_msg_count(void *d, const void *m, size_t l, int b, int fin, uint64_t total)
 {
     (void)d;
     (void)b;
     (void)fin;
+    (void)total;
     g_ev = 2;
     g_call_count++;
     g_frag_total += l;

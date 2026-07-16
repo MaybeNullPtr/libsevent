@@ -78,6 +78,7 @@ struct sevent_ws_conn {
     int               stream_active;
     uint8_t           stream_opcode;
     uint64_t          stream_remaining;
+    uint64_t          stream_total;  /* 原始帧 payload 总长, 传给 on_message */
     int               stream_fin;    /* 原始帧 FIN 位 */
 
     /* ---- 分片累积 (RFC 6455 §5.4, frag_buf 大小 = recv_cap) ---- */

@@ -121,7 +121,7 @@ static void stream_consume(struct sevent_ws_conn *c)
         int last = (chunk == c->stream_remaining) ? c->stream_fin : 0;
 
         if (c->on_message)
-            c->on_message(d, c->recv_buf + c->recv_pos, chunk, is_bin, last);
+            c->on_message(d, c->recv_buf + c->recv_pos, chunk, is_bin, last, c->stream_total);
         if (c->destroyed) return;
 
         c->recv_pos += chunk;
@@ -279,7 +279,7 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
         if (c->on_message && c->frag_len > 0) {
             void *d = c->user_data;
             int is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
-            c->on_message(d, c->frag_buf, c->frag_len, is_bin, 0);
+            c->on_message(d, c->frag_buf, c->frag_len, is_bin, 0, 0);
             if (c->destroyed) return 0;
         }
         c->frag_len = 0;
@@ -297,13 +297,13 @@ static void frag_flush(struct sevent_ws_conn *c, int fin)
     int is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
 
     while (c->frag_len >= c->recv_cap) {
-        c->on_message(d, c->frag_buf, c->recv_cap, is_bin, 0);
+        c->on_message(d, c->frag_buf, c->recv_cap, is_bin, 0, 0);
         if (c->destroyed) return;
         c->frag_len -= c->recv_cap;
         memmove(c->frag_buf, c->frag_buf + c->recv_cap, c->frag_len);
     }
     if (fin && c->frag_len > 0) {
-        c->on_message(d, c->frag_buf, c->frag_len, is_bin, 1);
+        c->on_message(d, c->frag_buf, c->frag_len, is_bin, 1, 0);
         if (c->destroyed) return;
         c->frag_len = 0;
         c->frag_pending = 0;
@@ -330,6 +330,7 @@ static void process_frames(struct sevent_ws_conn *c)
                 c->stream_active = 1;
                 c->stream_opcode = hdr.opcode;
                 c->stream_remaining = hdr.payload_len;
+                c->stream_total = hdr.payload_len;
                 c->stream_fin = hdr.fin;
                 c->recv_pos += (size_t)n;  /* 消费帧头 */
                 stream_consume(c);
@@ -348,7 +349,8 @@ static void process_frames(struct sevent_ws_conn *c)
                 if (c->on_message) {
                     void *d = c->user_data;
                     c->on_message(d, payload, (size_t)hdr.payload_len,
-                                   (hdr.opcode == WS_OPCODE_BINARY) ? 1 : 0, 1);
+                                   (hdr.opcode == WS_OPCODE_BINARY) ? 1 : 0, 1,
+                                   hdr.payload_len);
                 }
                 if (c->destroyed) return;
             } else {
