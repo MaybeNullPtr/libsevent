@@ -83,6 +83,11 @@ static void ev_error(void *d, int err)
 }
 static void ev_tick(void *d) { (void)d; }
 
+/* HTTP 响应回调记录 */
+static int g_http_status;
+static void ev_http_resp(void *d, int code, const char *h, size_t hl, const char *b, size_t bl)
+{ (void)d; (void)h; (void)hl; (void)b; (void)bl; g_ev = 4; g_http_status = code; }
+
 /* 粘包/分包测试专用: 计数 + 累积内容 */
 static int g_call_count;
 static void ev_msg_count(void *d, const void *m, size_t l, int b, int fin, uint64_t total)
@@ -940,6 +945,40 @@ static int t_sticky_packet(void)
     return 0;
 }
 
+/* HTTP 非 101 响应测试: 验证 on_http_response 触发 */
+static int t_http_fail(void)
+{
+    sevent_context *ctx = sevent_create();
+    if (!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host = "127.0.0.1";
+    cfg.path = "/";
+    cfg.on_open = ev_open;
+    cfg.on_http_response = ev_http_resp;
+    g_ev = 0;
+    g_http_status = 0;
+    sevent_ws_conn *ws;
+    int sfd = pair(ctx, &cfg, &ws);
+    if (sfd < 0) return 1;
+    sevent_run_once(ctx);
+    /* 读 HTTP 请求, 回 404 */
+    char req[4096];
+    ssize_t rn = read(sfd, req, sizeof(req) - 1);
+    if (rn <= 0) return 1;
+    char resp[] = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found";
+    write_all(sfd, resp, strlen(resp));
+    /* 驱动 — on_http_response 应被调用 */
+    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    for (int i = 0; i < 500; i++) { sevent_run_once(ctx); if (g_ev == 4) break; }
+    if (_tm) sevent_timer_unregister(ctx, _tm);
+    if (g_ev != 4 || g_http_status != 404) return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
 /* 多帧粘包: 两次 TEXT 帧同一次 read */
 static int t_sticky_multi_frame(void)
 {
@@ -1511,7 +1550,7 @@ int main(void)
         const char *n;
         int (*f)(void);
     } tests[] = {
-        {"lifecycle", t_lifecycle}, {"client_send_text", t_client_send_text}, {"client_send_binary", t_client_send_binary}, {"auto_pong", t_auto_pong}, {"large_msg", t_large_msg}, {"client_ping", t_client_ping}, {"client_close", t_client_close}, {"fragmentation", t_fragmentation}, {"frag_large", t_frag_large}, {"frag_many", t_frag_many}, {"frag_interleave", t_frag_interleave}, {"frag_proto_error", t_frag_proto_error}, {"sticky_packet", t_sticky_packet}, {"sticky_multi_frame", t_sticky_multi_frame}, {"sticky_stream_tail", t_sticky_stream_tail}, {"stream_total", t_stream_total}, {"split_frame", t_split_frame}, {"sticky_partial", t_sticky_partial}, {"frag_split_read", t_frag_split_read}, {"state_checks", t_state_checks}, {"cross_thread_send", t_cross_thread_send}, {"cross_thread_close", t_cross_thread_close}, {NULL, NULL}};
+        {"lifecycle", t_lifecycle}, {"client_send_text", t_client_send_text}, {"client_send_binary", t_client_send_binary}, {"auto_pong", t_auto_pong}, {"large_msg", t_large_msg}, {"client_ping", t_client_ping}, {"client_close", t_client_close}, {"fragmentation", t_fragmentation}, {"frag_large", t_frag_large}, {"frag_many", t_frag_many}, {"frag_interleave", t_frag_interleave}, {"frag_proto_error", t_frag_proto_error}, {"sticky_packet", t_sticky_packet}, {"http_fail", t_http_fail}, {"sticky_multi_frame", t_sticky_multi_frame}, {"sticky_stream_tail", t_sticky_stream_tail}, {"stream_total", t_stream_total}, {"split_frame", t_split_frame}, {"sticky_partial", t_sticky_partial}, {"frag_split_read", t_frag_split_read}, {"state_checks", t_state_checks}, {"cross_thread_send", t_cross_thread_send}, {"cross_thread_close", t_cross_thread_close}, {NULL, NULL}};
     printf("ws_conn tests\n");
     printf("=============\n");
     int ok = 0, fail = 0;

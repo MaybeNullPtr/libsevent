@@ -458,9 +458,33 @@ static void on_handshake_data(void *data)
     ws_handshake_response resp;
     int ret = ws_parse_response(c->recv_buf, c->recv_len, &resp);
     if (ret == 0) { WS_UNLOCK(c); return; }
-    if (ret < 0) { ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE); WS_UNLOCK(c); return; }
-    if (ws_verify_accept(c->sec_ws_key, resp.accept) != 0) {
+    if (ret < 0) {
+        /* 失败时如有 on_http_response 则回调原始数据 */
+        if (c->on_http_response)
+            c->on_http_response(c->user_data, resp.status_code,
+                                (const char *)c->recv_buf, c->recv_len, "", 0);
         ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE); WS_UNLOCK(c); return;
+    }
+    /* 分离 header (含状态行) 和 body */
+    const char *headers = (const char *)c->recv_buf;
+    size_t hlen = (size_t)ret;
+    const char *body = (const char *)c->recv_buf + ret;
+    size_t blen = c->recv_len - (size_t)ret;
+
+    if (c->on_http_response) {
+        if (resp.status_code != 101 || ws_verify_accept(c->sec_ws_key, resp.accept) != 0) {
+            /* 非 101 或 accept 不匹配 → 回调让上层处理 */
+            c->on_http_response(c->user_data, resp.status_code,
+                                headers, hlen, body, blen);
+            if (c->destroyed) { WS_UNLOCK(c); return; }
+            ws_enter_closed(c, 0, "", 0);
+            WS_UNLOCK(c); return;
+        }
+    } else {
+        /* 兼容旧模式: 库内部校验 accept */
+        if (ws_verify_accept(c->sec_ws_key, resp.accept) != 0) {
+            ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE); WS_UNLOCK(c); return;
+        }
     }
     c->recv_pos = (size_t)ret;  /* 跳过 HTTP 响应, 保留可能的 WS 帧 */
     c->state = WS_STATE_OPEN;
@@ -522,6 +546,7 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev,
     }
     c->on_open = cfg->on_open; c->on_message = cfg->on_message;
     c->on_close = cfg->on_close; c->on_error = cfg->on_error;
+    c->on_http_response = cfg->on_http_response;
     c->user_data = cfg->user_data;
 
     /* 固定大小接收/分片缓冲区 */

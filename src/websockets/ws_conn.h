@@ -60,10 +60,11 @@ struct sevent_ws_conn {
 
     /* ---- 用户回调 ---- */
     void             *user_data;
-    sevent_ws_on_open_fn     on_open;
-    sevent_ws_on_message_fn  on_message;
-    sevent_ws_on_close_fn    on_close;
-    sevent_ws_on_error_fn    on_error;
+    sevent_ws_on_open_fn            on_open;
+    sevent_ws_on_message_fn         on_message;
+    sevent_ws_on_close_fn           on_close;
+    sevent_ws_on_error_fn           on_error;
+    sevent_ws_on_http_response_fn   on_http_response;
 
     /* ---- 握手状态 ---- */
     char              sec_ws_key[25];     /* base64 key */
