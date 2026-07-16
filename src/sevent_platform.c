@@ -34,6 +34,13 @@ int sevent_mutex_destroy(sevent_mutex_t *m)
     return 0;
 }
 
+int sevent_mutex_init_recursive(sevent_mutex_t *m)
+{
+    /* TODO: RTOS 递归互斥量创建 */
+    (void)m;
+    return 0;
+}
+
 #else /* POSIX */
 
 int sevent_mutex_init(sevent_mutex_t *m)
@@ -54,6 +61,17 @@ int sevent_mutex_unlock(sevent_mutex_t *m)
 int sevent_mutex_destroy(sevent_mutex_t *m)
 {
     return pthread_mutex_destroy(m);
+}
+
+int sevent_mutex_init_recursive(sevent_mutex_t *m)
+{
+    pthread_mutexattr_t a;
+    int r = pthread_mutexattr_init(&a);
+    if (r) return r;
+    pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+    r = pthread_mutex_init(m, &a);
+    pthread_mutexattr_destroy(&a);
+    return r;
 }
 
 #endif /* SEVENT_RTOS */

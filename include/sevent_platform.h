@@ -36,6 +36,7 @@ int sevent_mutex_init(sevent_mutex_t *m);
 int sevent_mutex_lock(sevent_mutex_t *m);
 int sevent_mutex_unlock(sevent_mutex_t *m);
 int sevent_mutex_destroy(sevent_mutex_t *m);
+int sevent_mutex_init_recursive(sevent_mutex_t *m);
 
 /* ---- 线程ID ---- */
 typedef unsigned long sevent_thread_t;
@@ -60,6 +61,7 @@ int sevent_mutex_init(sevent_mutex_t *m);
 int sevent_mutex_lock(sevent_mutex_t *m);
 int sevent_mutex_unlock(sevent_mutex_t *m);
 int sevent_mutex_destroy(sevent_mutex_t *m);
+int sevent_mutex_init_recursive(sevent_mutex_t *m);
 
 /* ---- 线程ID ---- */
 typedef pthread_t sevent_thread_t;

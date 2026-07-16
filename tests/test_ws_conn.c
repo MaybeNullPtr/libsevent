@@ -17,6 +17,9 @@
 #include <pthread.h>
 #endif
 
+/* 抑制 CI 上 -Werror=unused-result */
+#define WS_WRITE(fd, buf, len)  do { ssize_t _wr = write(fd, buf, len); (void)_wr; } while (0)
+
 static int g_ev;
 static char g_msg[256];
 
@@ -64,7 +67,7 @@ static int shake(int sfd)
         "HTTP/1.1 101 Switching Protocols\r\n"
         "Upgrade: websocket\r\nConnection: Upgrade\r\n"
         "Sec-WebSocket-Accept: %s\r\n\r\n",ac);
-    write(sfd,resp,(size_t)rn); return 0;
+                        WS_WRITE(sfd,resp,(size_t)rn); return 0;
 }
 
 /* wsend: 服务端发 WS 帧 (无掩码) */
@@ -72,7 +75,7 @@ static void wsend(int fd, uint8_t op, const void *p, uint64_t l)
 {
     uint8_t b[4096]; int h=ws_frame_build_header(b,1,op,NULL,l);
     if(p&&l) memcpy(b+h,p,(size_t)l);
-    write(fd,b,(size_t)(h+(int)l));
+                        WS_WRITE(fd,b,(size_t)(h+(int)l));
 }
 
 /* wread: 服务端读 WS 帧, 返回 payload 长度 */
@@ -97,7 +100,7 @@ static int t_lifecycle(void)
     wsend(sfd,WS_OPCODE_TEXT,"Hello",5); g_ev=1;
     for(int i=0;i<50;i++){sevent_run_once(ctx);if(g_ev==2)break;} if(g_ev!=2||strcmp(g_msg,"Hello"))return 1;
     uint8_t cp[6]; int hl=ws_frame_build_header(cp,1,WS_OPCODE_CLOSE,NULL,2);
-    cp[hl]=0x03; cp[hl+1]=(uint8_t)0xE8; write(sfd,cp,(size_t)(hl+2)); g_ev=2;
+    cp[hl]=0x03; cp[hl+1]=(uint8_t)0xE8; WS_WRITE(sfd,cp,(size_t)(hl+2)); g_ev=2;
     for(int i=0;i<100;i++){sevent_run_once(ctx);if(g_ev==3)break;} if(g_ev!=3)return 1;
     close(sfd); sevent_ws_destroy(ws); sevent_destroy(ctx); return 0;
 }
@@ -186,7 +189,7 @@ static int t_client_close(void)
     if(plen<1||h.opcode!=WS_OPCODE_CLOSE)return 1;
     uint16_t code=(uint16_t)((pay[0]<<8)|pay[1]); if(code!=1000)return 1;
     uint8_t cp[8]; int hl=ws_frame_build_header(cp,1,WS_OPCODE_CLOSE,NULL,2);
-    cp[hl]=pay[0]; cp[hl+1]=pay[1]; write(sfd,cp,(size_t)(hl+2)); g_ev=2;
+    cp[hl]=pay[0]; cp[hl+1]=pay[1];                     WS_WRITE(sfd,cp,(size_t)(hl+2)); g_ev=2;
     for(int i=0;i<50;i++){sevent_run_once(ctx);if(g_ev==3)break;} if(g_ev!=3)return 1;
     close(sfd); sevent_ws_destroy(ws); sevent_destroy(ctx); return 0;
 }
@@ -272,7 +275,7 @@ static int t_cross_thread_close(void)
 
     /* 回 Close 帧 */
     uint8_t cp[4]; int hl=ws_frame_build_header(cp,1,WS_OPCODE_CLOSE,NULL,2);
-    cp[hl]=pay[0]; cp[hl+1]=pay[1]; write(sfd,cp,(size_t)(hl+2));
+    cp[hl]=pay[0]; cp[hl+1]=pay[1]; WS_WRITE(sfd,cp,(size_t)(hl+2));
     g_ev=2;
     for(int i=0;i<50;i++){sevent_run_once(ctx);if(g_ev==3)break;}
     if(g_ev!=3)return 1;
