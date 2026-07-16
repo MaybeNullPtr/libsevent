@@ -32,6 +32,7 @@ static int g_frag_count;
 static int g_frag_last_fin;
 static size_t g_frag_len;   /* g_msg 累计长度(受 256 限制) */
 static size_t g_frag_total; /* 实际累计字节数(无限制) */
+static uint64_t g_last_total;  /* 最近一次 on_message 的 total 参数 */
 
 static void ev_open(void *d)
 {
@@ -43,7 +44,7 @@ static void ev_msg(void *d, const void *m, size_t l, int b, int fin, uint64_t to
     (void)d;
     (void)b;
     (void)fin;
-    (void)total;
+    g_last_total = total;
     g_ev = 2;
     size_t c = l < 255 ? l : 255;
     memcpy(g_msg, m, c);
@@ -55,7 +56,7 @@ static void ev_msg_frag(void *d, const void *m, size_t l, int b, int fin, uint64
 {
     (void)d;
     (void)b;
-    (void)total;
+    g_last_total = total;
     g_ev = 2;
     g_frag_count++;
     g_frag_last_fin = fin;
@@ -89,7 +90,7 @@ static void ev_msg_count(void *d, const void *m, size_t l, int b, int fin, uint6
     (void)d;
     (void)b;
     (void)fin;
-    (void)total;
+    g_last_total = total;
     g_ev = 2;
     g_call_count++;
     g_frag_total += l;
@@ -266,7 +267,7 @@ static int t_lifecycle(void)
         if (g_ev == 2)
             break;
     }
-    if (g_ev != 2 || strcmp(g_msg, "Hello"))
+    if (g_ev != 2 || strcmp(g_msg, "Hello") || g_last_total != 5)
         return 1;
     uint8_t cp[6];
     int hl = ws_frame_build_header(cp, 1, WS_OPCODE_CLOSE, NULL, 2);
@@ -448,7 +449,7 @@ static int t_large_msg(void)
         if (g_ev == 2)
             break;
     }
-    if (g_ev != 2 || strlen(g_msg) != 200)
+    if (g_ev != 2 || strlen(g_msg) != 200 || g_last_total != 200)
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
@@ -930,7 +931,7 @@ static int t_sticky_packet(void)
     }
     if (_tm)
         sevent_timer_unregister(ctx, _tm);
-    if (g_ev != 2 || strcmp(g_msg, "Stick"))
+    if (g_ev != 2 || strcmp(g_msg, "Stick") || g_last_total != 5)
         return 1;
 
     close(sfd);
@@ -990,7 +991,7 @@ static int t_sticky_multi_frame(void)
     }
     if (_tm)
         sevent_timer_unregister(ctx, _tm);
-    if (g_call_count != 2)
+    if (g_call_count != 2 || g_last_total != 2)
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
@@ -1053,8 +1054,50 @@ static int t_sticky_stream_tail(void)
     }
     if (_tm)
         sevent_timer_unregister(ctx, _tm);
-    if (g_call_count != 3 || g_frag_total != 5004)
+    if (g_call_count != 3 || g_frag_total != 5004 || g_last_total != 4)
         return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+/* 大帧流式 total 验证: 单帧 5000 字节 > recv_cap, 每块 total=5000 */
+static int t_stream_total(void)
+{
+    sevent_context *ctx = sevent_create();
+    if (!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host = "127.0.0.1";
+    cfg.path = "/";
+    cfg.on_open = ev_open;
+    cfg.on_message = ev_msg_count;
+    cfg.recv_buf_size = 4096;
+    g_ev = 0;
+    g_call_count = 0;
+    g_frag_len = 0;
+    g_frag_total = 0;
+    g_msg[0] = 0;
+    sevent_ws_conn *ws;
+    int sfd = pair(ctx, &cfg, &ws);
+    if (sfd < 0) return 1;
+    sevent_run_once(ctx);
+    if (shake(sfd) < 0) return 1;
+    for (int i = 0; i < 200; i++) { sevent_run_once(ctx); if (g_ev == 1) break; }
+    if (g_ev != 1) return 1;
+    /* 单帧 5000 字节 */
+    uint8_t b[8192];
+    char big[5000];
+    memset(big, 'X', 5000);
+    int hl = ws_frame_build_header(b, 1, WS_OPCODE_TEXT, NULL, 5000);
+    memcpy(b + hl, big, 5000);
+    write_all(sfd, b, (size_t)(hl + 5000));
+    /* 驱动 — 流式分块, 每块 total 应为 5000 */
+    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    for (int i = 0; i < 1000; i++) { sevent_run_once(ctx); if (g_call_count == 2) break; }
+    if (_tm) sevent_timer_unregister(ctx, _tm);
+    if (g_call_count != 2 || g_last_total != 5000) return 1;
     close(sfd);
     sevent_ws_destroy(ws);
     sevent_destroy(ctx);
@@ -1121,7 +1164,7 @@ static int t_split_frame(void)
     }
     if (_tm)
         sevent_timer_unregister(ctx, _tm);
-    if (g_ev != 2 || strcmp(g_msg, "Hello"))
+    if (g_ev != 2 || strcmp(g_msg, "Hello") || g_last_total != 5)
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
@@ -1178,7 +1221,7 @@ static int t_sticky_partial(void)
     }
     if (_tm)
         sevent_timer_unregister(ctx, _tm);
-    if (g_ev != 2 || strcmp(g_msg, "Full"))
+    if (g_ev != 2 || strcmp(g_msg, "Full") || g_last_total != 4)
         return 1;
     /* 补充第二帧剩余 */
     g_ev = 0;
@@ -1193,7 +1236,7 @@ static int t_sticky_partial(void)
     }
     if (_tm)
         sevent_timer_unregister(ctx, _tm);
-    if (g_ev != 2 || strcmp(g_msg, "Partial!"))
+    if (g_ev != 2 || strcmp(g_msg, "Partial!") || g_last_total != 8)
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
@@ -1266,7 +1309,7 @@ static int t_frag_split_read(void)
     }
     if (_tm)
         sevent_timer_unregister(ctx, _tm);
-    if (g_call_count != 1 || g_frag_total != 11 || strcmp(g_msg, "Hello World"))
+    if (g_call_count != 1 || g_frag_total != 11 || g_last_total != 11 || strcmp(g_msg, "Hello World"))
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
@@ -1468,7 +1511,7 @@ int main(void)
         const char *n;
         int (*f)(void);
     } tests[] = {
-        {"lifecycle", t_lifecycle}, {"client_send_text", t_client_send_text}, {"client_send_binary", t_client_send_binary}, {"auto_pong", t_auto_pong}, {"large_msg", t_large_msg}, {"client_ping", t_client_ping}, {"client_close", t_client_close}, {"fragmentation", t_fragmentation}, {"frag_large", t_frag_large}, {"frag_many", t_frag_many}, {"frag_interleave", t_frag_interleave}, {"frag_proto_error", t_frag_proto_error}, {"sticky_packet", t_sticky_packet}, {"sticky_multi_frame", t_sticky_multi_frame}, {"sticky_stream_tail", t_sticky_stream_tail}, {"split_frame", t_split_frame}, {"sticky_partial", t_sticky_partial}, {"frag_split_read", t_frag_split_read}, {"state_checks", t_state_checks}, {"cross_thread_send", t_cross_thread_send}, {"cross_thread_close", t_cross_thread_close}, {NULL, NULL}};
+        {"lifecycle", t_lifecycle}, {"client_send_text", t_client_send_text}, {"client_send_binary", t_client_send_binary}, {"auto_pong", t_auto_pong}, {"large_msg", t_large_msg}, {"client_ping", t_client_ping}, {"client_close", t_client_close}, {"fragmentation", t_fragmentation}, {"frag_large", t_frag_large}, {"frag_many", t_frag_many}, {"frag_interleave", t_frag_interleave}, {"frag_proto_error", t_frag_proto_error}, {"sticky_packet", t_sticky_packet}, {"sticky_multi_frame", t_sticky_multi_frame}, {"sticky_stream_tail", t_sticky_stream_tail}, {"stream_total", t_stream_total}, {"split_frame", t_split_frame}, {"sticky_partial", t_sticky_partial}, {"frag_split_read", t_frag_split_read}, {"state_checks", t_state_checks}, {"cross_thread_send", t_cross_thread_send}, {"cross_thread_close", t_cross_thread_close}, {NULL, NULL}};
     printf("ws_conn tests\n");
     printf("=============\n");
     int ok = 0, fail = 0;

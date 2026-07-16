@@ -86,6 +86,7 @@ struct sevent_ws_conn {
     uint8_t           frag_opcode;      /* 原始 opcode (TEXT/BINARY) */
     uint8_t          *frag_buf;
     size_t            frag_len;
+    uint64_t          frag_total;    /* 分片累积总字节, 传给 on_message */
 
     /* ---- 写队列 (Round 5 启用) ---- */
     struct ws_write_node *write_head;

@@ -284,6 +284,7 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
         }
         c->frag_len = 0;
     }
+    c->frag_total += len;
     memcpy(c->frag_buf + c->frag_len, data, len);
     c->frag_len += len;
     return 0;
@@ -292,7 +293,10 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
 /* 从 frag_buf 吐出完整块给 on_message, fin=1 表示最后一次 */
 static void frag_flush(struct sevent_ws_conn *c, int fin)
 {
-    if (!c->on_message) { if (fin) { c->frag_pending = 0; c->frag_len = 0; } return; }
+    if (!c->on_message) {
+        if (fin) { c->frag_pending = 0; c->frag_len = 0; c->frag_total = 0; }
+        return;
+    }
     void *d = c->user_data;
     int is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
 
@@ -303,12 +307,14 @@ static void frag_flush(struct sevent_ws_conn *c, int fin)
         memmove(c->frag_buf, c->frag_buf + c->recv_cap, c->frag_len);
     }
     if (fin && c->frag_len > 0) {
-        c->on_message(d, c->frag_buf, c->frag_len, is_bin, 1, 0);
+        c->on_message(d, c->frag_buf, c->frag_len, is_bin, 1, c->frag_total);
         if (c->destroyed) return;
         c->frag_len = 0;
         c->frag_pending = 0;
+        c->frag_total = 0;
     } else if (fin) {
         c->frag_pending = 0;
+        c->frag_total = 0;
     }
 }
 
