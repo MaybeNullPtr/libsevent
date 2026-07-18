@@ -118,6 +118,31 @@ add_custom_target(check
     DEPENDS test_sevent
 )
 
+# ---------- 代码格式化 (需要 clang-format) ----------
+
+find_program(CLANG_FORMAT clang-format-15 clang-format)
+if(NOT CLANG_FORMAT)
+    message(WARNING "clang-format not found, format targets disabled")
+else()
+file(GLOB_RECURSE SEVENT_FORMAT_FILES
+    ${CMAKE_SOURCE_DIR}/src/*
+    ${CMAKE_SOURCE_DIR}/include/*
+    ${CMAKE_SOURCE_DIR}/tests/*
+    ${CMAKE_SOURCE_DIR}/examples/*.c ${CMAKE_SOURCE_DIR}/examples/*.cpp
+    ${CMAKE_SOURCE_DIR}/examples/*.hpp ${CMAKE_SOURCE_DIR}/examples/*.h
+)
+
+add_custom_target(format
+    COMMAND ${CLANG_FORMAT} -i -style=file ${SEVENT_FORMAT_FILES}
+    COMMENT "Formatting source files with clang-format ..."
+)
+
+add_custom_target(check-format
+    COMMAND ${CLANG_FORMAT} --dry-run -Werror -style=file ${SEVENT_FORMAT_FILES}
+    COMMENT "Checking code format compliance ..."
+)
+endif()
+
 enable_testing()
 add_test(NAME unit_tests COMMAND test_sevent)
 add_test(NAME ws_unit_tests COMMAND test-ws)

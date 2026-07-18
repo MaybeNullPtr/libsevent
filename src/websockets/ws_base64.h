@@ -25,8 +25,7 @@ size_t ws_base64_encode_size(size_t raw_len);
  * dst_cap: 输出容量 (应 >= ws_base64_encode_size(raw_len))
  * 返回:    写入 dst 的字节数 (不含 NUL), <0 表示 dst 容量不足.
  */
-int ws_base64_encode(const void *raw, size_t raw_len,
-                      char *dst, size_t dst_cap);
+int ws_base64_encode(const void *raw, size_t raw_len, char *dst, size_t dst_cap);
 
 #ifdef __cplusplus
 }

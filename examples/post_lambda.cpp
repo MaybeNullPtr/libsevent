@@ -18,13 +18,10 @@
 
 /* ---- main ---- */
 
-int main()
-{
+int main() {
     sevent::EventLoop loop;
 
-    register_stop_fn([](void *p) {
-        static_cast<sevent::EventLoop *>(p)->stop();
-    }, &loop);
+    register_stop_fn([](void *p) { static_cast<sevent::EventLoop *>(p)->stop(); }, &loop);
 
     LOG("started (Ctrl+C to stop)");
 
@@ -34,9 +31,7 @@ int main()
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         LOG("[worker] posting result to event loop...");
 
-        loop.post([&] {
-            LOG("[loop] received worker result");
-        });
+        loop.post([&] { LOG("[loop] received worker result"); });
     });
 
     /* ---- dispatch: 同一线程（回调内） ---- */
@@ -45,9 +40,7 @@ int main()
         LOG("[loop] first post, dispatching another task...");
 
         /* 在 loop 线程内 dispatch = 立即执行 */
-        loop.dispatch([&] {
-            LOG("[loop] dispatch immediate inside callback");
-        });
+        loop.dispatch([&] { LOG("[loop] dispatch immediate inside callback"); });
     });
 
     loop.run();

@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define WS_SHA1_DIGEST_SIZE 20  /* 160 bits */
+#define WS_SHA1_DIGEST_SIZE 20 /* 160 bits */
 
 typedef struct {
     uint32_t state[5];

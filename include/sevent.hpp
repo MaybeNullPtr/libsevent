@@ -37,23 +37,19 @@ class TimerWatcher;
 
 class IoGuard {
     friend class EventLoop;
+
 public:
     IoGuard() = default;
 
     ~IoGuard() { cleanup(); }
 
-    IoGuard(const IoGuard &) = delete;
+    IoGuard(const IoGuard &)            = delete;
     IoGuard &operator=(const IoGuard &) = delete;
 
-    IoGuard(IoGuard &&o) noexcept
-        : ctx_(o.ctx_), h_(o.h_)
-    {
-        o.h_ = nullptr;
-    }
+    IoGuard(IoGuard &&o) noexcept : ctx_(o.ctx_), h_(o.h_) { o.h_ = nullptr; }
 
-    IoGuard &operator=(IoGuard &&o) noexcept
-    {
-        if (this != &o) {
+    IoGuard &operator=(IoGuard &&o) noexcept {
+        if(this != &o) {
             cleanup();
             ctx_ = o.ctx_;
             h_   = o.h_;
@@ -68,18 +64,15 @@ public:
     explicit operator bool() const noexcept { return h_ != nullptr; }
 
 private:
-    void cleanup()
-    {
-        if (h_) {
+    void cleanup() {
+        if(h_) {
             sevent_io_unregister(ctx_, h_);
             h_ = nullptr;
         }
     }
 
     /* EventLoop::watch() 通过此私有构造返回 IoGuard */
-    IoGuard(sevent_context *ctx, sevent_io_t h)
-        : ctx_(ctx), h_(h)
-    {}
+    IoGuard(sevent_context *ctx, sevent_io_t h) : ctx_(ctx), h_(h) {}
 
     sevent_context *ctx_ = nullptr;
     sevent_io_t     h_   = nullptr;
@@ -87,23 +80,19 @@ private:
 
 class TimerGuard {
     friend class EventLoop;
+
 public:
     TimerGuard() = default;
 
     ~TimerGuard() { cleanup(); }
 
-    TimerGuard(const TimerGuard &) = delete;
+    TimerGuard(const TimerGuard &)            = delete;
     TimerGuard &operator=(const TimerGuard &) = delete;
 
-    TimerGuard(TimerGuard &&o) noexcept
-        : ctx_(o.ctx_), h_(o.h_)
-    {
-        o.h_ = nullptr;
-    }
+    TimerGuard(TimerGuard &&o) noexcept : ctx_(o.ctx_), h_(o.h_) { o.h_ = nullptr; }
 
-    TimerGuard &operator=(TimerGuard &&o) noexcept
-    {
-        if (this != &o) {
+    TimerGuard &operator=(TimerGuard &&o) noexcept {
+        if(this != &o) {
             cleanup();
             ctx_ = o.ctx_;
             h_   = o.h_;
@@ -117,17 +106,14 @@ public:
     explicit operator bool() const noexcept { return h_ != nullptr; }
 
 private:
-    void cleanup()
-    {
-        if (h_) {
+    void cleanup() {
+        if(h_) {
             sevent_timer_unregister(ctx_, h_);
             h_ = nullptr;
         }
     }
 
-    TimerGuard(sevent_context *ctx, sevent_timer_t h)
-        : ctx_(ctx), h_(h)
-    {}
+    TimerGuard(sevent_context *ctx, sevent_timer_t h) : ctx_(ctx), h_(h) {}
 
     sevent_context *ctx_ = nullptr;
     sevent_timer_t  h_   = nullptr;
@@ -142,6 +128,7 @@ private:
 
 class IoWatcher {
     friend class EventLoop;
+
 public:
     virtual void onRead(EventLoop &loop) = 0;
     virtual void onWrite(EventLoop &loop) {}
@@ -159,9 +146,10 @@ protected:
 
 class TimerWatcher {
     friend class EventLoop;
+
 public:
     virtual void onTimer(EventLoop &loop) = 0;
-    virtual ~TimerWatcher() = default;
+    virtual ~TimerWatcher()               = default;
 
 protected:
     EventLoop *loop_ = nullptr;
@@ -176,31 +164,24 @@ protected:
 
 class EventLoop {
 public:
-    EventLoop()
-        : ctx_(sevent_create())
-    {}
+    EventLoop() : ctx_(sevent_create()) {}
 
-    ~EventLoop()
-    {
-        if (ctx_) {
+    ~EventLoop() {
+        if(ctx_) {
             sevent_destroy(ctx_);
             ctx_ = nullptr;
         }
     }
 
-    EventLoop(const EventLoop &) = delete;
+    EventLoop(const EventLoop &)            = delete;
     EventLoop &operator=(const EventLoop &) = delete;
 
-    EventLoop(EventLoop &&o) noexcept
-        : ctx_(o.ctx_)
-    {
-        o.ctx_ = nullptr;
-    }
+    EventLoop(EventLoop &&o) noexcept : ctx_(o.ctx_) { o.ctx_ = nullptr; }
 
-    EventLoop &operator=(EventLoop &&o) noexcept
-    {
-        if (this != &o) {
-            if (ctx_) sevent_destroy(ctx_);
+    EventLoop &operator=(EventLoop &&o) noexcept {
+        if(this != &o) {
+            if(ctx_)
+                sevent_destroy(ctx_);
             ctx_   = o.ctx_;
             o.ctx_ = nullptr;
         }
@@ -216,9 +197,9 @@ public:
     int runOnce() { return sevent_run_once(ctx_); }
 
     /** 通知 loop 退出. 可在回调内调用, 跨线程安全. */
-    void stop()
-    {
-        if (ctx_) sevent_stop(ctx_);
+    void stop() {
+        if(ctx_)
+            sevent_stop(ctx_);
     }
 
     /** 唤醒 select (跨线程通知 loop 有新任务). */
@@ -237,15 +218,13 @@ public:
      * @return IoGuard RAII 句柄, 析构时自动 unregister;
      *         回调中用 guard.reset() 自注销.
      */
-    IoGuard watch(int fd, IoWatcher *w,
-                  bool read = true, bool write = false)
-    {
-        if (!w || (!read && !write))
+    IoGuard watch(int fd, IoWatcher *w, bool read = true, bool write = false) {
+        if(!w || (!read && !write))
             return IoGuard();
 
         struct sevent_io_handler h;
         h.fd       = fd;
-        h.io_read  = read  ? trampoline_io_read  : nullptr;
+        h.io_read  = read ? trampoline_io_read : nullptr;
         h.io_write = write ? trampoline_io_write : nullptr;
         h.data     = w;
 
@@ -264,13 +243,12 @@ public:
      * @return TimerGuard RAII 句柄, 析构时自动 unregister;
      *         回调中用 guard.reset() 自注销.
      */
-    TimerGuard timer(unsigned int ms, TimerWatcher *w)
-    {
-        if (!w)
+    TimerGuard timer(unsigned int ms, TimerWatcher *w) {
+        if(!w)
             return TimerGuard();
 
-        w->loop_   = this;
-        auto *raw  = sevent_timer_register(ctx_, ms, trampoline_timer, w);
+        w->loop_  = this;
+        auto *raw = sevent_timer_register(ctx_, ms, trampoline_timer, w);
         return TimerGuard(ctx_, raw);
     }
 
@@ -281,15 +259,16 @@ public:
      * lambda 内部使用 operator new 分配, 执行后自动释放.
      * 返回 false 表示分配失败.
      */
-    bool post(std::function<void()> task)
-    {
-        if (!ctx_) return false;
+    bool post(std::function<void()> task) {
+        if(!ctx_)
+            return false;
 
-        auto *p = new (std::nothrow) std::function<void()>(std::move(task));
-        if (!p) return false;
+        auto *p = new(std::nothrow) std::function<void()>(std::move(task));
+        if(!p)
+            return false;
 
         int ret = sevent_post(ctx_, &trampoline_post_fn, p);
-        if (ret != 0) {
+        if(ret != 0) {
             delete p;
             return false;
         }
@@ -300,15 +279,16 @@ public:
      * 同步分派: 如在 loop 线程则立即执行, 否则入队.
      * 返回 false 表示分配失败.
      */
-    bool dispatch(std::function<void()> task)
-    {
-        if (!ctx_) return false;
+    bool dispatch(std::function<void()> task) {
+        if(!ctx_)
+            return false;
 
-        auto *p = new (std::nothrow) std::function<void()>(std::move(task));
-        if (!p) return false;
+        auto *p = new(std::nothrow) std::function<void()>(std::move(task));
+        if(!p)
+            return false;
 
         int ret = sevent_dispatch(ctx_, &trampoline_post_fn, p);
-        if (ret != 0) {
+        if(ret != 0) {
             delete p;
             return false;
         }
@@ -321,9 +301,7 @@ public:
      * 获取当前活跃对象数量快照.
      * 任一参数为 nullptr 表示不关心该项.
      */
-    void getCounts(int *io = nullptr, int *timer = nullptr,
-                   int *post = nullptr) const
-    {
+    void getCounts(int *io = nullptr, int *timer = nullptr, int *post = nullptr) const {
         sevent_get_counts(ctx_, io, timer, post);
     }
 
@@ -333,26 +311,22 @@ public:
 private:
     /* ---- C 回调 trampoline 函数 ---- */
 
-    static void trampoline_io_read(void *data)
-    {
+    static void trampoline_io_read(void *data) {
         auto *w = static_cast<IoWatcher *>(data);
         w->onRead(*w->loop_);
     }
 
-    static void trampoline_io_write(void *data)
-    {
+    static void trampoline_io_write(void *data) {
         auto *w = static_cast<IoWatcher *>(data);
         w->onWrite(*w->loop_);
     }
 
-    static void trampoline_timer(void *data)
-    {
+    static void trampoline_timer(void *data) {
         auto *w = static_cast<TimerWatcher *>(data);
         w->onTimer(*w->loop_);
     }
 
-    static void trampoline_post_fn(void *data)
-    {
+    static void trampoline_post_fn(void *data) {
         auto *f = static_cast<std::function<void()> *>(data);
         (*f)();
         delete f;
@@ -364,19 +338,13 @@ private:
 /* ---- 自由函数 ---- */
 
 /** 忽略 SIGPIPE, 避免 write 到关闭连接时进程被杀死. */
-inline void ignoreSigpipe()
-{
-    sevent_ignore_sigpipe();
-}
+inline void ignoreSigpipe() { sevent_ignore_sigpipe(); }
 
 /**
  * 替换内部分配器.
  * 应在 EventLoop 构造之前调用; 两个参数必须同时非 NULL 或同时 NULL.
  */
-inline int setAllocator(sevent_malloc_fn mf, sevent_free_fn ff)
-{
-    return sevent_set_allocator(mf, ff);
-}
+inline int setAllocator(sevent_malloc_fn mf, sevent_free_fn ff) { return sevent_set_allocator(mf, ff); }
 
 } // namespace sevent
 

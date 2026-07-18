@@ -38,8 +38,8 @@ void *sevent_i_calloc(size_t nmemb, size_t size);
  *   f = SEVENT_I_NEW_ARR(f, n);   // malloc(n * sizeof(*f))
  */
 
-#define SEVENT_I_NEW(ptr)       ((__typeof__(ptr))sevent_i_malloc(sizeof(*(ptr))))
-#define SEVENT_I_NEW0(ptr)      ((__typeof__(ptr))sevent_i_calloc(1, sizeof(*(ptr))))
-#define SEVENT_I_NEW_ARR(ptr,n) ((__typeof__(ptr))sevent_i_malloc((n) * sizeof(*(ptr))))
+#define SEVENT_I_NEW(ptr) ((__typeof__(ptr))sevent_i_malloc(sizeof(*(ptr))))
+#define SEVENT_I_NEW0(ptr) ((__typeof__(ptr))sevent_i_calloc(1, sizeof(*(ptr))))
+#define SEVENT_I_NEW_ARR(ptr, n) ((__typeof__(ptr))sevent_i_malloc((n) * sizeof(*(ptr))))
 
 #endif /* SEVENT_I_H */

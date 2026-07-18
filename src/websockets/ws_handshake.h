@@ -21,14 +21,14 @@ extern "C" {
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 /* 握手相关常量 */
-#define WS_KEY_BASE64_LEN  25   /* 16 字节随机数 → base64 (24 字符 + NUL) */
+#define WS_KEY_BASE64_LEN 25    /* 16 字节随机数 → base64 (24 字符 + NUL) */
 #define WS_ACCEPT_BASE64_LEN 29 /* 20 字节 SHA1 → base64 (含 NUL) */
 
 /* ===== 握手响应解析结果 ===== */
 typedef struct {
-    int    status_code;          /* 应 = 101 */
-    char   accept[WS_ACCEPT_BASE64_LEN]; /* Sec-WebSocket-Accept 原始值 */
-    char   protocol[64];         /* Sec-WebSocket-Protocol 协商结果 */
+    int  status_code;                  /* 应 = 101 */
+    char accept[WS_ACCEPT_BASE64_LEN]; /* Sec-WebSocket-Accept 原始值 */
+    char protocol[64];                 /* Sec-WebSocket-Protocol 协商结果 */
 } ws_handshake_response;
 
 /* ===== 生成随机 Sec-WebSocket-Key =====
@@ -44,10 +44,13 @@ void ws_gen_key(char key[WS_KEY_BASE64_LEN]);
  * sub_protocol 为 NULL 表示不请求子协议.
  * <0 表示 buf 容量不足.
  */
-int ws_build_request(char *buf, size_t cap,
-                      const char *host, uint16_t port,
-                      const char *path, const char *key,
-                      const char *sub_protocol);
+int ws_build_request(char       *buf,
+                     size_t      cap,
+                     const char *host,
+                     uint16_t    port,
+                     const char *path,
+                     const char *key,
+                     const char *sub_protocol);
 
 /* ===== 解析 HTTP 101 响应 =====
  *
@@ -56,8 +59,7 @@ int ws_build_request(char *buf, size_t cap,
  *         0  = 数据不足, 继续等待
  *         <0 = 协议错误 (非 HTTP 响应、非 101 等)
  */
-int ws_parse_response(const uint8_t *buf, size_t len,
-                       ws_handshake_response *resp);
+int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *resp);
 
 /* ===== 验证 Sec-WebSocket-Accept =====
  *

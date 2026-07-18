@@ -29,7 +29,7 @@
 
 /* ---- 互斥锁 ---- */
 typedef struct {
-    void *handle;               /* TODO: 替换为 RTOS 互斥量句柄 */
+    void *handle; /* TODO: 替换为 RTOS 互斥量句柄 */
 } sevent_mutex_t;
 
 int sevent_mutex_init(sevent_mutex_t *m);
@@ -40,8 +40,8 @@ int sevent_mutex_init_recursive(sevent_mutex_t *m);
 
 /* ---- 线程ID ---- */
 typedef unsigned long sevent_thread_t;
-#define sevent_thread_self()       ((sevent_thread_t)0)      /* TODO */
-#define sevent_thread_equal(a,b)   ((a) == (b))              /* TODO */
+#define sevent_thread_self() ((sevent_thread_t)0) /* TODO */
+#define sevent_thread_equal(a, b) ((a) == (b))    /* TODO */
 
 /* ---- 信号 ---- */
 #define SEVENT_NO_SIGPIPE
@@ -65,8 +65,8 @@ int sevent_mutex_init_recursive(sevent_mutex_t *m);
 
 /* ---- 线程ID ---- */
 typedef pthread_t sevent_thread_t;
-#define sevent_thread_self()      pthread_self()
-#define sevent_thread_equal(a,b)  pthread_equal(a,b)
+#define sevent_thread_self() pthread_self()
+#define sevent_thread_equal(a, b) pthread_equal(a, b)
 
 #endif /* SEVENT_RTOS */
 

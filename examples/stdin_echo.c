@@ -12,12 +12,11 @@
 #include <string.h>
 #include <unistd.h>
 
-static void on_stdin_read(void *data)
-{
+static void on_stdin_read(void *data) {
     (void)data;
-    char buf[256];
+    char    buf[256];
     ssize_t n = read(0, buf, sizeof(buf) - 1);
-    if (n <= 0) {
+    if(n <= 0) {
         /* EOF (Ctrl-D) → 退出 */
         printf("\nbye\n");
         /* ctx 存在 data 中？简化处理：用全局 */
@@ -29,7 +28,7 @@ static void on_stdin_read(void *data)
     printf("echo: %s", buf);
 
     /* "quit\n" → 退出 */
-    if (strcmp(buf, "quit\n") == 0) {
+    if(strcmp(buf, "quit\n") == 0) {
         extern sevent_context *g_ctx;
         sevent_stop(g_ctx);
     }
@@ -37,20 +36,19 @@ static void on_stdin_read(void *data)
 
 sevent_context *g_ctx;
 
-int main(void)
-{
+int main(void) {
     g_ctx = sevent_create();
-    if (!g_ctx) {
+    if(!g_ctx) {
         fprintf(stderr, "sevent_create failed\n");
         return 1;
     }
 
     struct sevent_io_handler h = {
-        .fd      = 0,            /* stdin */
-        .io_read = on_stdin_read,
+            .fd      = 0, /* stdin */
+            .io_read = on_stdin_read,
     };
 
-    if (!sevent_io_register(g_ctx, &h)) {
+    if(!sevent_io_register(g_ctx, &h)) {
         fprintf(stderr, "sevent_io_register failed\n");
         return 1;
     }

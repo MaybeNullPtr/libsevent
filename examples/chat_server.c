@@ -29,37 +29,38 @@
 /* ---- 客户端链表 ---- */
 
 struct client {
-    int         fd;
-    sevent_io_t h_io;
-    char        name[32];    /* fd 编号, 用于识别 */
+    int            fd;
+    sevent_io_t    h_io;
+    char           name[32]; /* fd 编号, 用于识别 */
     struct client *next;
 };
 
-static struct client  *g_clients;     /* 所有在线客户端 */
+static struct client  *g_clients; /* 所有在线客户端 */
 static sevent_context *g_ctx;
 
-static void client_list_add(struct client *c)
-{
-    c->next = g_clients;
+static void client_list_add(struct client *c) {
+    c->next   = g_clients;
     g_clients = c;
 }
 
-static void client_list_remove(struct client *c)
-{
+static void client_list_remove(struct client *c) {
     struct client **pp = &g_clients;
-    while (*pp) {
-        if (*pp == c) { *pp = c->next; return; }
+    while(*pp) {
+        if(*pp == c) {
+            *pp = c->next;
+            return;
+        }
         pp = &(*pp)->next;
     }
 }
 
 /* ---- 广播消息给所有在线客户端 ---- */
 
-static void broadcast(int from_fd, const char *msg)
-{
-    for (struct client *p = g_clients; p; p = p->next) {
-        if (p->fd == from_fd) continue; /* 不发给自己 */
-        if (write(p->fd, msg, strlen(msg)) < 0) {
+static void broadcast(int from_fd, const char *msg) {
+    for(struct client *p = g_clients; p; p = p->next) {
+        if(p->fd == from_fd)
+            continue; /* 不发给自己 */
+        if(write(p->fd, msg, strlen(msg)) < 0) {
             /* 客户端可能已断开, 下次读事件会清理 */
         }
     }
@@ -67,15 +68,14 @@ static void broadcast(int from_fd, const char *msg)
 
 /* ---- 客户端可读回调 ---- */
 
-static void on_client_read(void *data)
-{
+static void on_client_read(void *data) {
     struct client *c = (struct client *)data;
-    char buf[512];
+    char           buf[512];
 
     ssize_t n = read(c->fd, buf, sizeof(buf) - 1);
-    if (n <= 0) {
+    if(n <= 0) {
         /* 断开连接 */
-        if (n == 0) {
+        if(n == 0) {
             printf("[%s] disconnected\n", c->name);
         } else {
             perror("read");
@@ -88,51 +88,64 @@ static void on_client_read(void *data)
 
         /* 清理: 从链表移除 + 注销 IO + 关闭 fd + 释放 */
         client_list_remove(c);
-        sevent_io_unregister(g_ctx, c->h_io);  /* 回调内 unregister 自己, 安全 */
+        sevent_io_unregister(g_ctx, c->h_io); /* 回调内 unregister 自己, 安全 */
         close(c->fd);
         free(c);
         return;
     }
 
     buf[n] = '\0';
-    if (n > 0 && buf[n - 1] == '\n') buf[n - 1] = '\0'; /* 去换行 */
+    if(n > 0 && buf[n - 1] == '\n')
+        buf[n - 1] = '\0'; /* 去换行 */
 
     /* 构造带发送者前缀的消息 */
     char msg[576];
     snprintf(msg, sizeof(msg), "[%s]: %s\n", c->name, buf);
 
-    printf("%s", msg);          /* 服务端也打印 */
-    broadcast(c->fd, msg);      /* 广播给其他客户端 */
+    printf("%s", msg);     /* 服务端也打印 */
+    broadcast(c->fd, msg); /* 广播给其他客户端 */
 }
 
 /* ---- 监听 socket 可读 = 有新连接 ---- */
 
-static void on_accept(void *data)
-{
-    int listen_fd = *(int *)data;
+static void on_accept(void *data) {
+    int                listen_fd = *(int *)data;
     struct sockaddr_in addr;
-    socklen_t addrlen = sizeof(addr);
+    socklen_t          addrlen = sizeof(addr);
 
     int cfd = accept(listen_fd, (struct sockaddr *)&addr, &addrlen);
-    if (cfd < 0) {
-        if (errno != EAGAIN && errno != EINTR) perror("accept");
+    if(cfd < 0) {
+        if(errno != EAGAIN && errno != EINTR)
+            perror("accept");
         return;
     }
 
     int flags = fcntl(cfd, F_GETFL);
-    if (flags < 0) { close(cfd); return; }
+    if(flags < 0) {
+        close(cfd);
+        return;
+    }
     fcntl(cfd, F_SETFL, flags | O_NONBLOCK);
 
     struct client *c = (struct client *)calloc(1, sizeof(*c));
-    if (!c) { close(cfd); return; }
+    if(!c) {
+        close(cfd);
+        return;
+    }
     c->fd = cfd;
     snprintf(c->name, sizeof(c->name), "fd=%d", cfd);
 
     struct sevent_io_handler h = {
-        .fd = cfd, .io_read = on_client_read, .data = c,
+            .fd      = cfd,
+            .io_read = on_client_read,
+            .data    = c,
     };
     c->h_io = sevent_io_register(g_ctx, &h);
-    if (!c->h_io) { free(c); close(cfd); return; }
+    if(!c->h_io) {
+        free(c);
+        close(cfd);
+        return;
+    }
 
     client_list_add(c);
 
@@ -144,36 +157,48 @@ static void on_accept(void *data)
 
 /* ---- main ---- */
 
-int main(void)
-{
+int main(void) {
     g_ctx = sevent_create();
-    if (!g_ctx) { fprintf(stderr, "sevent_create failed\n"); return 1; }
+    if(!g_ctx) {
+        fprintf(stderr, "sevent_create failed\n");
+        return 1;
+    }
     sevent_ignore_sigpipe();
 
     int listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    if (listen_fd < 0) { perror("socket"); return 1; }
+    if(listen_fd < 0) {
+        perror("socket");
+        return 1;
+    }
 
     int optval = 1;
     setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 
     struct sockaddr_in addr = {
-        .sin_family      = AF_INET,
-        .sin_port        = htons(PORT),
-        .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+            .sin_family      = AF_INET,
+            .sin_port        = htons(PORT),
+            .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
     };
-    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind"); close(listen_fd); return 1;
+    if(bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("bind");
+        close(listen_fd);
+        return 1;
     }
-    if (listen(listen_fd, SOMAXCONN) < 0) {
-        perror("listen"); close(listen_fd); return 1;
+    if(listen(listen_fd, SOMAXCONN) < 0) {
+        perror("listen");
+        close(listen_fd);
+        return 1;
     }
 
     struct sevent_io_handler h = {
-        .fd = listen_fd, .io_read = on_accept, .data = &listen_fd,
+            .fd      = listen_fd,
+            .io_read = on_accept,
+            .data    = &listen_fd,
     };
-    if (!sevent_io_register(g_ctx, &h)) {
+    if(!sevent_io_register(g_ctx, &h)) {
         fprintf(stderr, "io_register failed\n");
-        close(listen_fd); return 1;
+        close(listen_fd);
+        return 1;
     }
 
     printf("Chat server listening on 127.0.0.1:%d\n", PORT);
@@ -184,7 +209,7 @@ int main(void)
     sevent_run(g_ctx);
 
     /* cleanup: 关闭所有在线客户端 */
-    while (g_clients) {
+    while(g_clients) {
         struct client *next = g_clients->next;
         close(g_clients->fd);
         free(g_clients);

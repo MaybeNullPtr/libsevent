@@ -38,8 +38,7 @@ extern "C" {
  */
 void log_printf(const char *file, int line, const char *fmt, ...);
 
-#define LOG(fmt, ...) \
-    log_printf(__FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define LOG(fmt, ...) log_printf(__FILE__, __LINE__, fmt, ##__VA_ARGS__)
 
 /* ---- Ctrl+C 信号处理 ---- */
 

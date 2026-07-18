@@ -17,41 +17,34 @@
 
 class Ticker : public sevent::TimerWatcher {
 public:
-    Ticker(sevent::EventLoop &loop, const char *name,
-           unsigned ms, int limit)
-        : name_(name), limit_(limit)
-    {
+    Ticker(sevent::EventLoop &loop, const char *name, unsigned ms, int limit) : name_(name), limit_(limit) {
         guard_ = loop.timer(ms, this);
     }
 
     int count() const { return count_; }
 
 private:
-    void onTimer(sevent::EventLoop &loop) override
-    {
+    void onTimer(sevent::EventLoop &loop) override {
         LOG("%s tick %d/%d", name_, ++count_, limit_);
-        if (count_ >= limit_)
-            guard_.reset();       // 自注销，仅停止本定时器
+        if(count_ >= limit_)
+            guard_.reset(); // 自注销，仅停止本定时器
     }
 
-    const char      *name_;
-    int              count_ = 0;
-    int              limit_;
-    sevent::TimerGuard guard_;   // HAS-A, 析构/reset 时 unregister
+    const char        *name_;
+    int                count_ = 0;
+    int                limit_;
+    sevent::TimerGuard guard_; // HAS-A, 析构/reset 时 unregister
 };
 
 /* ---- main ---- */
 
-int main()
-{
+int main() {
     sevent::EventLoop loop;
 
-    register_stop_fn([](void *p) {
-        static_cast<sevent::EventLoop *>(p)->stop();
-    }, &loop);
+    register_stop_fn([](void *p) { static_cast<sevent::EventLoop *>(p)->stop(); }, &loop);
 
-    Ticker fast(loop, "fast", 200,  8);
-    Ticker med( loop, "med",  500,  5);
+    Ticker fast(loop, "fast", 200, 8);
+    Ticker med(loop, "med", 500, 5);
     Ticker slow(loop, "slow", 1000, 3);
 
     LOG("demo started (fast=200ms/8, med=500ms/5, slow=1000ms/3, Ctrl+C to stop)");

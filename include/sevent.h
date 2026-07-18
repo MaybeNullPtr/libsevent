@@ -35,18 +35,18 @@ extern "C" {
 #define SEVENT_VERSION_MAJOR 1
 #define SEVENT_VERSION_MINOR 0
 #define SEVENT_VERSION_PATCH 0
-#define SEVENT_VERSION       "1.0.0"
+#define SEVENT_VERSION "1.0.0"
 
 /* ==================== 错误码 ==================== */
 
-#define SEVENT_SUCCESS       0
-#define SEVENT_ERR_INVAL   -1   /* 参数无效 */
-#define SEVENT_ERR_NOMEM   -2   /* 内存不足 */
+#define SEVENT_SUCCESS 0
+#define SEVENT_ERR_INVAL -1 /* 参数无效 */
+#define SEVENT_ERR_NOMEM -2 /* 内存不足 */
 
 /* ==================== 内存分配器 ==================== */
 
 typedef void *(*sevent_malloc_fn)(size_t size);
-typedef void  (*sevent_free_fn)(void *ptr);
+typedef void (*sevent_free_fn)(void *ptr);
 
 /*
  * 替换内部分配器.
@@ -56,30 +56,28 @@ typedef void  (*sevent_free_fn)(void *ptr);
  * 返回:     SEVENT_SUCCESS 或 SEVENT_ERR_INVAL (仅一个参数为 NULL).
  * 线程:     串行.
  */
-int sevent_set_allocator(sevent_malloc_fn malloc_fn,
-                         sevent_free_fn  free_fn);
+int sevent_set_allocator(sevent_malloc_fn malloc_fn, sevent_free_fn free_fn);
 
 /* ==================== 回调类型 ==================== */
 
-typedef void (*sevent_handler_fn)(void *data);       /* 通用回调, 用于 post */
-typedef void (*sevent_io_read_fn)(void *data);       /* fd 可读时触发 */
-typedef void (*sevent_io_write_fn)(void *data);      /* fd 可写时触发 */
-typedef void (*sevent_timer_fn)(void *data);         /* 定时器到期触发 */
+typedef void (*sevent_handler_fn)(void *data);  /* 通用回调, 用于 post */
+typedef void (*sevent_io_read_fn)(void *data);  /* fd 可读时触发 */
+typedef void (*sevent_io_write_fn)(void *data); /* fd 可写时触发 */
+typedef void (*sevent_timer_fn)(void *data);    /* 定时器到期触发 */
 
 /* ==================== 不透明句柄 ==================== */
 
-typedef struct sevent_context sevent_context;        /* 事件循环上下文 */
-typedef struct sevent_io      *sevent_io_t;          /* IO 注册句柄 */
-typedef struct sevent_timer   *sevent_timer_t;       /* 定时器句柄 */
+typedef struct sevent_context sevent_context; /* 事件循环上下文 */
+typedef struct sevent_io     *sevent_io_t;    /* IO 注册句柄 */
+typedef struct sevent_timer  *sevent_timer_t; /* 定时器句柄 */
 
 /* ==================== 公开结构体 ==================== */
 
-struct sevent_io_handler
-{
-    int                 fd;          /* 要监听的 fd                    */
-    sevent_io_read_fn   io_read;     /* 可读回调, NULL=忽略            */
-    sevent_io_write_fn  io_write;    /* 可写回调, NULL=忽略            */
-    void               *data;        /* 透传给回调的参数               */
+struct sevent_io_handler {
+    int                fd;       /* 要监听的 fd                    */
+    sevent_io_read_fn  io_read;  /* 可读回调, NULL=忽略            */
+    sevent_io_write_fn io_write; /* 可写回调, NULL=忽略            */
+    void              *data;     /* 透传给回调的参数               */
 };
 
 /* ==================== Core API ==================== */
@@ -100,7 +98,7 @@ sevent_context *sevent_create(void);
  * 后置条件: ctx 指针及所有 IO/Timer 句柄不可再用于任何 API.
  * 线程:     串行.
  */
-void            sevent_destroy(sevent_context *ctx);
+void sevent_destroy(sevent_context *ctx);
 
 /*
  * 阻塞运行事件循环, 直到 sevent_stop 被调用.
@@ -108,7 +106,7 @@ void            sevent_destroy(sevent_context *ctx);
  * 返回:     SEVENT_SUCCESS 或 SEVENT_ERR_INVAL (参数无效).
  * 线程:     串行 (单 loop 线程).
  */
-int             sevent_run(sevent_context *ctx);
+int sevent_run(sevent_context *ctx);
 
 /*
  * 执行一轮事件循环.
@@ -117,14 +115,14 @@ int             sevent_run(sevent_context *ctx);
  * 返回: 1 (有事件处理) / 0 (空闲) / <0 (select 致命错误).
  * 线程: loop 线程专用 (串行).
  */
-int             sevent_run_once(sevent_context *ctx);
+int sevent_run_once(sevent_context *ctx);
 
 /*
  * 通知事件循环退出. 回调内可安全调用, 跨线程安全.
  * 后置条件: 当前/下一轮 run_once 返回后, sevent_run 退出.
  * 线程:     跨线程 (无锁, volatile 标志).
  */
-void            sevent_stop(sevent_context *ctx);
+void sevent_stop(sevent_context *ctx);
 
 /*
  * 唤醒事件循环 (select 立即返回).
@@ -132,7 +130,7 @@ void            sevent_stop(sevent_context *ctx);
  * 线程: 跨线程 (无锁).
  * 返回: SEVENT_SUCCESS 或 SEVENT_ERR_INVAL.
  */
-int             sevent_wakeup(sevent_context *ctx);
+int sevent_wakeup(sevent_context *ctx);
 
 /*
  * 投递异步任务, loop 的 post 阶段按 FIFO 顺序执行.
@@ -140,8 +138,7 @@ int             sevent_wakeup(sevent_context *ctx);
  * 返回: SEVENT_SUCCESS 或 SEVENT_ERR_NOMEM.
  * 线程: 跨线程 (内部锁, post_lock).
  */
-int             sevent_post(sevent_context *ctx,
-                            sevent_handler_fn h, void *data);
+int sevent_post(sevent_context *ctx, sevent_handler_fn h, void *data);
 
 /*
  * 投递任务. 如果在 loop 线程内则立即执行, 否则入队等待.
@@ -149,8 +146,7 @@ int             sevent_post(sevent_context *ctx,
  * 线程: 跨线程 (loop 线程内直接调用, 其他线程走 post_lock).
  * 返回: SEVENT_SUCCESS 或 SEVENT_ERR_NOMEM.
  */
-int             sevent_dispatch(sevent_context *ctx,
-                                sevent_handler_fn h, void *data);
+int sevent_dispatch(sevent_context *ctx, sevent_handler_fn h, void *data);
 
 /* ==================== 信号 ==================== */
 
@@ -160,7 +156,7 @@ int             sevent_dispatch(sevent_context *ctx,
  * 默认不改变信号处理方式.
  * 线程: 跨线程 (无锁).
  */
-void            sevent_ignore_sigpipe(void);
+void sevent_ignore_sigpipe(void);
 
 /* ==================== I/O API ==================== */
 
@@ -172,8 +168,7 @@ void            sevent_ignore_sigpipe(void);
  * h 的内容在调用后不再使用.
  * 线程:     跨线程 (内部锁, lock).
  */
-sevent_io_t     sevent_io_register(sevent_context *ctx,
-                                   struct sevent_io_handler *h);
+sevent_io_t sevent_io_register(sevent_context *ctx, struct sevent_io_handler *h);
 
 /*
  * 注销 fd 监听, 释放内部资源.
@@ -181,7 +176,7 @@ sevent_io_t     sevent_io_register(sevent_context *ctx,
  * h 必须为有效句柄 (来自 sevent_io_register).
  * 线程: 跨线程 (内部锁, lock).
  */
-void            sevent_io_unregister(sevent_context *ctx, sevent_io_t h);
+void sevent_io_unregister(sevent_context *ctx, sevent_io_t h);
 
 /* ==================== Timer API ==================== */
 
@@ -192,9 +187,7 @@ void            sevent_io_unregister(sevent_context *ctx, sevent_io_t h);
  * 返回:     句柄, 或 NULL (interval_ms == 0 / 内存不足).
  * 线程:     跨线程 (内部锁, lock).
  */
-sevent_timer_t  sevent_timer_register(sevent_context *ctx,
-                                      unsigned int interval_ms,
-                                      sevent_timer_fn cb, void *data);
+sevent_timer_t sevent_timer_register(sevent_context *ctx, unsigned int interval_ms, sevent_timer_fn cb, void *data);
 
 /*
  * 注销定时器, 释放内部资源.
@@ -202,7 +195,7 @@ sevent_timer_t  sevent_timer_register(sevent_context *ctx,
  * h 必须为有效句柄 (来自 sevent_timer_register).
  * 线程: 跨线程 (内部锁, lock).
  */
-void            sevent_timer_unregister(sevent_context *ctx, sevent_timer_t h);
+void sevent_timer_unregister(sevent_context *ctx, sevent_timer_t h);
 
 /* ==================== 可观测性 ==================== */
 
@@ -214,9 +207,7 @@ void            sevent_timer_unregister(sevent_context *ctx, sevent_timer_t h);
  * 任一指针为 NULL 表示不关心该项, 取到的值仅为瞬间快照.
  * 线程: 跨线程 (内部锁).
  */
-void            sevent_get_counts(sevent_context *ctx,
-                                  int *io_count, int *timer_count,
-                                  int *post_count);
+void sevent_get_counts(sevent_context *ctx, int *io_count, int *timer_count, int *post_count);
 
 #ifdef __cplusplus
 }

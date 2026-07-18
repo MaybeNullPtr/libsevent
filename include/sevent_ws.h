@@ -28,52 +28,47 @@ extern "C" {
 
 /* ===== 错误码 ===== */
 /* SEVENT_SUCCESS(0) / SEVENT_ERR_INVAL(-1) / SEVENT_ERR_NOMEM(-2) 沿用 */
-#define SEVENT_WS_ERR_HANDSHAKE   0x3001  /* 服务器返回非 101 或握手头缺失 */
-#define SEVENT_WS_ERR_PROTOCOL    0x3002  /* 协议违例 (非法帧/分片错) */
-#define SEVENT_WS_ERR_CLOSE       0x3003  /* 收到 Close 帧 */
-#define SEVENT_WS_ERR_CONNECT     0x3004  /* TCP 连接失败 */
-#define SEVENT_WS_ERR_WRITE       0x3005  /* 写错误 */
+#define SEVENT_WS_ERR_HANDSHAKE 0x3001 /* 服务器返回非 101 或握手头缺失 */
+#define SEVENT_WS_ERR_PROTOCOL 0x3002  /* 协议违例 (非法帧/分片错) */
+#define SEVENT_WS_ERR_CLOSE 0x3003     /* 收到 Close 帧 */
+#define SEVENT_WS_ERR_CONNECT 0x3004   /* TCP 连接失败 */
+#define SEVENT_WS_ERR_WRITE 0x3005     /* 写错误 */
 
 /* ===== 连接状态 (用于 sevent_ws_get_state) ===== */
-#define SEVENT_WS_STATE_CONNECTING  0
-#define SEVENT_WS_STATE_OPEN        1
-#define SEVENT_WS_STATE_CLOSING     2
-#define SEVENT_WS_STATE_CLOSED      3
+#define SEVENT_WS_STATE_CONNECTING 0
+#define SEVENT_WS_STATE_OPEN 1
+#define SEVENT_WS_STATE_CLOSING 2
+#define SEVENT_WS_STATE_CLOSED 3
 
 /* ===== 不透明句柄 ===== */
 typedef struct sevent_ws_conn sevent_ws_conn;
 
 /* ===== 回调类型 ===== */
 typedef void (*sevent_ws_on_open_fn)(void *user_data);
-typedef void (*sevent_ws_on_message_fn)(void *user_data, const void *msg,
-                                         size_t len, int binary, int fin,
-                                         uint64_t total);
-typedef void (*sevent_ws_on_close_fn)(void *user_data, uint16_t code,
-                                       const char *reason, size_t reason_len);
+typedef void (*sevent_ws_on_message_fn)(
+        void *user_data, const void *msg, size_t len, int binary, int fin, uint64_t total);
+typedef void (*sevent_ws_on_close_fn)(void *user_data, uint16_t code, const char *reason, size_t reason_len);
 typedef void (*sevent_ws_on_error_fn)(void *user_data, int err);
-typedef void (*sevent_ws_on_http_response_fn)(void *user_data, int status_code,
-                                               const char *headers,
-                                               size_t headers_len,
-                                               const char *body,
-                                               size_t body_len);
+typedef void (*sevent_ws_on_http_response_fn)(
+        void *user_data, int status_code, const char *headers, size_t headers_len, const char *body, size_t body_len);
 
 /* ===== 配置结构体 ===== */
 struct sevent_ws_config {
-    const char *host;               /* 服务器主机名/IP ("127.0.0.1") */
-    uint16_t    port;               /* 端口 (80) */
-    const char *path;               /* 路径 ("/ws") */
-    const char *sub_protocol;       /* 子协议, NULL=不协商 */
-    int         ping_interval_ms;   /* 心跳间隔(ms), 0=不启用 */
-    size_t      recv_buf_size;      /* 接收缓冲区初始大小, 0=默认 4096 */
+    const char *host;             /* 服务器主机名/IP ("127.0.0.1") */
+    uint16_t    port;             /* 端口 (80) */
+    const char *path;             /* 路径 ("/ws") */
+    const char *sub_protocol;     /* 子协议, NULL=不协商 */
+    int         ping_interval_ms; /* 心跳间隔(ms), 0=不启用 */
+    size_t      recv_buf_size;    /* 接收缓冲区初始大小, 0=默认 4096 */
 
     /* ---- 用户回调 ---- */
-    sevent_ws_on_open_fn            on_open;
-    sevent_ws_on_message_fn         on_message;
-    sevent_ws_on_close_fn           on_close;
-    sevent_ws_on_error_fn           on_error;
-    sevent_ws_on_http_response_fn   on_http_response; /* HTTP 升级响应, 含非 101 */
+    sevent_ws_on_open_fn          on_open;
+    sevent_ws_on_message_fn       on_message;
+    sevent_ws_on_close_fn         on_close;
+    sevent_ws_on_error_fn         on_error;
+    sevent_ws_on_http_response_fn on_http_response; /* HTTP 升级响应, 含非 101 */
 
-    void *user_data;                /* 透传给回调的参数 */
+    void *user_data; /* 透传给回调的参数 */
 };
 
 /* ===== API ===== */
@@ -84,8 +79,7 @@ struct sevent_ws_config {
  * 返回: 句柄 (需调用 sevent_ws_destroy 释放), 或 NULL (参数错误/内存不足).
  * 线程: [loop 线程] (IO 注册内部有锁, 但配置副本写入无保护).
  */
-sevent_ws_conn *sevent_ws_connect(sevent_context *ev,
-                                   const struct sevent_ws_config *cfg);
+sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const struct sevent_ws_config *cfg);
 
 /*
  * 发送文本消息 (自动掩码).
