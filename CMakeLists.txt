@@ -4,10 +4,10 @@ project(libsevent VERSION 1.0.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# POSIX 扩展: clock_gettime
+# POSIX 扩展: 启用 clock_gettime / getaddrinfo / pthreads
+# _XOPEN_SOURCE=700 = SUSv4 (POSIX.1-2008 + XSI)
 add_compile_definitions(
-    _XOPEN_SOURCE=500
-    _POSIX_C_SOURCE=199309L
+    _XOPEN_SOURCE=700
 )
 
 option(SEVENT_RTOS "Build for RTOS (bare-metal / no POSIX threads)" OFF)
@@ -63,6 +63,7 @@ endif()
 
 set(SEVENT_SOURCES
     src/sevent.c
+    src/sevent_dns.c
     src/sevent_platform.c
 )
 
@@ -238,6 +239,15 @@ if(SEVENT_WS_THREAD_SAFE)
     target_compile_definitions(example-ws-client PRIVATE SEVENT_WS_THREAD_SAFE)
 endif()
 
+# ---------- DNS example ----------
+
+add_executable(example-dns-demo
+    examples/dns_demo.c
+    ${SEVENT_SOURCES}
+)
+target_include_directories(example-dns-demo PRIVATE include)
+target_link_libraries(example-dns-demo PRIVATE Threads::Threads)
+
 # ---------- C++ examples ----------
 
 enable_language(CXX)
@@ -280,6 +290,7 @@ set(EXAMPLE_TARGETS
     example-timer-oop
     example-post-lambda
     example-ws-client
+    example-dns-demo
 )
 foreach(t ${EXAMPLE_TARGETS})
     target_sources(${t} PRIVATE ${EXAMPLE_COMMON})

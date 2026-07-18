@@ -5,6 +5,7 @@
  * ========================================================================= */
 
 #include "sevent.h"
+#include "../src/sevent_dns.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1378,9 +1379,71 @@ TEST(observability_combined) {
     sevent_destroy(ctx);
 }
 
+/* ==================== DNS 解析测试 ==================== */
+
+TEST(dns_resolve) {
+    struct sockaddr_storage addr;
+    socklen_t               addrlen;
+    struct sockaddr_in     *sin;
+    struct sockaddr_in6    *sin6;
+
+    /* 1) IPv4 字面量 fast path */
+    ASSERT_EQ(0, sevent_dns_resolve("127.0.0.1", 80, &addr, &addrlen));
+    ASSERT_EQ(sizeof(struct sockaddr_in), addrlen);
+    sin = (struct sockaddr_in *)&addr;
+    ASSERT_EQ(AF_INET, sin->sin_family);
+    ASSERT_EQ(htons(80), sin->sin_port);
+
+    /* 2) IPv6 字面量 fast path */
+    ASSERT_EQ(0, sevent_dns_resolve("::1", 443, &addr, &addrlen));
+    ASSERT_EQ(sizeof(struct sockaddr_in6), addrlen);
+    sin6 = (struct sockaddr_in6 *)&addr;
+    ASSERT_EQ(AF_INET6, sin6->sin6_family);
+    ASSERT_EQ(htons(443), sin6->sin6_port);
+
+    /* 3) 常见 IP 地址 @ 非常用端口 */
+    ASSERT_EQ(0, sevent_dns_resolve("192.168.1.1", 8080, &addr, &addrlen));
+    sin = (struct sockaddr_in *)&addr;
+    ASSERT_EQ(AF_INET, sin->sin_family);
+    ASSERT_EQ(htons(8080), sin->sin_port);
+
+    /* 4) localhost DNS (hosts 解析, 无网络依赖) */
+    ASSERT_EQ(0, sevent_dns_resolve("localhost", 22, &addr, &addrlen));
+    ASSERT(addrlen >= sizeof(struct sockaddr_in));
+    ASSERT(AF_INET == addr.ss_family || AF_INET6 == addr.ss_family);
+
+    /* 5) 公共域名 (无反代, 国内优先) */
+    {
+        const char *public_domains[] = {
+            "example.com", /* IANA 保留, 长期有效 */
+            "baidu.com",   /* 国内 */
+            "qq.com",      /* 国内 */
+        };
+        for(size_t i = 0; i < sizeof(public_domains) / sizeof(public_domains[0]); i++) {
+            int rc = sevent_dns_resolve(public_domains[i], 80, &addr, &addrlen);
+            if(rc == 0) {
+                ASSERT(addrlen >= sizeof(struct sockaddr_in));
+                ASSERT(AF_INET == addr.ss_family || AF_INET6 == addr.ss_family);
+            } else {
+                fprintf(stderr, "      [SKIP] %s resolve failed (no network?)\n",
+                        public_domains[i]);
+            }
+        }
+    }
+
+    /* 6) 错误: NULL 参数 */
+    ASSERT_EQ(-1, sevent_dns_resolve(NULL, 80, &addr, &addrlen));
+    ASSERT_EQ(-1, sevent_dns_resolve("localhost", 80, NULL, &addrlen));
+    ASSERT_EQ(-1, sevent_dns_resolve("localhost", 80, &addr, NULL));
+
+    /* 7) 错误: 不存在的域名 */
+    ASSERT_EQ(-1, sevent_dns_resolve("nosuchdomain-123456789.example", 80, &addr, &addrlen));
+}
+
 /* ==================== 测试清单 (X-MACRO) ==================== */
 
 #define TEST_LIST                                                                                                                       \
+    T(dns_resolve)                                                                                                                      \
     T(core_create_destroy)                                                                                                              \
     T(core_create_destroy_many)                                                                                                         \
     T(core_run_stop)                                                                                                                    \
