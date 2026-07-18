@@ -149,7 +149,7 @@ static void stream_consume(struct sevent_ws_conn *c) {
  * ==================================================================== */
 
 static int ws_enqueue(struct sevent_ws_conn *c, uint8_t *data, size_t len, int is_ctrl) {
-    struct ws_write_node *n = SEVENT_I_NEW(n);
+    ws_write_node *n = SEVENT_I_NEW(n);
     if(!n) {
         sevent_i_free(data);
         return -1;
@@ -179,7 +179,7 @@ static int ws_enqueue(struct sevent_ws_conn *c, uint8_t *data, size_t len, int i
 /* 尝试写队列中的数据; 返回还剩余多少字节未写入 */
 static size_t ws_flush(struct sevent_ws_conn *c) {
     while(c->write_head) {
-        struct ws_write_node *n = c->write_head;
+        ws_write_node *n = c->write_head;
         ssize_t               w = write(c->fd, n->data + n->offset, n->len - n->offset);
         if(w > 0) {
             n->offset += (size_t)w;
@@ -774,9 +774,9 @@ void sevent_ws_destroy(sevent_ws_conn *c) {
     ws_close_socket(c);
     sevent_i_free(c->recv_buf);
     sevent_i_free(c->frag_buf);
-    struct ws_write_node *wn = c->write_head;
+    ws_write_node *wn = c->write_head;
     while(wn) {
-        struct ws_write_node *n = wn->next;
+        ws_write_node *n = wn->next;
         sevent_i_free(wn->data);
         sevent_i_free(wn);
         wn = n;

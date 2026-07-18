@@ -28,13 +28,13 @@ enum ws_state {
 };
 
 /* 写缓冲节点 (Round 5 启用) */
-struct ws_write_node {
+typedef struct ws_write_node {
     struct ws_write_node *next;
     uint8_t              *data;    /* 完整帧 (含帧头) */
     size_t                len;     /* 总长度 */
     size_t                offset;  /* 已写入偏移 */
     int                   is_ctrl; /* 控制帧, 优先发送 */
-};
+} ws_write_node;
 
 /* 内部连接结构 */
 struct sevent_ws_conn {
@@ -90,8 +90,8 @@ struct sevent_ws_conn {
     uint64_t frag_total; /* 分片累积总字节, 传给 on_message */
 
     /* ---- 写队列 (Round 5 启用) ---- */
-    struct ws_write_node *write_head;
-    struct ws_write_node *write_tail;
+    ws_write_node *write_head;
+    ws_write_node *write_tail;
     int                   write_count;
 
     /* ---- 关闭状态 ---- */
