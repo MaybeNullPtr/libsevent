@@ -19,14 +19,20 @@ extern "C" {
 /*
  * 解析 host:port → sockaddr.
  *
- * host      — 域名或 IP 字符串 (v4/v6)
- * port      — 端口号
- * out_addr  — 输出 sockaddr_storage, 可直接用于 connect()
- * out_addrlen — 输出 addr 的实际长度
+ * === 阻塞说明 ===
+ * 这是一个同步阻塞函数:
+ *   - 字面 IP (如 "1.2.3.4"): 纯内存操作, 几乎不阻塞
+ *   - 域名 (如 "example.com"): 调用 getaddrinfo, 依赖网络/DNS 服务器,
+ *     可能阻塞数百毫秒到数秒
+ *   - 禁止在 loop 线程的 IO/定时器回调中调用, 否则会阻塞事件循环
+ *
+ * host         — 域名或 IP 字符串 (v4/v6)
+ * port         — 端口号
+ * out_addr     — 输出 sockaddr_storage, 可直接用于 connect()
+ * out_addrlen  — 输出 addr 的实际长度
  *
  * 快速路径: host 是字面 IP 时直接 inet_pton, 不走 getaddrinfo.
  * 返回: 0=成功, <0=解析失败.
- * 线程: 同步阻塞, 调用方自行确保不在 loop 热路径中调用.
  */
 int sevent_dns_resolve(const char *host, uint16_t port,
                        struct sockaddr_storage *out_addr,
