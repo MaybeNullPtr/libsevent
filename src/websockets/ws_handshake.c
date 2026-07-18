@@ -4,14 +4,16 @@
  *  客户端侧: 构建请求 + 验证响应.
  *  ========================================================================= */
 
-#include "ws_handshake.h"
-#include "ws_sha1.h"
-#include "ws_base64.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+
 #include <unistd.h>
+
+#include "ws_handshake.h"
+#include "ws_sha1.h"
+#include "ws_base64.h"
 
 /* ---- 可移植的 case-insensitive 比较 (避免 strncasecmp 的平台差异) ---- */
 static int ci_eq(const char *a, size_t a_len, const char *b)

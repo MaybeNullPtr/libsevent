@@ -14,26 +14,38 @@
  * ========================================================================= */
 
 #include "sevent.h"
+#include "sevent_i.h"
 #include "sevent_platform.h"
 
 /* ==================== 可替换分配器 ==================== */
 
-static sevent_malloc_fn g_malloc = malloc;
-static sevent_free_fn   g_free   = free;
+static sevent_malloc_fn sev_alloc_fn = malloc;
+static sevent_free_fn   sev_free_fn  = free;
 
 int sevent_set_allocator(sevent_malloc_fn mf, sevent_free_fn ff)
 {
     if ((mf == NULL) != (ff == NULL))
         return SEVENT_ERR_INVAL;
-    if (mf) { g_malloc = mf; g_free = ff; }
-    else    { g_malloc = malloc; g_free = free; }
+    if (mf) { sev_alloc_fn = mf; sev_free_fn = ff; }
+    else    { sev_alloc_fn = malloc; sev_free_fn = free; }
     return SEVENT_SUCCESS;
 }
 
 static void *xzalloc(size_t sz)
 {
-    void *p = g_malloc(sz);
+    void *p = sev_alloc_fn(sz);
     if (p) memset(p, 0, sz);
+    return p;
+}
+
+/* 内部模块通过此封装访问分配器 */
+void *sevent_i_malloc(size_t sz)    { return sev_alloc_fn(sz); }
+void  sevent_i_free(void *p)        { sev_free_fn(p); }
+void *sevent_i_calloc(size_t nmemb, size_t sz)
+{
+    size_t total = nmemb * sz;
+    void *p = sev_alloc_fn(total);
+    if (p) memset(p, 0, total);
     return p;
 }
 
@@ -133,11 +145,11 @@ static long ms_elapsed(const struct timespec *a, const struct timespec *b)
 /* 释放延迟链表 */
 static void free_death_io(struct sevent_io *list)
 {
-    while (list) { struct sevent_io *n = list->next; g_free(list); list = n; }
+    while (list) { struct sevent_io *n = list->next; sev_free_fn(list); list = n; }
 }
 static void free_death_timer(struct sevent_timer *list)
 {
-    while (list) { struct sevent_timer *n = list->next; g_free(list); list = n; }
+    while (list) { struct sevent_timer *n = list->next; sev_free_fn(list); list = n; }
 }
 
 /* ==================== Core API ==================== */
@@ -157,7 +169,7 @@ sevent_context *sevent_create(void)
     if (sevent_wakeup_pair(ctx->wake_fds) < 0) {
         sevent_mutex_destroy(&ctx->lock);
         sevent_mutex_destroy(&ctx->post_lock);
-        g_free(ctx);
+        sev_free_fn(ctx);
         return NULL;
     }
     return ctx;
@@ -171,13 +183,13 @@ void sevent_destroy(sevent_context *ctx)
     /* 释放所有异步任务 */
     {
         struct sevent_post *t = ctx->post_pending;
-        while (t) { struct sevent_post *n = t->next; g_free(t); t = n; }
+        while (t) { struct sevent_post *n = t->next; sev_free_fn(t); t = n; }
     }
 
     /* 释放 IO 活跃链表 */
     {
         struct sevent_io *io = ctx->io_list;
-        while (io) { struct sevent_io *n = io->next; g_free(io); io = n; }
+        while (io) { struct sevent_io *n = io->next; sev_free_fn(io); io = n; }
     }
 
     /* 释放 IO 延迟链表 */
@@ -186,7 +198,7 @@ void sevent_destroy(sevent_context *ctx)
     /* 释放定时器活跃链表 */
     {
         struct sevent_timer *t = ctx->timer_list;
-        while (t) { struct sevent_timer *n = t->next; g_free(t); t = n; }
+        while (t) { struct sevent_timer *n = t->next; sev_free_fn(t); t = n; }
     }
 
     /* 释放定时器延迟链表 */
@@ -197,7 +209,7 @@ void sevent_destroy(sevent_context *ctx)
 
     sevent_mutex_destroy(&ctx->lock);
     sevent_mutex_destroy(&ctx->post_lock);
-    g_free(ctx);
+    sev_free_fn(ctx);
 }
 
 void sevent_stop(sevent_context *ctx)
@@ -221,7 +233,7 @@ int sevent_post(sevent_context *ctx, sevent_handler_fn h, void *data)
 {
     if (!ctx || !h) return SEVENT_ERR_INVAL;
 
-    struct sevent_post *t = g_malloc(sizeof(*t));
+    struct sevent_post *t = sev_alloc_fn(sizeof(*t));
     if (!t) return SEVENT_ERR_NOMEM;
     t->next = NULL; t->cb = h; t->data = data;
 
@@ -350,7 +362,7 @@ static void run_posts(sevent_context *ctx, int *fired)
         struct sevent_post *next = active->next;
         active->cb(active->data);
         *fired = 1;
-        g_free(active);
+        sev_free_fn(active);
         active = next;
     }
 }
@@ -475,7 +487,7 @@ sevent_io_t sevent_io_register(sevent_context *ctx, struct sevent_io_handler *h)
     if (h->fd < 0 || h->fd >= FD_SETSIZE) return NULL;
     if (!h->io_read && !h->io_write) return NULL;
 
-    struct sevent_io *io = g_malloc(sizeof(*io));
+    struct sevent_io *io = sev_alloc_fn(sizeof(*io));
     if (!io) return NULL;
 
     io->fd       = h->fd;
@@ -490,7 +502,7 @@ sevent_io_t sevent_io_register(sevent_context *ctx, struct sevent_io_handler *h)
     for (struct sevent_io *p = ctx->io_list; p; p = p->next) {
         if (p->fd == h->fd && !p->deleted) {
             sevent_mutex_unlock(&ctx->lock);
-            g_free(io);
+            sev_free_fn(io);
             return NULL;
         }
     }
@@ -530,7 +542,7 @@ sevent_timer_t sevent_timer_register(sevent_context *ctx,
 {
     if (!ctx || !cb || interval_ms == 0) return NULL;
 
-    struct sevent_timer *t = g_malloc(sizeof(*t));
+    struct sevent_timer *t = sev_alloc_fn(sizeof(*t));
     if (!t) return NULL;
 
     t->interval_ms  = interval_ms;

@@ -16,6 +16,21 @@ option(SEVENT_ENABLE_PIPE     "Use pipe for wakeup (POSIX)" ON)
 option(SEVENT_WS_THREAD_SAFE
     "WebSocket client with thread-safe API (adds per-connection mutex locking)" OFF)
 
+option(SEVENT_ASAN "Build with AddressSanitizer (memory/leak detection)" OFF)
+option(SEVENT_TSAN "Build with ThreadSanitizer (data race detection)" OFF)
+
+if(SEVENT_ASAN AND SEVENT_TSAN)
+    message(FATAL_ERROR "ASan and TSan are incompatible, enable only one at a time")
+endif()
+if(SEVENT_ASAN)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+endif()
+if(SEVENT_TSAN)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=thread")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+endif()
+
 # eventfd 可用性检查 (符号存在 + 可链接)
 include(CheckSymbolExists)
 if(SEVENT_ENABLE_EVENTFD)
@@ -79,6 +94,9 @@ target_include_directories(sevent_ws PUBLIC
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+target_include_directories(sevent_ws PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
+)
 target_link_libraries(sevent_ws PUBLIC sevent)
 
 if(SEVENT_WS_THREAD_SAFE)
@@ -127,6 +145,7 @@ add_executable(test-ws
     ${SEVENT_SOURCES}
 )
 target_include_directories(test-ws PRIVATE include)
+target_include_directories(test-ws PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test-ws PRIVATE Threads::Threads)
 
 add_executable(test-ws-conn
@@ -135,6 +154,7 @@ add_executable(test-ws-conn
     ${SEVENT_SOURCES}
 )
 target_include_directories(test-ws-conn PRIVATE include)
+target_include_directories(test-ws-conn PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test-ws-conn PRIVATE Threads::Threads)
 if(SEVENT_WS_THREAD_SAFE)
     target_compile_definitions(test-ws-conn PRIVATE SEVENT_WS_THREAD_SAFE)
@@ -187,6 +207,7 @@ add_executable(example-ws-client
     ${SEVENT_SOURCES}
 )
 target_include_directories(example-ws-client PRIVATE include)
+target_include_directories(example-ws-client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(example-ws-client PRIVATE Threads::Threads)
 if(SEVENT_WS_THREAD_SAFE)
     target_compile_definitions(example-ws-client PRIVATE SEVENT_WS_THREAD_SAFE)

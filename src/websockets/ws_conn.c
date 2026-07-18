@@ -5,18 +5,21 @@
  *  控制帧 (PING/CLOSE) 插入队首优先发送.
  *  ========================================================================= */
 
-#include "ws_conn.h"
-#include "ws_frame.h"
-#include "ws_handshake.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <errno.h>
+
 #include <fcntl.h>
+#include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+#include "sevent_i.h"
+#include "ws_conn.h"
+#include "ws_frame.h"
+#include "ws_handshake.h"
 
 #ifdef SEVENT_WS_THREAD_SAFE
 #include "../../include/sevent_platform.h"
@@ -137,8 +140,8 @@ static void stream_consume(struct sevent_ws_conn *c)
 static int ws_enqueue(struct sevent_ws_conn *c, uint8_t *data, size_t len,
                         int is_ctrl)
 {
-    struct ws_write_node *n = (struct ws_write_node *)malloc(sizeof(*n));
-    if (!n) { free(data); return -1; }
+    struct ws_write_node *n = SEVENT_I_NEW(n);
+    if (!n) { sevent_i_free(data); return -1; }
     n->data = data; n->len = len; n->offset = 0; n->is_ctrl = is_ctrl; n->next = NULL;
 
     if (is_ctrl && c->write_head) {
@@ -171,7 +174,7 @@ static size_t ws_flush(struct sevent_ws_conn *c)
             c->write_head = n->next;
             if (!c->write_head) c->write_tail = NULL;
             c->write_count--;
-            free(n->data); free(n);
+            sevent_i_free(n->data); sevent_i_free(n);
         } else if (w < 0) {
             if (errno == EAGAIN || errno == EINTR)
                 return c->write_count;
@@ -183,7 +186,7 @@ static size_t ws_flush(struct sevent_ws_conn *c)
             c->write_head = n->next;
             if (!c->write_head) c->write_tail = NULL;
             c->write_count--;
-            free(n->data); free(n);
+            sevent_i_free(n->data); sevent_i_free(n);
         }
     }
     return 0;
@@ -223,7 +226,7 @@ static int send_frame(struct sevent_ws_conn *c, uint8_t opcode,
     if (hdr_len < 0) return SEVENT_ERR_INVAL;
 
     size_t total = (size_t)hdr_len + len;
-    uint8_t *buf = (uint8_t *)malloc(total);
+    uint8_t *buf = (uint8_t *)sevent_i_malloc(total);
     if (!buf) return SEVENT_ERR_NOMEM;
     memcpy(buf, hdr, (size_t)hdr_len);
     if (len > 0 && payload) {
@@ -529,10 +532,10 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev,
     if (!ev || !cfg || !cfg->host || !cfg->path ||
         (!cfg->on_open && !cfg->on_error))
         return NULL;
-    struct sevent_ws_conn *c = (struct sevent_ws_conn *)calloc(1, sizeof(*c));
+    struct sevent_ws_conn *c = SEVENT_I_NEW0(c);
     if (!c) return NULL;
 #ifdef SEVENT_WS_THREAD_SAFE
-    if (sevent_mutex_init_recursive(&c->lock) != 0) { free(c); return NULL; }
+    if (sevent_mutex_init_recursive(&c->lock) != 0) { sevent_i_free(c); return NULL; }
 #endif
     c->ev = ev; c->fd = -1; c->state = WS_STATE_CONNECTING;
     strncpy(c->host, cfg->host, sizeof(c->host)-1);
@@ -551,17 +554,17 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev,
 
     /* 固定大小接收/分片缓冲区 */
     size_t bufsz = cfg->recv_buf_size ? cfg->recv_buf_size : 4096;
-    c->recv_buf = (uint8_t *)malloc(bufsz);
-    c->frag_buf = (uint8_t *)malloc(bufsz);
-    if (!c->recv_buf || !c->frag_buf) { free(c->recv_buf); free(c->frag_buf); free(c); return NULL; }
+    c->recv_buf = (uint8_t *)sevent_i_malloc(bufsz);
+    c->frag_buf = (uint8_t *)sevent_i_malloc(bufsz);
+    if (!c->recv_buf || !c->frag_buf) { sevent_i_free(c->recv_buf); sevent_i_free(c->frag_buf); sevent_i_free(c); return NULL; }
     c->recv_cap = bufsz;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) { free(c); return NULL; }
+    if (fd < 0) { sevent_i_free(c->recv_buf); sevent_i_free(c->frag_buf); sevent_i_free(c); return NULL; }
     {
         int fl = fcntl(fd, F_GETFL);
         if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0)
-            { close(fd); free(c); return NULL; }
+            { close(fd); sevent_i_free(c->recv_buf); sevent_i_free(c->frag_buf); sevent_i_free(c); return NULL; }
     }
     c->fd = fd;
     struct sockaddr_in addr;
@@ -569,13 +572,13 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev,
     addr.sin_family = AF_INET;
     addr.sin_port = htons(c->port);
     if (inet_pton(AF_INET, c->host, &addr.sin_addr) <= 0)
-        { close(fd); free(c); return NULL; }
+        { close(fd); sevent_i_free(c->recv_buf); sevent_i_free(c->frag_buf); sevent_i_free(c); return NULL; }
     int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-    if (rc < 0 && errno != EINPROGRESS) { close(fd); free(c); return NULL; }
+    if (rc < 0 && errno != EINPROGRESS) { close(fd); sevent_i_free(c->recv_buf); sevent_i_free(c->frag_buf); sevent_i_free(c); return NULL; }
     struct sevent_io_handler h;
     h.fd = fd; h.io_read = NULL; h.io_write = on_connect_ready; h.data = c;
     c->io_handle = sevent_io_register(ev, &h);
-    if (!c->io_handle) { close(fd); free(c); return NULL; }
+    if (!c->io_handle) { close(fd); sevent_i_free(c->recv_buf); sevent_i_free(c->frag_buf); sevent_i_free(c); return NULL; }
     return c;
 }
 
@@ -631,14 +634,14 @@ void sevent_ws_destroy(sevent_ws_conn *c)
     c->destroyed = 1;
     c->state = WS_STATE_CLOSED;
     ws_close_socket(c);
-    free(c->recv_buf);
-    free(c->frag_buf);
+    sevent_i_free(c->recv_buf);
+    sevent_i_free(c->frag_buf);
     struct ws_write_node *wn = c->write_head;
-    while (wn) { struct ws_write_node *n = wn->next; free(wn->data); free(wn); wn = n; }
+    while (wn) { struct ws_write_node *n = wn->next; sevent_i_free(wn->data); sevent_i_free(wn); wn = n; }
 #ifdef SEVENT_WS_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif
-    free(c);
+    sevent_i_free(c);
 }
 
 int sevent_ws_get_state(const sevent_ws_conn *c)

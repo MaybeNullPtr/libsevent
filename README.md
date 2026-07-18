@@ -73,12 +73,22 @@ libsevent/
 ├── README.md
 ├── include/
 │   ├── sevent.h              ← 公开 API
+│   ├── sevent_ws.h           ← WebSocket 客户端 API
 │   └── sevent_platform.h     ← 平台抽象声明 (内部)
 ├── src/
 │   ├── sevent.c              ← 事件循环实现
-│   └── sevent_platform.c     ← 平台抽象实现 (mutex/wakeup)
+│   ├── sevent_i.h            ← 内部工具 (分配器等)
+│   ├── sevent_platform.c     ← 平台抽象实现 (mutex/wakeup)
+│   └── websockets/           ← WebSocket 协议栈
+│       ├── ws_conn.c/h       ← 连接状态机
+│       ├── ws_frame.c/h      ← RFC 6455 帧编解码
+│       ├── ws_handshake.c/h  ← HTTP Upgrade 握手
+│       ├── ws_sha1.c/h       ← SHA-1 (握手用)
+│       └── ws_base64.c       ← Base64 (握手用)
 ├── tests/
-│   └── test_sevent.c         ← 单元测试
+│   ├── test_sevent.c         ← 核心单元测试
+│   ├── test_ws.c             ← WebSocket 单元测试
+│   └── test_ws_conn.c        ← WebSocket 集成测试
 └── examples/
     ├── stdin_echo.c           ← 最简入门: stdin → stdout
     ├── timer_demo.c           ← 多定时器精度观测
@@ -179,6 +189,7 @@ int sevent_set_allocator(sevent_malloc_fn malloc_fn, sevent_free_fn free_fn);
 - 前置条件: `sevent_create()` 之前调用
 - 两个参数必须同时非 NULL 或同时 NULL
 - `sevent_set_allocator(NULL, NULL)` 恢复默认
+- 覆盖库内部所有分配 (core + WebSocket 协议栈)
 - 线程: 串行
 
 ### I/O
@@ -286,6 +297,7 @@ loop.run();
 | `example-chat-server` | 多客户端聊天中继 (7778) | `./build/example-chat-server` |
 | `example-signal-demo` | 信号驱动优雅退出 | `./build/example-signal-demo` |
 | `example-thread-worker` | 跨线程异步任务 | `./build/example-thread-worker` |
+| `example-ws-client` | WebSocket 客户端 (ws://echo.websocket.org) | `./build/example-ws-client` |
 
 ## 设计原则
 
