@@ -4,7 +4,7 @@
  *  基于 libsevent 事件循环构建.
  *
  *  用法:
- *    1. 配置 struct sevent_ws_config
+ *    1. 配置 sevent_ws_config
  *    2. 调用 sevent_ws_connect(ctx, &cfg)
  *    3. 在 on_open / on_message / on_close / on_error 回调中处理事件
  *    4. 使用 sevent_ws_send_text/binary/ping 发送数据
@@ -54,7 +54,7 @@ typedef void (*sevent_ws_on_http_response_fn)(
         void *user_data, int status_code, const char *headers, size_t headers_len, const char *body, size_t body_len);
 
 /* ===== 配置结构体 ===== */
-struct sevent_ws_config {
+typedef struct sevent_ws_config {
     const char *host;             /* 服务器主机名/IP ("127.0.0.1") */
     uint16_t    port;             /* 端口 (80) */
     const char *path;             /* 路径 ("/ws") */
@@ -72,7 +72,7 @@ struct sevent_ws_config {
     sevent_ws_on_http_response_fn on_http_response; /* HTTP 升级响应, 含非 101 */
 
     void *user_data; /* 透传给回调的参数 */
-};
+} sevent_ws_config;
 
 /* ===== API ===== */
 
@@ -82,7 +82,7 @@ struct sevent_ws_config {
  * 返回: 句柄 (需调用 sevent_ws_destroy 释放), 或 NULL (参数错误/内存不足).
  * 线程: [loop 线程] (IO 注册内部有锁, 但配置副本写入无保护).
  */
-sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const struct sevent_ws_config *cfg);
+sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cfg);
 
 /*
  * 发送文本消息 (自动掩码).

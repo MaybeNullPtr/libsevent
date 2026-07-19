@@ -46,7 +46,7 @@ typedef struct {
     int             fd, rem, len, off, err, eagain;
     long            bytes_read, bytes_written;
     char           *buf;
-    sevent_io_t     hio;
+    sevent_io *hio;
     sevent_context *ctx;
 } cli_t;
 
@@ -65,7 +65,7 @@ static void do_write(void *data);
 static void cli_reg_read(cli_t *c) {
     if(c->hio)
         sevent_io_unregister(c->ctx, c->hio);
-    struct sevent_io_handler h = {.fd = c->fd, .io_read = on_read, .data = c};
+    sevent_io_handler h = {.fd = c->fd, .io_read = on_read, .data = c};
     c->hio                     = sevent_io_register(c->ctx, &h);
     if(!c->hio) {
         fprintf(stderr, "reg_read fail\n");
@@ -79,7 +79,7 @@ static void cli_reg_read(cli_t *c) {
 static void cli_reg_write(cli_t *c) {
     if(c->hio)
         sevent_io_unregister(c->ctx, c->hio);
-    struct sevent_io_handler h = {.fd = c->fd, .io_write = on_write, .data = c};
+    sevent_io_handler h = {.fd = c->fd, .io_write = on_write, .data = c};
     c->hio                     = sevent_io_register(c->ctx, &h);
     if(!c->hio) {
         fprintf(stderr, "reg_write fail\n");
@@ -310,7 +310,7 @@ int main(int argc, char **argv) {
         g_c[i].ctx = ctx;
 
         /* 初始注册写回调, 等待连接完成 */
-        struct sevent_io_handler h = {
+        sevent_io_handler h = {
                 .fd       = fd,
                 .io_write = on_connect,
                 .data     = &g_c[i],

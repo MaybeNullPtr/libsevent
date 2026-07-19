@@ -512,7 +512,7 @@ int sevent_run(sevent_context *ctx) {
 
 /* ==================== I/O API ==================== */
 
-sevent_io_t sevent_io_register(sevent_context *ctx, struct sevent_io_handler *h) {
+sevent_io *sevent_io_register(sevent_context *ctx, sevent_io_handler *h) {
     if(!ctx || !h)
         return NULL;
     if(h->fd < 0 || h->fd >= FD_SETSIZE)
@@ -548,7 +548,7 @@ sevent_io_t sevent_io_register(sevent_context *ctx, struct sevent_io_handler *h)
     return io;
 }
 
-void sevent_io_unregister(sevent_context *ctx, sevent_io_t h) {
+void sevent_io_unregister(sevent_context *ctx, sevent_io *h) {
     if(!ctx || !h)
         return;
     int found = 0;
@@ -571,7 +571,7 @@ void sevent_io_unregister(sevent_context *ctx, sevent_io_t h) {
 
 /* ==================== Timer API ==================== */
 
-sevent_timer_t sevent_timer_register(sevent_context *ctx, unsigned int interval_ms, sevent_timer_fn cb, void *data) {
+sevent_timer *sevent_timer_register(sevent_context *ctx, unsigned int interval_ms, sevent_timer_fn cb, void *data) {
     if(!ctx || !cb || interval_ms == 0)
         return NULL;
 
@@ -595,7 +595,7 @@ sevent_timer_t sevent_timer_register(sevent_context *ctx, unsigned int interval_
     return t;
 }
 
-void sevent_timer_unregister(sevent_context *ctx, sevent_timer_t h) {
+void sevent_timer_unregister(sevent_context *ctx, sevent_timer *h) {
     if(!ctx || !h)
         return;
     if(!ctx)

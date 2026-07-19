@@ -110,7 +110,7 @@ int main(int argc, char **argv) {
     sevent_ignore_sigpipe();
     register_stop_fn((void (*)(void *))sevent_stop, g_ctx);
 
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host       = host;
     cfg.port       = (uint16_t)port;
@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
     int fl = fcntl(fd, F_GETFL);
     if(fl >= 0)
         fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-    struct sevent_io_handler h;
+    sevent_io_handler h;
     h.fd      = fd;
     h.io_read = on_stdin_read;
     h.data    = NULL;

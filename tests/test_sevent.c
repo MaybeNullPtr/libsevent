@@ -329,16 +329,16 @@ TEST(memory_no_leak) {
 
         /* 注册多个 IO */
         int         fds[10][2];
-        sevent_io_t ios[10];
+        sevent_io *ios[10];
         for(int i = 0; i < 10; i++) {
             ASSERT_EQ(0, pipe(fds[i]));
-            struct sevent_io_handler h = {.fd = fds[i][0], .io_read = count_cb};
+            sevent_io_handler h = {.fd = fds[i][0], .io_read = count_cb};
             ios[i]                     = sevent_io_register(ctx, &h);
             ASSERT(ios[i] != NULL);
         }
 
         /* 注册多个定时器 */
-        sevent_timer_t timers[10];
+        sevent_timer *timers[10];
         for(int i = 0; i < 10; i++) {
             timers[i] = sevent_timer_register(ctx, 1000, count_cb, NULL);
             ASSERT(timers[i] != NULL);
@@ -394,11 +394,11 @@ TEST(io_register_pipe_read) {
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
 
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = fds[0],
             .io_read = count_cb,
     };
-    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    sevent_io *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl != NULL);
 
     ASSERT(5 == (int)write(fds[1], "hello", 5));
@@ -422,12 +422,12 @@ TEST(io_null_read_cb_no_fire) {
     ASSERT_EQ(0, pipe(fds));
 
     /* 有 io_write 但不设置 io_read，验证可读事件不触发写回调 */
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd       = fds[0],
             .io_read  = NULL,
             .io_write = count_cb,
     };
-    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    sevent_io *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl != NULL);
 
     ASSERT_EQ(1, (int)write(fds[1], "x", 1));
@@ -445,7 +445,7 @@ TEST(io_null_read_cb_no_fire) {
 
 TEST(io_unregister_self_in_callback) {
     /* 这里需要回调里 unregister 自己，验证不 crash */
-    /* TODO: 实现后用 static sevent_io_t 传进去 */
+    /* TODO: 实现后用 static sevent_io 传进去 */
     reset_cb();
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
@@ -453,11 +453,11 @@ TEST(io_unregister_self_in_callback) {
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
 
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = fds[0],
             .io_read = count_cb,
     };
-    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    sevent_io *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl != NULL);
 
     ASSERT_EQ(1, (int)write(fds[1], "x", 1));
@@ -480,13 +480,13 @@ TEST(io_multiple_fds_partial_ready) {
     ASSERT_EQ(0, pipe(fds2));
     ASSERT_EQ(0, pipe(fds3));
 
-    struct sevent_io_handler h1 = {.fd = fds1[0], .io_read = count_cb};
-    struct sevent_io_handler h2 = {.fd = fds2[0], .io_read = count_cb};
-    struct sevent_io_handler h3 = {.fd = fds3[0], .io_read = count_cb};
+    sevent_io_handler h1 = {.fd = fds1[0], .io_read = count_cb};
+    sevent_io_handler h2 = {.fd = fds2[0], .io_read = count_cb};
+    sevent_io_handler h3 = {.fd = fds3[0], .io_read = count_cb};
 
-    sevent_io_t hdl1 = sevent_io_register(ctx, &h1);
-    sevent_io_t hdl2 = sevent_io_register(ctx, &h2);
-    sevent_io_t hdl3 = sevent_io_register(ctx, &h3);
+    sevent_io *hdl1 = sevent_io_register(ctx, &h1);
+    sevent_io *hdl2 = sevent_io_register(ctx, &h2);
+    sevent_io *hdl3 = sevent_io_register(ctx, &h3);
     ASSERT(hdl1 && hdl2 && hdl3);
 
     /* 只写 fds1 和 fds3 */
@@ -519,11 +519,11 @@ TEST(io_write_monitor) {
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
 
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd       = fds[1], /* pipe 写端 */
             .io_write = count_cb,
     };
-    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    sevent_io *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl != NULL);
 
     /* 写端通常可写，应触发 io_write */
@@ -545,7 +545,7 @@ TEST(io_both_null_rejected) {
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    struct sevent_io_handler h = {.fd = 3, .io_read = NULL, .io_write = NULL};
+    sevent_io_handler h = {.fd = 3, .io_read = NULL, .io_write = NULL};
     ASSERT_EQ(NULL, sevent_io_register(ctx, &h));
 
     sevent_destroy(ctx);
@@ -571,7 +571,7 @@ TEST(timer_fire_once) {
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    sevent_timer_t t = sevent_timer_register(ctx, 1, count_cb, NULL);
+    sevent_timer *t = sevent_timer_register(ctx, 1, count_cb, NULL);
     ASSERT(t != NULL);
 
     /* 跑几轮，期望触发至少 1 次 */
@@ -588,7 +588,7 @@ TEST(timer_unregister_before_fire) {
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    sevent_timer_t t = sevent_timer_register(ctx, 10000, count_cb, NULL);
+    sevent_timer *t = sevent_timer_register(ctx, 10000, count_cb, NULL);
     ASSERT(t != NULL);
 
     sevent_timer_unregister(ctx, t);
@@ -630,15 +630,15 @@ TEST(timer_dynamic_add_in_callback) {
     ASSERT_EQ(0, pipe(fds));
     dyn_pipe_fd = fds[0];
 
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = fds[0],
             .io_read = dyn_on_io,
     };
-    sevent_io_t h_io = sevent_io_register(ctx, &h);
+    sevent_io *h_io = sevent_io_register(ctx, &h);
     ASSERT(h_io != NULL);
 
     /* 长定时器 → next_timer = 10000 */
-    sevent_timer_t t_long = sevent_timer_register(ctx, 10000, count_cb, NULL);
+    sevent_timer *t_long = sevent_timer_register(ctx, 10000, count_cb, NULL);
     ASSERT(t_long != NULL);
 
     /* IO 事件触发 → 回调中动态添加短定时器 */
@@ -663,7 +663,7 @@ TEST(timer_dynamic_remove_safe) {
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    sevent_timer_t t = sevent_timer_register(ctx, 1, count_cb, NULL);
+    sevent_timer *t = sevent_timer_register(ctx, 1, count_cb, NULL);
     ASSERT(t != NULL);
 
     sevent_run_once(ctx);
@@ -676,7 +676,7 @@ TEST(timer_dynamic_remove_safe) {
 /* ----- 两阶段定时器专项测试 ----- */
 
 /* 回调中 unregister 自己: 应触发一次, 不 crash */
-static sevent_timer_t g_self_timer;
+static sevent_timer *g_self_timer;
 
 static void on_timer_self_unregister(void *data) {
     cb_count++;
@@ -701,7 +701,7 @@ TEST(timer_self_unregister_in_callback) {
 }
 
 /* 回调中 unregister 另一个到期 timer: 被取消的应跳过 */
-static sevent_timer_t g_cross_target;
+static sevent_timer *g_cross_target;
 static int            g_cross_a_fired;
 
 static void on_timer_cross_a(void *data) {
@@ -729,7 +729,7 @@ TEST(timer_cross_unregister_in_callback) {
     g_cross_target = sevent_timer_register(ctx, 1, on_timer_cross_b, NULL);
     ASSERT(g_cross_target != NULL);
 
-    sevent_timer_t ta = sevent_timer_register(ctx, 1, on_timer_cross_a, ctx);
+    sevent_timer *ta = sevent_timer_register(ctx, 1, on_timer_cross_a, ctx);
     ASSERT(ta != NULL);
 
     for(int i = 0; i < 10; i++)
@@ -759,7 +759,7 @@ TEST(timer_register_in_timer_callback) {
     ASSERT(ctx != NULL);
     g_dyn_ctx = ctx;
 
-    sevent_timer_t t = sevent_timer_register(ctx, 1, on_timer_register_another, NULL);
+    sevent_timer *t = sevent_timer_register(ctx, 1, on_timer_register_another, NULL);
     ASSERT(t != NULL);
 
     /* 跑多轮: 第一轮触发 t (cb_count=1) 并注册新定时器,
@@ -782,7 +782,7 @@ TEST(timer_multi_fire_per_tick) {
     ASSERT(ctx != NULL);
 
     /* 1ms 间隔定时器, 跑多轮每轮 delta ~1ms, 每轮触发 1 次 */
-    sevent_timer_t t = sevent_timer_register(ctx, 1, count_cb, NULL);
+    sevent_timer *t = sevent_timer_register(ctx, 1, count_cb, NULL);
     ASSERT(t != NULL);
 
     for(int i = 0; i < 30; i++)
@@ -831,11 +831,11 @@ TEST(integration_io_timer_post) {
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
 
-    struct sevent_io_handler h  = {.fd = fds[0], .io_read = count_cb};
-    sevent_io_t              ih = sevent_io_register(ctx, &h);
+    sevent_io_handler h  = {.fd = fds[0], .io_read = count_cb};
+    sevent_io *ih = sevent_io_register(ctx, &h);
     ASSERT(ih != NULL);
 
-    sevent_timer_t th = sevent_timer_register(ctx, 50, count_cb, NULL);
+    sevent_timer *th = sevent_timer_register(ctx, 50, count_cb, NULL);
     ASSERT(th != NULL);
 
     ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));
@@ -882,11 +882,11 @@ TEST(edge_invalid_fd_rejected) {
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = -1,
             .io_read = count_cb,
     };
-    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    sevent_io *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl == NULL);
 
     sevent_destroy(ctx);
@@ -903,11 +903,11 @@ TEST(edge_large_fd_rejected) {
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = FD_SETSIZE, /* select 的最大 fd 是 FD_SETSIZE-1 */
             .io_read = count_cb,
     };
-    sevent_io_t hdl = sevent_io_register(ctx, &h);
+    sevent_io *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl == NULL);
 
     sevent_destroy(ctx);
@@ -918,10 +918,10 @@ TEST(edge_many_timers) {
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    sevent_timer_t timers[100];
+    sevent_timer *timers[100];
     int            count = 0;
     for(int i = 0; i < 100; i++) {
-        sevent_timer_t t = sevent_timer_register(ctx, 1000, count_cb, NULL);
+        sevent_timer *t = sevent_timer_register(ctx, 1000, count_cb, NULL);
         if(!t)
             break;
         timers[count++] = t;
@@ -940,8 +940,8 @@ TEST(edge_unregister_twice_safe) {
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
 
-    struct sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
-    sevent_io_t              hdl = sevent_io_register(ctx, &h);
+    sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
+    sevent_io *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl != NULL);
 
     sevent_io_unregister(ctx, hdl);
@@ -960,8 +960,8 @@ TEST(edge_io_unregister_multiple) {
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
 
-    struct sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
-    sevent_io_t              hdl = sevent_io_register(ctx, &h);
+    sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
+    sevent_io *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl != NULL);
 
     /* 多次释放应安全 */
@@ -979,7 +979,7 @@ TEST(edge_timer_unregister_multiple) {
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    sevent_timer_t t = sevent_timer_register(ctx, 100, count_cb, NULL);
+    sevent_timer *t = sevent_timer_register(ctx, 100, count_cb, NULL);
     ASSERT(t != NULL);
 
     /* 多次释放应安全 */
@@ -996,8 +996,8 @@ TEST(edge_io_unregister_after_free) {
 
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
-    struct sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
-    sevent_io_t              hdl = sevent_io_register(ctx, &h);
+    sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
+    sevent_io *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl != NULL);
 
     sevent_io_unregister(ctx, hdl); /* death_io */
@@ -1013,7 +1013,7 @@ TEST(edge_timer_unregister_after_free) {
     sevent_context *ctx = sevent_create();
     ASSERT(ctx != NULL);
 
-    sevent_timer_t t = sevent_timer_register(ctx, 1, count_cb, NULL);
+    sevent_timer *t = sevent_timer_register(ctx, 1, count_cb, NULL);
     ASSERT(t != NULL);
 
     sevent_timer_unregister(ctx, t); /* death_timer */
@@ -1030,8 +1030,8 @@ TEST(edge_io_unregister_wrong_ctx) {
 
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
-    struct sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
-    sevent_io_t              hdl = sevent_io_register(ctx1, &h);
+    sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
+    sevent_io *hdl = sevent_io_register(ctx1, &h);
     ASSERT(hdl != NULL);
 
     /* 用 ctx2 注销 ctx1 的句柄: 遍历 ctx2->io_list 找不到 → 安全 no-op */
@@ -1050,7 +1050,7 @@ TEST(edge_timer_unregister_wrong_ctx) {
     sevent_context *ctx2 = sevent_create();
     ASSERT(ctx1 && ctx2);
 
-    sevent_timer_t t = sevent_timer_register(ctx1, 100, count_cb, NULL);
+    sevent_timer *t = sevent_timer_register(ctx1, 100, count_cb, NULL);
     ASSERT(t != NULL);
 
     /* 用 ctx2 注销 ctx1 的句柄: 遍历 ctx2->timer_list 找不到 → 安全 no-op */
@@ -1115,8 +1115,8 @@ static void *ts_io_worker(void *arg) {
     nanosleep(&ts, NULL);
 
     /* loop 运行中跨线程注册 IO */
-    struct sevent_io_handler h  = {.fd = ts_pipe_fds[0], .io_read = count_cb};
-    sevent_io_t              io = sevent_io_register(g_ts_ctx, &h);
+    sevent_io_handler h  = {.fd = ts_pipe_fds[0], .io_read = count_cb};
+    sevent_io *io = sevent_io_register(g_ts_ctx, &h);
     (void)io;
 
     /* 写 pipe 触发可读, 让 IO 回调在下一轮执行 */
@@ -1172,8 +1172,8 @@ static void *ts_stress_worker(void *arg) {
     int  wr = g_stress.pipes[id][1];
 
     /* 注册 IO (跨线程) */
-    struct sevent_io_handler h  = {.fd = rd, .io_read = count_cb};
-    sevent_io_t              io = sevent_io_register(g_stress.ctx, &h);
+    sevent_io_handler h  = {.fd = rd, .io_read = count_cb};
+    sevent_io *io = sevent_io_register(g_stress.ctx, &h);
     if(!io)
         return NULL;
 
@@ -1238,10 +1238,10 @@ TEST(observability_io_count) {
     ASSERT_EQ(0, io);
 
     int         fds[3][2];
-    sevent_io_t handles[3];
+    sevent_io *handles[3];
     for(int i = 0; i < 3; i++) {
         ASSERT_EQ(0, pipe(fds[i]));
-        struct sevent_io_handler h = {.fd = fds[i][0], .io_read = count_cb};
+        sevent_io_handler h = {.fd = fds[i][0], .io_read = count_cb};
         handles[i]                 = sevent_io_register(ctx, &h);
         ASSERT(handles[i] != NULL);
     }
@@ -1275,8 +1275,8 @@ TEST(observability_timer_count) {
     sevent_get_counts(ctx, NULL, &timer, NULL);
     ASSERT_EQ(0, timer);
 
-    sevent_timer_t t1 = sevent_timer_register(ctx, 1000, count_cb, NULL);
-    sevent_timer_t t2 = sevent_timer_register(ctx, 1000, count_cb, NULL);
+    sevent_timer *t1 = sevent_timer_register(ctx, 1000, count_cb, NULL);
+    sevent_timer *t2 = sevent_timer_register(ctx, 1000, count_cb, NULL);
     ASSERT(t1 != NULL);
     ASSERT(t2 != NULL);
     sevent_get_counts(ctx, NULL, &timer, NULL);
@@ -1339,11 +1339,11 @@ TEST(observability_combined) {
 
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
-    struct sevent_io_handler h    = {.fd = fds[0], .io_read = count_cb};
-    sevent_io_t              io_h = sevent_io_register(ctx, &h);
+    sevent_io_handler h    = {.fd = fds[0], .io_read = count_cb};
+    sevent_io *io_h = sevent_io_register(ctx, &h);
     ASSERT(io_h != NULL);
 
-    sevent_timer_t t = sevent_timer_register(ctx, 100, count_cb, NULL);
+    sevent_timer *t = sevent_timer_register(ctx, 100, count_cb, NULL);
     ASSERT(t != NULL);
 
     ASSERT_EQ(SEVENT_SUCCESS, sevent_post(ctx, count_cb, NULL));

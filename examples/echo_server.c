@@ -25,7 +25,7 @@
 
 struct client {
     int         fd;   /* 客户端 socket fd */
-    sevent_io_t h_io; /* 自己的注册句柄，断连时用于注销 */
+    sevent_io *h_io; /* 自己的注册句柄，断连时用于注销 */
     char        buf[4096];
 };
 
@@ -107,7 +107,7 @@ static void on_accept(void *data) {
     c->fd = cfd;
 
     /* 注册客户端 fd */
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = cfd,
             .io_read = on_client_read,
             .data    = c,
@@ -161,7 +161,7 @@ int main(void) {
 
     /* ---- 注册 listen fd ---- */
 
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = listen_fd,
             .io_read = on_accept,
             .data    = &listen_fd,

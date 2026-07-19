@@ -72,10 +72,10 @@ private:
     }
 
     /* EventLoop::watch() 通过此私有构造返回 IoGuard */
-    IoGuard(sevent_context *ctx, sevent_io_t h) : ctx_(ctx), h_(h) {}
+    IoGuard(sevent_context *ctx, sevent_io *h) : ctx_(ctx), h_(h) {}
 
     sevent_context *ctx_ = nullptr;
-    sevent_io_t     h_   = nullptr;
+    sevent_io *h_   = nullptr;
 };
 
 class TimerGuard {
@@ -113,10 +113,10 @@ private:
         }
     }
 
-    TimerGuard(sevent_context *ctx, sevent_timer_t h) : ctx_(ctx), h_(h) {}
+    TimerGuard(sevent_context *ctx, sevent_timer *h) : ctx_(ctx), h_(h) {}
 
     sevent_context *ctx_ = nullptr;
-    sevent_timer_t  h_   = nullptr;
+    sevent_timer *h_   = nullptr;
 };
 
 /* ====================================================================
@@ -222,7 +222,7 @@ public:
         if(!w || (!read && !write))
             return IoGuard();
 
-        struct sevent_io_handler h;
+        sevent_io_handler h;
         h.fd       = fd;
         h.io_read  = read ? trampoline_io_read : nullptr;
         h.io_write = write ? trampoline_io_write : nullptr;

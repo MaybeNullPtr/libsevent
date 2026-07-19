@@ -222,7 +222,7 @@ static size_t ws_flush(struct sevent_ws_conn *c) {
 
 /* 根据是否有待写数据更新 io_write 注册 */
 static void ws_update_io(struct sevent_ws_conn *c, void (*read_cb)(void *)) {
-    struct sevent_io_handler h;
+    sevent_io_handler h;
     h.fd       = c->fd;
     h.io_read  = read_cb;
     h.io_write = c->write_head ? on_write_ready : NULL;
@@ -632,7 +632,7 @@ static void on_connect_timeout(void *data) {
         return;
     }
     /* 先关定时器再 ws_fatal, 防止 destroy 路径下 c 释放后定时器悬空 */
-    sevent_timer_t t = c->connect_timer;
+    sevent_timer *t = c->connect_timer;
     c->connect_timer = NULL;
     if(t)
         sevent_timer_unregister(c->ev, t);
@@ -683,7 +683,7 @@ static void on_connect_ready(void *data) {
  *  公开 API
  * ==================================================================== */
 
-sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const struct sevent_ws_config *cfg) {
+sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cfg) {
     if(!ev || !cfg || !cfg->host || !cfg->path || (!cfg->on_open && !cfg->on_error))
         return NULL;
     struct sevent_ws_conn *c = SEVENT_I_NEW0(c);
@@ -765,7 +765,7 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const struct sevent_ws_con
         sevent_i_free(c);
         return NULL;
     }
-    struct sevent_io_handler h;
+    sevent_io_handler h;
     h.fd         = fd;
     h.io_read    = NULL;
     h.io_write   = on_connect_ready;

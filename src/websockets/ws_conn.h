@@ -42,7 +42,7 @@ struct sevent_ws_conn {
 
     /* ---- socket ---- */
     int         fd;
-    sevent_io_t io_handle;
+    sevent_io *io_handle;
 
     /* ---- 状态 ---- */
     int state;     /* enum ws_state */
@@ -58,7 +58,7 @@ struct sevent_ws_conn {
     char     sub_protocol[64];
     int      ping_interval_ms;
     int      connect_timeout_ms;
-    sevent_timer_t connect_timer;
+    sevent_timer *connect_timer;
 
     /* ---- 用户回调 ---- */
     void                         *user_data;

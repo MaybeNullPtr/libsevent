@@ -98,9 +98,9 @@ int main(void) {
             .last_fire = t0,
     };
 
-    sevent_timer_t t1 = sevent_timer_register(ctx, fast.interval, on_tick, &fast);
-    sevent_timer_t t2 = sevent_timer_register(ctx, medium.interval, on_tick, &medium);
-    sevent_timer_t t3 = sevent_timer_register(ctx, slow.interval, on_tick, &slow);
+    sevent_timer *t1 = sevent_timer_register(ctx, fast.interval, on_tick, &fast);
+    sevent_timer *t2 = sevent_timer_register(ctx, medium.interval, on_tick, &medium);
+    sevent_timer *t3 = sevent_timer_register(ctx, slow.interval, on_tick, &slow);
 
     if(!t1 || !t2 || !t3) {
         fprintf(stderr, "sevent_timer_register failed\n");

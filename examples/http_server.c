@@ -28,7 +28,7 @@
 
 struct http_conn {
     int         fd;
-    sevent_io_t h_io;
+    sevent_io *h_io;
     char        buf[4096];
     int         buf_len;
 };
@@ -143,7 +143,7 @@ static void on_accept(void *data) {
     }
     c->fd = cfd;
 
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = cfd,
             .io_read = on_client_read,
             .data    = c,
@@ -193,7 +193,7 @@ int main(void) {
         return 1;
     }
 
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = listen_fd,
             .io_read = on_accept,
             .data    = &listen_fd,

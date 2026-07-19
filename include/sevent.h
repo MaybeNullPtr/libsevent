@@ -68,17 +68,17 @@ typedef void (*sevent_timer_fn)(void *data);    /* 定时器到期触发 */
 /* ==================== 不透明句柄 ==================== */
 
 typedef struct sevent_context sevent_context; /* 事件循环上下文 */
-typedef struct sevent_io     *sevent_io_t;    /* IO 注册句柄 */
-typedef struct sevent_timer  *sevent_timer_t; /* 定时器句柄 */
+typedef struct sevent_io      sevent_io;      /* IO 注册句柄 (不透明) */
+typedef struct sevent_timer   sevent_timer;   /* 定时器句柄 (不透明) */
 
 /* ==================== 公开结构体 ==================== */
 
-struct sevent_io_handler {
+typedef struct sevent_io_handler {
     int                fd;       /* 要监听的 fd                    */
     sevent_io_read_fn  io_read;  /* 可读回调, NULL=忽略            */
     sevent_io_write_fn io_write; /* 可写回调, NULL=忽略            */
     void              *data;     /* 透传给回调的参数               */
-};
+} sevent_io_handler;
 
 /* ==================== Core API ==================== */
 
@@ -168,7 +168,7 @@ void sevent_ignore_sigpipe(void);
  * h 的内容在调用后不再使用.
  * 线程:     跨线程 (内部锁, lock).
  */
-sevent_io_t sevent_io_register(sevent_context *ctx, struct sevent_io_handler *h);
+sevent_io *sevent_io_register(sevent_context *ctx, sevent_io_handler *h);
 
 /*
  * 注销 fd 监听, 释放内部资源.
@@ -176,7 +176,7 @@ sevent_io_t sevent_io_register(sevent_context *ctx, struct sevent_io_handler *h)
  * h 必须为有效句柄 (来自 sevent_io_register).
  * 线程: 跨线程 (内部锁, lock).
  */
-void sevent_io_unregister(sevent_context *ctx, sevent_io_t h);
+void sevent_io_unregister(sevent_context *ctx, sevent_io *h);
 
 /* ==================== Timer API ==================== */
 
@@ -187,7 +187,7 @@ void sevent_io_unregister(sevent_context *ctx, sevent_io_t h);
  * 返回:     句柄, 或 NULL (interval_ms == 0 / 内存不足).
  * 线程:     跨线程 (内部锁, lock).
  */
-sevent_timer_t sevent_timer_register(sevent_context *ctx, unsigned int interval_ms, sevent_timer_fn cb, void *data);
+sevent_timer *sevent_timer_register(sevent_context *ctx, unsigned int interval_ms, sevent_timer_fn cb, void *data);
 
 /*
  * 注销定时器, 释放内部资源.
@@ -195,7 +195,7 @@ sevent_timer_t sevent_timer_register(sevent_context *ctx, unsigned int interval_
  * h 必须为有效句柄 (来自 sevent_timer_register).
  * 线程: 跨线程 (内部锁, lock).
  */
-void sevent_timer_unregister(sevent_context *ctx, sevent_timer_t h);
+void sevent_timer_unregister(sevent_context *ctx, sevent_timer *h);
 
 /* ==================== 可观测性 ==================== */
 

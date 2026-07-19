@@ -90,7 +90,7 @@ int main(void) {
     setup_signals();
 
     /* 注册信号管道读端 */
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = sig_fds[0],
             .io_read = on_signal,
             .data    = ctx,
@@ -101,7 +101,7 @@ int main(void) {
     }
 
     /* 每秒心跳定时器 */
-    sevent_timer_t ticker = sevent_timer_register(ctx, 1000, on_tick, NULL);
+    sevent_timer *ticker = sevent_timer_register(ctx, 1000, on_tick, NULL);
     if(!ticker) {
         fprintf(stderr, "timer_register failed\n");
         return 1;

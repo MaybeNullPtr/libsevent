@@ -43,7 +43,7 @@ int main(void) {
         return 1;
     }
 
-    struct sevent_io_handler h = {
+    sevent_io_handler h = {
             .fd      = 0, /* stdin */
             .io_read = on_stdin_read,
     };

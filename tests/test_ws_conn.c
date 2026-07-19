@@ -135,7 +135,7 @@ static void write_all(int fd, const void *b, size_t l) {
 }
 
 /* pair: 创建 TCP 连接, 返回 sfd */
-static int pair(sevent_context *ctx, struct sevent_ws_config *cfg, sevent_ws_conn **ws) {
+static int pair(sevent_context *ctx, sevent_ws_config *cfg, sevent_ws_conn **ws) {
     int lfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     int o   = 1;
     setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &o, sizeof(o));
@@ -246,7 +246,7 @@ static int t_lifecycle(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host       = "127.0.0.1";
     cfg.path       = "/";
@@ -300,7 +300,7 @@ static int t_client_send_text(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host    = "127.0.0.1";
     cfg.path    = "/";
@@ -336,7 +336,7 @@ static int t_client_send_binary(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host    = "127.0.0.1";
     cfg.path    = "/";
@@ -374,7 +374,7 @@ static int t_auto_pong(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host    = "127.0.0.1";
     cfg.path    = "/";
@@ -416,7 +416,7 @@ static int t_on_pong(void) {
     /* 收到 PONG → on_pong 回调被触发 */
     sevent_context *ctx = sevent_create();
     if(!ctx) return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host    = "127.0.0.1";
     cfg.path    = "/";
@@ -455,7 +455,7 @@ static int t_large_msg(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host       = "127.0.0.1";
     cfg.path       = "/";
@@ -497,7 +497,7 @@ static int t_client_ping(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host    = "127.0.0.1";
     cfg.path    = "/";
@@ -533,7 +533,7 @@ static int t_client_close(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host     = "127.0.0.1";
     cfg.path     = "/";
@@ -588,7 +588,7 @@ static int t_fragmentation(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host        = "127.0.0.1";
     cfg.path        = "/";
@@ -628,7 +628,7 @@ static int t_fragmentation(void) {
     WS_WRITE(sfd, b, (size_t)(hl + 5));
 
     /* 驱动 loop 处理所有分片 */
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_ev == 2 && g_frag_count == 1)
@@ -650,7 +650,7 @@ static int t_frag_large(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host        = "127.0.0.1";
     cfg.path        = "/";
@@ -689,7 +689,7 @@ static int t_frag_large(void) {
     memcpy(buf + hl, blk, 3000);
     write_all(sfd, buf, (size_t)(hl + 3000));
 
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_frag_count == 4)
@@ -710,7 +710,7 @@ static int t_frag_many(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host        = "127.0.0.1";
     cfg.path        = "/";
@@ -747,7 +747,7 @@ static int t_frag_many(void) {
     buf[hl] = '!';
     write_all(sfd, buf, (size_t)(hl + 1));
 
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_frag_count == 1)
@@ -768,7 +768,7 @@ static int t_frag_interleave(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host        = "127.0.0.1";
     cfg.path        = "/";
@@ -809,7 +809,7 @@ static int t_frag_interleave(void) {
     memcpy(b + hl, "rld\n", 4);
     write_all(sfd, b, (size_t)(hl + 4));
 
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_frag_count == 1)
@@ -830,7 +830,7 @@ static int t_frag_proto_error(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host     = "127.0.0.1";
     cfg.path     = "/";
@@ -857,7 +857,7 @@ static int t_frag_proto_error(void) {
     memcpy(b + hl, "abc", 3);
     write_all(sfd, b, (size_t)(hl + 3));
 
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 100; i++) {
         sevent_run_once(ctx);
         if(g_ev == 3)
@@ -878,7 +878,7 @@ static int t_sticky_packet(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host       = "127.0.0.1";
     cfg.path       = "/";
@@ -936,7 +936,7 @@ static int t_sticky_packet(void) {
     write_all(sfd, resp, (size_t)(resp_len + hl + 5));
 
     /* 驱动 loop — 握手成功后 WS 帧应自动被解析 */
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_ev == 2)
@@ -958,7 +958,7 @@ static int t_http_fail(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host             = "127.0.0.1";
     cfg.path             = "/";
@@ -979,7 +979,7 @@ static int t_http_fail(void) {
     char resp[] = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found";
     write_all(sfd, resp, strlen(resp));
     /* 驱动 — on_http_response 应被调用 */
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_ev == 4)
@@ -999,7 +999,7 @@ static int t_http_fail_with_body(void) {
     /* 升级失败, 验证 on_http_response 能拿到 body */
     sevent_context *ctx = sevent_create();
     if(!ctx) return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host             = "127.0.0.1";
     cfg.path             = "/";
@@ -1018,7 +1018,7 @@ static int t_http_fail_with_body(void) {
     if(rn <= 0) return 1;
     char resp[] = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello";
     write_all(sfd, resp, strlen(resp));
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_ev == 4) break;
@@ -1037,7 +1037,7 @@ static int t_sticky_multi_frame(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host       = "127.0.0.1";
     cfg.path       = "/";
@@ -1072,7 +1072,7 @@ static int t_sticky_multi_frame(void) {
     memcpy(b + off + hl, "WS", 2);
     off += hl + 2;
     write_all(sfd, b, off);
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_call_count == 2)
@@ -1093,7 +1093,7 @@ static int t_sticky_stream_tail(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host          = "127.0.0.1";
     cfg.path          = "/";
@@ -1132,7 +1132,7 @@ static int t_sticky_stream_tail(void) {
     off += hl + 4;
     write_all(sfd, b, off);
     /* recv_cap=4096, 大帧触发流式: 4096+904 两段, 然后紧跟小帧 */
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 1000; i++) {
         sevent_run_once(ctx);
         if(g_call_count == 3)
@@ -1153,7 +1153,7 @@ static int t_stream_total(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host          = "127.0.0.1";
     cfg.path          = "/";
@@ -1187,7 +1187,7 @@ static int t_stream_total(void) {
     memcpy(b + hl, big, 5000);
     write_all(sfd, b, (size_t)(hl + 5000));
     /* 驱动 — 流式分块, 每块 total 应为 5000 */
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 1000; i++) {
         sevent_run_once(ctx);
         if(g_call_count == 2)
@@ -1208,7 +1208,7 @@ static int t_split_frame(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host       = "127.0.0.1";
     cfg.path       = "/";
@@ -1237,7 +1237,7 @@ static int t_split_frame(void) {
     write_all(sfd, b, (size_t)(hl + 2));
     /* 驱动 — 数据不足, process_frames 应 break 等待 */
     {
-        sevent_timer_t _t2 = sevent_timer_register(ctx, 1, ev_tick, NULL);
+        sevent_timer *_t2 = sevent_timer_register(ctx, 1, ev_tick, NULL);
         for(int i = 0; i < 10; i++) {
             sevent_run_once(ctx);
             if(g_ev == 2)
@@ -1251,7 +1251,7 @@ static int t_split_frame(void) {
     /* 补充剩余 payload */
     memcpy(b, "llo", 3);
     write_all(sfd, b, 3);
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_ev == 2)
@@ -1272,7 +1272,7 @@ static int t_sticky_partial(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host       = "127.0.0.1";
     cfg.path       = "/";
@@ -1305,7 +1305,7 @@ static int t_sticky_partial(void) {
     off += hl + 2;
     write_all(sfd, b, off);
     /* 第一帧完整应被处理, 第二帧等待 */
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_ev == 2)
@@ -1340,7 +1340,7 @@ static int t_frag_split_read(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host       = "127.0.0.1";
     cfg.path       = "/";
@@ -1372,7 +1372,7 @@ static int t_frag_split_read(void) {
     write_all(sfd, b, (size_t)(hl + 3));
     /* 等它被处理 (frag_pending=1 但还没完成) */
     {
-        sevent_timer_t _t2 = sevent_timer_register(ctx, 1, ev_tick, NULL);
+        sevent_timer *_t2 = sevent_timer_register(ctx, 1, ev_tick, NULL);
         for(int i = 0; i < 10; i++) {
             sevent_run_once(ctx);
             if(g_call_count > 0)
@@ -1388,7 +1388,7 @@ static int t_frag_split_read(void) {
     hl = ws_frame_build_header(b, 1, WS_OPCODE_CONT, NULL, 5);
     memcpy(b + hl, "World", 5);
     write_all(sfd, b, (size_t)(hl + 5));
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 500; i++) {
         sevent_run_once(ctx);
         if(g_call_count == 1)
@@ -1458,7 +1458,7 @@ static int t_cross_thread_send(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host       = "127.0.0.1";
     cfg.path       = "/";
@@ -1512,7 +1512,7 @@ static int t_cross_thread_close(void) {
     sevent_context *ctx = sevent_create();
     if(!ctx)
         return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host     = "127.0.0.1";
     cfg.path     = "/";
@@ -1586,7 +1586,7 @@ static int t_recv_invalid_control_payload(void) {
     /* 模拟对端发送 payload > 125 的 PING → on_error 触发 */
     sevent_context *ctx = sevent_create();
     if(!ctx) return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host     = "127.0.0.1";
     cfg.path     = "/";
@@ -1617,7 +1617,7 @@ static int t_recv_invalid_control_payload(void) {
     free(raw);
 
     g_ev = 0;
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 100; i++) {
         sevent_run_once(ctx);
         if(g_ev == 3) break; /* on_error 触发 */
@@ -1634,7 +1634,7 @@ static int t_recv_invalid_close_code(void) {
     /* 模拟对端发送非法 Close 码 → on_error 触发 */
     sevent_context *ctx = sevent_create();
     if(!ctx) return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host     = "127.0.0.1";
     cfg.path     = "/";
@@ -1664,7 +1664,7 @@ static int t_recv_invalid_close_code(void) {
     free(raw);
 
     g_ev = 0;
-    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
     for(int i = 0; i < 100; i++) {
         sevent_run_once(ctx);
         if(g_ev == 3) break; /* on_error 触发 */
@@ -1681,7 +1681,7 @@ static int t_invalid_ping_payload(void) {
     /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
     sevent_context *ctx = sevent_create();
     if(!ctx) return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host    = "127.0.0.1";
     cfg.path    = "/";
@@ -1716,7 +1716,7 @@ static int t_invalid_close_code(void) {
     /* RFC 6455 §7.4: 非法 Close 码 → send_frame 拒绝 */
     sevent_context *ctx = sevent_create();
     if(!ctx) return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host    = "127.0.0.1";
     cfg.path    = "/";
@@ -1759,7 +1759,7 @@ static int t_connect_timeout(void) {
     /* 连不通的地址 + 超时 → 触发 on_error */
     sevent_context *ctx = sevent_create();
     if(!ctx) return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host              = "10.0.0.1"; /* 不可达 */
     cfg.path              = "/";
@@ -1782,7 +1782,7 @@ static int t_connect_timeout_not_reached(void) {
     /* 连自环 + 超时很长 → 正常连接成功, 不触发超时 */
     sevent_context *ctx = sevent_create();
     if(!ctx) return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host              = "127.0.0.1";
     cfg.path              = "/";
@@ -1809,7 +1809,7 @@ static int t_connect_timeout_disabled(void) {
     /* timeout=-1 → 不设超时, 正常连接 */
     sevent_context *ctx = sevent_create();
     if(!ctx) return 1;
-    struct sevent_ws_config cfg;
+    sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.host              = "127.0.0.1";
     cfg.path              = "/";
