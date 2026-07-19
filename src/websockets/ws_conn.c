@@ -67,6 +67,15 @@ static void gen_mask_key(uint8_t key[4]) {
     key[3]         = (uint8_t)(r);
 }
 
+/* RFC 6455 §7.4: 校验 Close 码是否合法 */
+static int ws_close_code_valid(uint16_t code) {
+    if(code < 1000)               return 0; /* 0-999 保留 */
+    if(code == 1005 || code == 1006) return 0; /* 仅内部, 不可发送 */
+    if(code >= 1016 && code <= 2999) return 0; /* 未分配 */
+    if(code > 4999)               return 0; /* 保留/非法 */
+    return 1;
+}
+
 static void ws_close_socket(struct sevent_ws_conn *c) {
     if(c->io_handle) {
         sevent_io_unregister(c->ev, c->io_handle);
@@ -254,6 +263,22 @@ static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payl
     }
 
     int is_ctrl = (opcode == WS_OPCODE_PING || opcode == WS_OPCODE_PONG || opcode == WS_OPCODE_CLOSE);
+
+    /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
+    if(is_ctrl && len > 125) {
+        sevent_i_free(buf);
+        return SEVENT_ERR_INVAL;
+    }
+    /* RFC 6455 §7.4: Close 帧状态码合法性 */
+    if(opcode == WS_OPCODE_CLOSE && len >= 2) {
+        const uint8_t *cp = (const uint8_t *)payload;
+        uint16_t close_code = (uint16_t)(cp[0] << 8 | cp[1]);
+        if(!ws_close_code_valid(close_code)) {
+            sevent_i_free(buf);
+            return SEVENT_ERR_INVAL;
+        }
+    }
+
     if(ws_enqueue(c, buf, total, is_ctrl) != 0)
         return SEVENT_ERR_NOMEM;
     ws_flush(c);
@@ -388,6 +413,12 @@ static void process_frames(struct sevent_ws_conn *c) {
         if(hdr.mask)
             ws_frame_apply_mask(payload, hdr.payload_len, hdr.mask_key);
 
+        /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
+        if((hdr.opcode & 0x08) && hdr.payload_len > 125) {
+            ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
+            return;
+        }
+
         switch(hdr.opcode) {
         case WS_OPCODE_TEXT:
         case WS_OPCODE_BINARY:
@@ -435,7 +466,10 @@ static void process_frames(struct sevent_ws_conn *c) {
                 return;
             break;
         case WS_OPCODE_PING:
-            send_frame(c, WS_OPCODE_PONG, payload, (size_t)hdr.payload_len);
+            if(send_frame(c, WS_OPCODE_PONG, payload, (size_t)hdr.payload_len) != 0) {
+                ws_fatal(c, SEVENT_WS_ERR_WRITE);
+                return;
+            }
             if(c->destroyed)
                 return; /* send_frame 触发 ws_fatal→destroy */
             break;
@@ -449,6 +483,11 @@ static void process_frames(struct sevent_ws_conn *c) {
                 code   = (uint16_t)((payload[0] << 8) | payload[1]);
                 reason = (const char *)(payload + 2);
                 rl     = (size_t)hdr.payload_len - 2;
+                /* RFC 6455 §7.4: 校验 Close 码合法性 */
+                if(!ws_close_code_valid(code)) {
+                    ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
+                    return;
+                }
             }
             if(c->state == WS_STATE_CLOSING)
                 ws_enter_closed(c, code, reason, rl);

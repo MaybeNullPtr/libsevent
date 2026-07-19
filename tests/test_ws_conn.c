@@ -1487,11 +1487,188 @@ static int t_cross_thread_send(void) { return 0; }
 static int t_cross_thread_close(void) { return 0; }
 #endif
 
+/* ==================== 协议校验测试 ==================== */
+
+static int t_recv_invalid_control_payload(void) {
+    /* 模拟对端发送 payload > 125 的 PING → on_error 触发 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host     = "127.0.0.1";
+    cfg.path     = "/";
+    cfg.on_open  = ev_open;
+    cfg.on_error = ev_error;
+    g_ev         = 0;
+    sevent_ws_conn *ws;
+    int sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0) return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0) return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1) break;
+    }
+    if(g_ev != 1) return 1;
+
+    /* 构造 PING 帧 payload = 200 字节 > 125 */
+    uint8_t ping_pay[200];
+    memset(ping_pay, 'p', sizeof(ping_pay));
+    uint8_t hdr[16];
+    int hl = ws_frame_build_header(hdr, 0, WS_OPCODE_PING, NULL, sizeof(ping_pay));
+    if(hl < 0) return 1;
+    uint8_t *raw = malloc((size_t)hl + sizeof(ping_pay));
+    memcpy(raw, hdr, (size_t)hl);
+    memcpy(raw + hl, ping_pay, sizeof(ping_pay));
+    write_all(sfd, raw, (size_t)hl + sizeof(ping_pay));
+    free(raw);
+
+    g_ev = 0;
+    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    for(int i = 0; i < 100; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 3) break; /* on_error 触发 */
+    }
+    if(_tm) sevent_timer_unregister(ctx, _tm);
+    if(g_ev != 3) return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_recv_invalid_close_code(void) {
+    /* 模拟对端发送非法 Close 码 → on_error 触发 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host     = "127.0.0.1";
+    cfg.path     = "/";
+    cfg.on_open  = ev_open;
+    cfg.on_error = ev_error;
+    g_ev         = 0;
+    sevent_ws_conn *ws;
+    int sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0) return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0) return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1) break;
+    }
+    if(g_ev != 1) return 1;
+
+    /* 构造 CLOSE 帧 payload = 非法码 999 */
+    uint8_t cp[2] = {0x03, 0xE7}; /* 999 */
+    uint8_t hdr[16];
+    int hl = ws_frame_build_header(hdr, 0, WS_OPCODE_CLOSE, NULL, 2);
+    if(hl < 0) return 1;
+    uint8_t *raw = malloc((size_t)hl + 2);
+    memcpy(raw, hdr, (size_t)hl);
+    memcpy(raw + hl, cp, 2);
+    write_all(sfd, raw, (size_t)hl + 2);
+    free(raw);
+
+    g_ev = 0;
+    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    for(int i = 0; i < 100; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 3) break; /* on_error 触发 */
+    }
+    if(_tm) sevent_timer_unregister(ctx, _tm);
+    if(g_ev != 3) return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_invalid_ping_payload(void) {
+    /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host    = "127.0.0.1";
+    cfg.path    = "/";
+    cfg.on_open = ev_open;
+    g_ev        = 0;
+    sevent_ws_conn *ws;
+    int sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0) return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0) return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1) break;
+    }
+    if(g_ev != 1) return 1;
+
+    /* ping payload > 125 → 应拒绝 */
+    uint8_t big[200];
+    memset(big, 'x', sizeof(big));
+    if(sevent_ws_ping(ws, big, sizeof(big)) != SEVENT_ERR_INVAL) return 1;
+
+    /* 短 ping → 应正常 */
+    if(sevent_ws_ping(ws, "ok", 2) != 0) return 1;
+
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_invalid_close_code(void) {
+    /* RFC 6455 §7.4: 非法 Close 码 → send_frame 拒绝 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host    = "127.0.0.1";
+    cfg.path    = "/";
+    cfg.on_open = ev_open;
+    g_ev        = 0;
+    sevent_ws_conn *ws;
+    int sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0) return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0) return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1) break;
+    }
+    if(g_ev != 1) return 1;
+
+    /* 非法码 999 (0-999 保留) → 拒绝 */
+    if(sevent_ws_close(ws, 999, "") != SEVENT_ERR_INVAL) return 1;
+    /* 非法码 1005 (仅内部) → 拒绝 */
+    if(sevent_ws_close(ws, 1005, "") != SEVENT_ERR_INVAL) return 1;
+    /* 非法码 1006 (仅内部) → 拒绝 */
+    if(sevent_ws_close(ws, 1006, "") != SEVENT_ERR_INVAL) return 1;
+    /* 非法码 2000 (1016-2999 未分配) → 拒绝 */
+    if(sevent_ws_close(ws, 2000, "") != SEVENT_ERR_INVAL) return 1;
+    /* 非法码 5000 (> 4999) → 拒绝 */
+    if(sevent_ws_close(ws, 5000, "") != SEVENT_ERR_INVAL) return 1;
+
+    /* 合法码 1000 → 正常关闭 */
+    if(sevent_ws_close(ws, 1000, "") != 0) return 1;
+
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
 int main(void) {
     struct {
         const char *n;
         int (*f)(void);
-    } tests[] = {{"lifecycle", t_lifecycle},
+    } tests[] = {{"recv_invalid_control_payload", t_recv_invalid_control_payload},
+                 {"recv_invalid_close_code", t_recv_invalid_close_code},
+                 {"invalid_ping_payload", t_invalid_ping_payload},
+                 {"invalid_close_code", t_invalid_close_code},
+                 {"lifecycle", t_lifecycle},
                  {"client_send_text", t_client_send_text},
                  {"client_send_binary", t_client_send_binary},
                  {"auto_pong", t_auto_pong},
