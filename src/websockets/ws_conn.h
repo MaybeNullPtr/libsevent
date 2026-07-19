@@ -46,7 +46,7 @@ struct sevent_ws_conn {
     sevent_io *io_handle;
 
     /* ---- 状态 ---- */
-    int state;     /* enum ws_state */
+    int  state;     /* enum ws_state */
     bool destroyed; /* 回调重入守卫: on_error/on_close 中 destroy 后不再访问 */
 #ifdef SEVENT_WS_THREAD_SAFE
     sevent_mutex_t lock; /* 跨线程锁 (递归) */

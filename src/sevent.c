@@ -63,7 +63,7 @@ struct sevent_io {
     sevent_io_write_fn     write_cb;
     void                  *data;
     struct sevent_context *ctx;
-    bool deleted; /* unregister 标记, 用于快照保护 */
+    bool                   deleted; /* unregister 标记, 用于快照保护 */
 };
 
 struct sevent_timer {
@@ -74,7 +74,7 @@ struct sevent_timer {
     sevent_timer_fn        cb;
     void                  *data;
     struct sevent_context *ctx;
-    bool deleted; /* unregister 标记 */
+    bool                   deleted; /* unregister 标记 */
 };
 
 struct sevent_post {

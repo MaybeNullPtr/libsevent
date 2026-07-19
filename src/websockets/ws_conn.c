@@ -50,10 +50,10 @@ static void on_handshake_data(void *data);
 
 static unsigned int xorshift32(unsigned int *seed) {
     unsigned int x = *seed;
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    *seed = x;
+    x              ^= x << 13;
+    x              ^= x >> 17;
+    x              ^= x << 5;
+    *seed          = x;
     return x;
 }
 
@@ -139,7 +139,8 @@ static void stream_consume(struct sevent_ws_conn *c) {
     bool  is_bin = (c->stream_opcode == WS_OPCODE_BINARY);
 
     while(c->recv_pos < c->recv_len && c->stream_remaining > 0) {
-        if(c->destroyed) return;
+        if(c->destroyed)
+            return;
         size_t avail = c->recv_len - c->recv_pos;
         size_t chunk = (avail < c->recv_cap) ? avail : c->recv_cap;
         if(chunk > c->stream_remaining)
@@ -148,7 +149,8 @@ static void stream_consume(struct sevent_ws_conn *c) {
 
         if(c->on_message)
             c->on_message(d, c->recv_buf + c->recv_pos, chunk, is_bin, last, c->stream_total);
-        if(c->destroyed) return;
+        if(c->destroyed)
+            return;
 
         c->recv_pos         += chunk;
         c->stream_remaining -= chunk;
@@ -339,7 +341,8 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
             void *d      = c->user_data;
             bool  is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
             c->on_message(d, c->frag_buf, c->frag_len, is_bin, 0, 0);
-            if(c->destroyed) return 0;
+            if(c->destroyed)
+                return 0;
         }
         c->frag_len = 0;
     }
@@ -375,14 +378,16 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
         /* 这次刷完 frag_buf 就空了 → 如果 fin=1 这就是最后一块 */
         bool last_flag = fin && (c->frag_len == c->recv_cap);
         c->on_message(d, c->frag_buf, c->recv_cap, is_bin, last_flag ? 1 : 0, 0);
-        if(c->destroyed) return 0;
+        if(c->destroyed)
+            return 0;
         c->frag_len -= c->recv_cap;
         memmove(c->frag_buf, c->frag_buf + c->recv_cap, c->frag_len);
     }
     /* 余量 < recv_cap, 消息结束: 刷出最后一小块 */
     if(fin && c->frag_len > 0) {
         c->on_message(d, c->frag_buf, c->frag_len, is_bin, 1, c->frag_total);
-        if(c->destroyed) return 0;
+        if(c->destroyed)
+            return 0;
         c->frag_len     = 0;
         c->frag_pending = 0;
         c->frag_total   = 0;
@@ -409,7 +414,8 @@ static int handle_text_binary(struct sevent_ws_conn *c, const ws_frame_header *h
                           (hdr->opcode == WS_OPCODE_BINARY) ? 1 : 0,
                           1,
                           hdr->payload_len);
-            if(c->destroyed) return -1;
+            if(c->destroyed)
+                return -1;
         }
     } else {
         c->frag_opcode  = hdr->opcode;
@@ -417,7 +423,8 @@ static int handle_text_binary(struct sevent_ws_conn *c, const ws_frame_header *h
         if(frag_append(c, payload, (size_t)hdr->payload_len) != 0)
             return SEVENT_ERR_NOMEM;
         frag_flush(c, 0);
-        if(c->destroyed) return -1;
+        if(c->destroyed)
+            return -1;
     }
     return 0;
 }
@@ -428,7 +435,8 @@ static int handle_cont(struct sevent_ws_conn *c, const ws_frame_header *hdr, con
     if(frag_append(c, payload, (size_t)hdr->payload_len) != 0)
         return SEVENT_ERR_NOMEM;
     frag_flush(c, hdr->fin);
-    if(c->destroyed) return -1;
+    if(c->destroyed)
+        return -1;
     return 0;
 }
 
@@ -441,7 +449,8 @@ static int handle_ping(struct sevent_ws_conn *c, const ws_frame_header *hdr, con
 static int handle_pong(struct sevent_ws_conn *c, const ws_frame_header *hdr, const uint8_t *payload) {
     if(c->on_pong)
         c->on_pong(c->user_data, payload, (size_t)hdr->payload_len);
-    if(c->destroyed) return -1;
+    if(c->destroyed)
+        return -1;
     return 0;
 }
 
@@ -468,7 +477,8 @@ static int handle_close(struct sevent_ws_conn *c, const ws_frame_header *hdr, co
 
 static int process_frames(struct sevent_ws_conn *c) {
     while(c->recv_pos < c->recv_len) {
-        if(c->destroyed) return 0;
+        if(c->destroyed)
+            return 0;
         size_t          avail = c->recv_len - c->recv_pos;
         const uint8_t  *p     = c->recv_buf + c->recv_pos;
         ws_frame_header hdr;
@@ -486,11 +496,11 @@ static int process_frames(struct sevent_ws_conn *c) {
         if(avail < frame_size) {
             /* 单帧 > recv_cap 时进入流式读取, 不再等整帧收齐 */
             if(frame_size > c->recv_cap) {
-                c->stream_active     = 1;
-                c->stream_opcode     = hdr.opcode;
-                c->stream_remaining  = hdr.payload_len;
-                c->stream_total      = hdr.payload_len;
-                c->stream_fin        = hdr.fin;
+                c->stream_active    = 1;
+                c->stream_opcode    = hdr.opcode;
+                c->stream_remaining = hdr.payload_len;
+                c->stream_total     = hdr.payload_len;
+                c->stream_fin       = hdr.fin;
                 c->recv_pos         += (size_t)n; /* 消费帧头 */
                 stream_consume(c);
             }
@@ -514,18 +524,29 @@ static int process_frames(struct sevent_ws_conn *c) {
         case WS_OPCODE_CLOSE:
             /* CLOSE: on_close 中用 close() 非 destroy(), 之后 c 仍存活 */
             ret = handle_close(c, &hdr, payload);
-            if(ret) return ret;
+            if(ret)
+                return ret;
             return 0;
         case WS_OPCODE_TEXT:
-        case WS_OPCODE_BINARY: ret = handle_text_binary(c, &hdr, payload); break;
-        case WS_OPCODE_CONT:   ret = handle_cont(c, &hdr, payload); break;
-        case WS_OPCODE_PING:   ret = handle_ping(c, &hdr, payload); break;
-        case WS_OPCODE_PONG:   ret = handle_pong(c, &hdr, payload); break;
+        case WS_OPCODE_BINARY:
+            ret = handle_text_binary(c, &hdr, payload);
+            break;
+        case WS_OPCODE_CONT:
+            ret = handle_cont(c, &hdr, payload);
+            break;
+        case WS_OPCODE_PING:
+            ret = handle_ping(c, &hdr, payload);
+            break;
+        case WS_OPCODE_PONG:
+            ret = handle_pong(c, &hdr, payload);
+            break;
         default:
             return SEVENT_WS_ERR_PROTOCOL;
         }
-        if(ret < 0) return -1;
-        if(ret > 0) return ret;
+        if(ret < 0)
+            return -1;
+        if(ret > 0)
+            return ret;
         c->recv_pos += frame_size;
     }
     return 0;

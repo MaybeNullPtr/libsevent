@@ -1918,13 +1918,13 @@ static int t_close_in_on_message(void) {
         return 1;
     sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.host       = "127.0.0.1";
-    cfg.path       = "/";
-    cfg.on_open    = ev_open;
-    cfg.on_message = ev_msg_close_first;
-    cfg.on_close   = ev_close;
-    cfg.on_error   = ev_error;
-    g_ev            = 0;
+    cfg.host          = "127.0.0.1";
+    cfg.path          = "/";
+    cfg.on_open       = ev_open;
+    cfg.on_message    = ev_msg_close_first;
+    cfg.on_close      = ev_close;
+    cfg.on_error      = ev_error;
+    g_ev              = 0;
     g_close_msg_count = 0;
     g_close_ws        = NULL;
     sevent_ws_conn *ws;
@@ -1948,13 +1948,13 @@ static int t_close_in_on_message(void) {
     int     off = 0, hl;
     hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 1);
     b[off + hl] = 'A';
-    off += hl + 1;
+    off         += hl + 1;
     hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 1);
     b[off + hl] = 'B';
-    off += hl + 1;
+    off         += hl + 1;
     hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 1);
     b[off + hl] = 'C';
-    off += hl + 1;
+    off         += hl + 1;
     write_all(sfd, b, off);
     for(int i = 0; i < 50; i++) {
         sevent_run_once(ctx);
@@ -1964,7 +1964,7 @@ static int t_close_in_on_message(void) {
     /* 验证: 只有第 1 帧触发了 on_message, close 后不再处理后续帧 */
     int ok = (g_close_msg_count == 1);
     /* 确认连接已关闭: send 应返回错误 */
-    ok = ok && (sevent_ws_send_text(ws, "x", 1) != 0);
+    ok     = ok && (sevent_ws_send_text(ws, "x", 1) != 0);
     close(sfd);
     sevent_ws_destroy(ws);
     sevent_destroy(ctx);
@@ -1972,7 +1972,7 @@ static int t_close_in_on_message(void) {
 }
 
 /* ===== 握手 + 粘包无效 WS 帧 → on_error ===== */
-static int g_pipe_err;
+static int  g_pipe_err;
 static void ev_error_pipe(void *d, int err) {
     (void)d;
     g_pipe_err = err;
@@ -2024,12 +2024,13 @@ static int t_pipelined_proto_error(void) {
     char ac[64];
     ws_base64_encode(dg, 20, ac, sizeof(ac));
     /* 101 响应 + 无效 WS 帧 (opcode = 0xFF 非法, 长度为 0) */
-    char  resp[1024];
-    int   rn = snprintf(resp, sizeof(resp),
-                        "HTTP/1.1 101 Switching Protocols\r\n"
-                        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                        "Sec-WebSocket-Accept: %s\r\n\r\n",
-                        ac);
+    char resp[1024];
+    int  rn      = snprintf(resp,
+                      sizeof(resp),
+                      "HTTP/1.1 101 Switching Protocols\r\n"
+                            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                            "Sec-WebSocket-Accept: %s\r\n\r\n",
+                      ac);
     resp[rn]     = (char)0xFF;
     resp[rn + 1] = 0;
     WS_WRITE(sfd, resp, (size_t)(rn + 2));
@@ -2097,8 +2098,8 @@ static int t_eof_stream_trailing_close(void) {
     memcpy(b + off + hl, big, 5000);
     off += hl + 5000;
     uint8_t cp[8];
-    hl      = ws_frame_build_header(cp, 1, WS_OPCODE_CLOSE, NULL, 2);
-    cp[hl]  = (uint8_t)(1000 >> 8);
+    hl         = ws_frame_build_header(cp, 1, WS_OPCODE_CLOSE, NULL, 2);
+    cp[hl]     = (uint8_t)(1000 >> 8);
     cp[hl + 1] = (uint8_t)(1000);
     memcpy(b + off, cp, (size_t)(hl + 2));
     off += hl + 2;

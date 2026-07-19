@@ -5,3 +5,7 @@ build-*/
 test
 Testing/
 .claude/
+
+# Autobahn 测试生成文件
+config/
+reports/
