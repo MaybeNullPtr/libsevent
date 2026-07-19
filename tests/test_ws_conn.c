@@ -562,7 +562,7 @@ static int t_client_close(void) {
     }
     if(g_ev != 1)
         return 1;
-    if(sevent_ws_close(ws, 1000, "bye") != 0)
+    if(sevent_ws_shutdown(ws, 1000, "bye") != 0)
         return 1;
     ws_frame_header h;
     uint8_t         pay[128];
@@ -1438,7 +1438,7 @@ static int t_state_checks(void) {
         return 1;
     if(sevent_ws_ping(c, NULL, 0) != -1)
         return 1;
-    if(sevent_ws_close(c, 1000, "") != -1)
+    if(sevent_ws_shutdown(c, 1000, "") != -1)
         return 1;
     c->state = 0; /* CONNECTING */
     if(sevent_ws_send_text(c, "x", 1) != -1)
@@ -1464,7 +1464,7 @@ static void *thr_send_text(void *a) {
 
 static void *thr_close(void *a) {
     struct thr_arg *ta = (struct thr_arg *)a;
-    ta->result         = sevent_ws_close(ta->ws, 1000, "");
+    ta->result         = sevent_ws_shutdown(ta->ws, 1000, "");
     return NULL;
 }
 
@@ -1779,23 +1779,23 @@ static int t_invalid_close_code(void) {
         return 1;
 
     /* 非法码 999 (0-999 保留) → 拒绝 */
-    if(sevent_ws_close(ws, 999, "") != SEVENT_ERR_INVAL)
+    if(sevent_ws_shutdown(ws, 999, "") != SEVENT_ERR_INVAL)
         return 1;
     /* 非法码 1005 (仅内部) → 拒绝 */
-    if(sevent_ws_close(ws, 1005, "") != SEVENT_ERR_INVAL)
+    if(sevent_ws_shutdown(ws, 1005, "") != SEVENT_ERR_INVAL)
         return 1;
     /* 非法码 1006 (仅内部) → 拒绝 */
-    if(sevent_ws_close(ws, 1006, "") != SEVENT_ERR_INVAL)
+    if(sevent_ws_shutdown(ws, 1006, "") != SEVENT_ERR_INVAL)
         return 1;
     /* 非法码 2000 (1016-2999 未分配) → 拒绝 */
-    if(sevent_ws_close(ws, 2000, "") != SEVENT_ERR_INVAL)
+    if(sevent_ws_shutdown(ws, 2000, "") != SEVENT_ERR_INVAL)
         return 1;
     /* 非法码 5000 (> 4999) → 拒绝 */
-    if(sevent_ws_close(ws, 5000, "") != SEVENT_ERR_INVAL)
+    if(sevent_ws_shutdown(ws, 5000, "") != SEVENT_ERR_INVAL)
         return 1;
 
     /* 合法码 1000 → 正常关闭 */
-    if(sevent_ws_close(ws, 1000, "") != 0)
+    if(sevent_ws_shutdown(ws, 1000, "") != 0)
         return 1;
 
     close(sfd);
@@ -1897,6 +1897,229 @@ static int t_connect_timeout_disabled(void) {
     return 0;
 }
 
+/* ===== close 在 on_message 中调用的测试 ===== */
+static sevent_ws_conn *g_close_ws;
+static int             g_close_msg_count;
+static void            ev_msg_close_first(void *d, const void *m, size_t l, bool b, bool fin, uint64_t total) {
+    (void)d;
+    (void)m;
+    (void)l;
+    (void)b;
+    (void)fin;
+    (void)total;
+    g_close_msg_count++;
+    if(g_close_msg_count == 1 && g_close_ws)
+        sevent_ws_close(g_close_ws);
+}
+static int t_close_in_on_message(void) {
+    /* 验证 on_message 中调 sevent_ws_close 后不再收到后续帧回调 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host       = "127.0.0.1";
+    cfg.path       = "/";
+    cfg.on_open    = ev_open;
+    cfg.on_message = ev_msg_close_first;
+    cfg.on_close   = ev_close;
+    cfg.on_error   = ev_error;
+    g_ev            = 0;
+    g_close_msg_count = 0;
+    g_close_ws        = NULL;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    g_close_ws = ws;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+    g_ev = 0;
+    /* 一次写入 3 帧: "A", "B", "C" — 第 1 帧回调中调 close */
+    uint8_t b[128];
+    int     off = 0, hl;
+    hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 1);
+    b[off + hl] = 'A';
+    off += hl + 1;
+    hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 1);
+    b[off + hl] = 'B';
+    off += hl + 1;
+    hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 1);
+    b[off + hl] = 'C';
+    off += hl + 1;
+    write_all(sfd, b, off);
+    for(int i = 0; i < 50; i++) {
+        sevent_run_once(ctx);
+        if(g_close_msg_count >= 2)
+            break;
+    }
+    /* 验证: 只有第 1 帧触发了 on_message, close 后不再处理后续帧 */
+    int ok = (g_close_msg_count == 1);
+    /* 确认连接已关闭: send 应返回错误 */
+    ok = ok && (sevent_ws_send_text(ws, "x", 1) != 0);
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return ok ? 0 : 1;
+}
+
+/* ===== 握手 + 粘包无效 WS 帧 → on_error ===== */
+static int g_pipe_err;
+static void ev_error_pipe(void *d, int err) {
+    (void)d;
+    g_pipe_err = err;
+    g_ev       = 3;
+}
+static int t_pipelined_proto_error(void) {
+    /* HTTP 101 响应后附带无效 WS 帧数据 → on_error 应触发 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host     = "127.0.0.1";
+    cfg.path     = "/";
+    cfg.on_open  = ev_open;
+    cfg.on_error = ev_error_pipe;
+    g_ev         = 0;
+    g_pipe_err   = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    /* 读 HTTP 请求, 计算 accept key, 回复 101 + 粘包无效数据 */
+    char    b[4096];
+    ssize_t n = read(sfd, b, sizeof(b) - 1);
+    if(n <= 0)
+        return 1;
+    b[n]    = 0;
+    char *k = strstr(b, "Sec-WebSocket-Key:");
+    if(!k)
+        return 1;
+    k += 19;
+    while(*k == ' ')
+        k++;
+    char  ke[256];
+    char *e = strstr(k, "\r\n");
+    if(!e)
+        return 1;
+    size_t kl = (size_t)(e - k);
+    if(kl > 255)
+        kl = 255;
+    memcpy(ke, k, kl);
+    ke[kl] = 0;
+    char cat[384];
+    snprintf(cat, sizeof(cat), "%s%s", ke, WS_GUID);
+    uint8_t dg[20];
+    ws_sha1(cat, strlen(cat), dg);
+    char ac[64];
+    ws_base64_encode(dg, 20, ac, sizeof(ac));
+    /* 101 响应 + 无效 WS 帧 (opcode = 0xFF 非法, 长度为 0) */
+    char  resp[1024];
+    int   rn = snprintf(resp, sizeof(resp),
+                        "HTTP/1.1 101 Switching Protocols\r\n"
+                        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                        "Sec-WebSocket-Accept: %s\r\n\r\n",
+                        ac);
+    resp[rn]     = (char)0xFF;
+    resp[rn + 1] = 0;
+    WS_WRITE(sfd, resp, (size_t)(rn + 2));
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 3)
+            break;
+    }
+    int ok = (g_ev == 3 && g_pipe_err != 0);
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return ok ? 0 : 1;
+}
+
+/* ===== EOF + 流式 + 后续 CLOSE 帧 ===== */
+static uint16_t g_close_code;
+static void     ev_close_code(void *d, uint16_t co, const char *r, size_t rl) {
+    (void)d;
+    (void)r;
+    (void)rl;
+    g_close_code = co;
+    g_ev         = 3;
+}
+static int t_eof_stream_trailing_close(void) {
+    /* 大帧(> recv_cap) + 后续 CLOSE 帧一起写入, 然后关闭服务端连接
+       验证缓冲区中 CLOSE 帧仍被正确处理 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host          = "127.0.0.1";
+    cfg.path          = "/";
+    cfg.on_open       = ev_open;
+    cfg.on_message    = ev_msg_frag;
+    cfg.on_close      = ev_close_code;
+    cfg.recv_buf_size = 4096;
+    g_ev              = 0;
+    g_frag_count      = 0;
+    g_frag_total      = 0;
+    g_frag_len        = 0;
+    g_close_code      = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+    g_ev = 0;
+    /* 一次写入: 大帧 5000 字节 + CLOSE 帧 (code 1000) */
+    uint8_t b[8192];
+    int     off = 0, hl;
+    char    big[5000];
+    memset(big, 'X', 5000);
+    hl = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 5000);
+    memcpy(b + off + hl, big, 5000);
+    off += hl + 5000;
+    uint8_t cp[8];
+    hl      = ws_frame_build_header(cp, 1, WS_OPCODE_CLOSE, NULL, 2);
+    cp[hl]  = (uint8_t)(1000 >> 8);
+    cp[hl + 1] = (uint8_t)(1000);
+    memcpy(b + off, cp, (size_t)(hl + 2));
+    off += hl + 2;
+    write_all(sfd, b, off);
+    /* 立刻关服务端 fd 模拟 EOF */
+    close(sfd);
+    sfd = -1;
+    for(int i = 0; i < 500; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 3)
+            break;
+    }
+    /* on_close(code=1000) 应触发 (CLOSE 帧被处理, 而非 1006) */
+    int ok = (g_close_code == 1000);
+    if(sfd >= 0)
+        close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return ok ? 0 : 1;
+}
+
 int main(void) {
     struct {
         const char *n;
@@ -1933,6 +2156,9 @@ int main(void) {
                  {"state_checks", t_state_checks},
                  {"cross_thread_send", t_cross_thread_send},
                  {"cross_thread_close", t_cross_thread_close},
+                 {"close_in_on_message", t_close_in_on_message},
+                 {"pipelined_proto_error", t_pipelined_proto_error},
+                 {"eof_stream_trailing_close", t_eof_stream_trailing_close},
                  {NULL, NULL}};
     printf("ws_conn tests\n");
     printf("=============\n");

@@ -50,7 +50,7 @@ static void on_handshake_data(void *data);
 static unsigned int next_seed(void) {
     static unsigned int seed = 0;
     if(seed == 0) {
-        seed = (unsigned int)(__TIME__[0] ^ (__TIME__[7] << 8) ^ (__TIME__[3] << 16) ^ (__TIME__[5] << 24));
+        seed  = (unsigned int)(__TIME__[0] ^ (__TIME__[7] << 8) ^ (__TIME__[3] << 16) ^ (__TIME__[5] << 24));
         seed ^= (unsigned int)(getpid() << 16);
     }
     seed ^= seed << 13;
@@ -103,11 +103,11 @@ static void ws_enter_closed(struct sevent_ws_conn *c, uint16_t code, const char 
 static void ws_fatal(struct sevent_ws_conn *c, int err) {
     if(c->destroyed || c->state == WS_STATE_CLOSED)
         return;
+    c->state = WS_STATE_CLOSED;
+    ws_close_socket(c);
     if(c->on_error)
         c->on_error(c->user_data, err);
-    if(c->destroyed)
-        return; /* on_error 中 destroy 了连接 */
-    ws_enter_closed(c, 0, "", 0);
+    /* on_error 后不再访问 c (用户可能在其中 destroy) */
 }
 
 /* ====================================================================
@@ -139,6 +139,7 @@ static void stream_consume(struct sevent_ws_conn *c) {
     bool  is_bin = (c->stream_opcode == WS_OPCODE_BINARY);
 
     while(c->recv_pos < c->recv_len && c->stream_remaining > 0) {
+        if(c->destroyed) return;
         size_t avail = c->recv_len - c->recv_pos;
         size_t chunk = (avail < c->recv_cap) ? avail : c->recv_cap;
         if(chunk > c->stream_remaining)
@@ -147,8 +148,7 @@ static void stream_consume(struct sevent_ws_conn *c) {
 
         if(c->on_message)
             c->on_message(d, c->recv_buf + c->recv_pos, chunk, is_bin, last, c->stream_total);
-        if(c->destroyed)
-            return;
+        if(c->destroyed) return;
 
         c->recv_pos         += chunk;
         c->stream_remaining -= chunk;
@@ -189,15 +189,15 @@ static int ws_enqueue(struct sevent_ws_conn *c, uint8_t *data, size_t len, bool 
     return 0;
 }
 
-/* 尝试写队列中的数据; 返回还剩余多少字节未写入 */
-static size_t ws_flush(struct sevent_ws_conn *c) {
+/* 尝试写队列中的数据; 返回 0=写完, >0=剩余节点数, <0=致命写错误 */
+static int ws_flush(struct sevent_ws_conn *c) {
     while(c->write_head) {
         ws_write_node *n = c->write_head;
         ssize_t        w = write(c->fd, n->data + n->offset, n->len - n->offset);
         if(w > 0) {
             n->offset += (size_t)w;
             if(n->offset < n->len)
-                return c->write_count; /* 部分写入, 停止本轮 flush */
+                return (int)c->write_count; /* 部分写入, 停止本轮 flush */
             /* 节点写完, 释放 */
             c->write_head = n->next;
             if(!c->write_head)
@@ -207,10 +207,15 @@ static size_t ws_flush(struct sevent_ws_conn *c) {
             sevent_i_free(n);
         } else if(w < 0) {
             if(errno == EAGAIN || errno == EINTR)
-                return c->write_count;
-            /* 致命写错误 */
-            ws_fatal(c, SEVENT_WS_ERR_WRITE);
-            return 0;
+                return (int)c->write_count;
+            /* 致命写错误 — 清理当前节点, 返回 -1 由调用者调 ws_fatal */
+            c->write_head = n->next;
+            if(!c->write_head)
+                c->write_tail = NULL;
+            c->write_count--;
+            sevent_i_free(n->data);
+            sevent_i_free(n);
+            return -1;
         } else {
             /* write 返回 0 (不可能在 TCP 上发生) */
             c->write_head = n->next;
@@ -285,9 +290,8 @@ static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payl
 
     if(ws_enqueue(c, buf, total, is_ctrl) != 0)
         return SEVENT_ERR_NOMEM;
-    ws_flush(c);
-    if(c->destroyed)
-        return SEVENT_WS_ERR_WRITE; /* flush 触发 ws_fatal→destroy */
+    if(ws_flush(c) < 0)
+        return SEVENT_WS_ERR_WRITE;
 
     /* 队列非空则注册可写回调 (flush 可能在 io_write 回调内驱动) */
     if(c->write_head) {
@@ -305,15 +309,12 @@ static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payl
 static void on_write_ready(void *data) {
     struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
     WS_LOCK(c);
-    if(c->destroyed) {
+    int remain = ws_flush(c);
+    if(remain < 0) {
         WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_WS_ERR_WRITE);
         return;
     }
-    size_t remain = ws_flush(c);
-    if(c->destroyed) {
-        WS_UNLOCK(c);
-        return;
-    } /* ws_flush 触发 ws_fatal→destroy */
     if(remain == 0) {
         /* 队列已空, 注销可写回调 (保持可读) */
         void (*rcb)(void *) = (c->state == WS_STATE_OPEN) ? on_data : NULL;
@@ -338,8 +339,7 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
             void *d      = c->user_data;
             bool  is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
             c->on_message(d, c->frag_buf, c->frag_len, is_bin, 0, 0);
-            if(c->destroyed)
-                return 0;
+            if(c->destroyed) return 0;
         }
         c->frag_len = 0;
     }
@@ -350,29 +350,27 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
 }
 
 /* 从 frag_buf 吐出完整块给 on_message, fin=1 表示最后一次 */
-static void frag_flush(struct sevent_ws_conn *c, bool fin) {
+static int frag_flush(struct sevent_ws_conn *c, bool fin) {
     if(!c->on_message) {
         if(fin) {
             c->frag_pending = 0;
             c->frag_len     = 0;
             c->frag_total   = 0;
         }
-        return;
+        return 0;
     }
     void *d      = c->user_data;
     bool  is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
 
     while(c->frag_len >= c->recv_cap) {
         c->on_message(d, c->frag_buf, c->recv_cap, is_bin, 0, 0);
-        if(c->destroyed)
-            return;
+        if(c->destroyed) return 0;
         c->frag_len -= c->recv_cap;
         memmove(c->frag_buf, c->frag_buf + c->recv_cap, c->frag_len);
     }
     if(fin && c->frag_len > 0) {
         c->on_message(d, c->frag_buf, c->frag_len, is_bin, 1, c->frag_total);
-        if(c->destroyed)
-            return;
+        if(c->destroyed) return 0;
         c->frag_len     = 0;
         c->frag_pending = 0;
         c->frag_total   = 0;
@@ -380,10 +378,85 @@ static void frag_flush(struct sevent_ws_conn *c, bool fin) {
         c->frag_pending = 0;
         c->frag_total   = 0;
     }
+    return 0;
 }
 
-static void process_frames(struct sevent_ws_conn *c) {
+/* ====================================================================
+ *  Opcode 处理器 (从 process_frames 提取)
+ *  返回: 0=OK, >0=错误码, <0=回调内调用了 close (c 仍存活)
+ * ==================================================================== */
+
+static int handle_text_binary(struct sevent_ws_conn *c, const ws_frame_header *hdr, const uint8_t *payload) {
+    if(c->frag_pending)
+        return SEVENT_WS_ERR_PROTOCOL;
+    if(hdr->fin) {
+        if(c->on_message) {
+            c->on_message(c->user_data,
+                          payload,
+                          (size_t)hdr->payload_len,
+                          (hdr->opcode == WS_OPCODE_BINARY) ? 1 : 0,
+                          1,
+                          hdr->payload_len);
+            if(c->destroyed) return -1;
+        }
+    } else {
+        c->frag_opcode  = hdr->opcode;
+        c->frag_pending = 1;
+        if(frag_append(c, payload, (size_t)hdr->payload_len) != 0)
+            return SEVENT_ERR_NOMEM;
+        frag_flush(c, 0);
+        if(c->destroyed) return -1;
+    }
+    return 0;
+}
+
+static int handle_cont(struct sevent_ws_conn *c, const ws_frame_header *hdr, const uint8_t *payload) {
+    if(!c->frag_pending)
+        return SEVENT_WS_ERR_PROTOCOL;
+    if(frag_append(c, payload, (size_t)hdr->payload_len) != 0)
+        return SEVENT_ERR_NOMEM;
+    frag_flush(c, hdr->fin);
+    if(c->destroyed) return -1;
+    return 0;
+}
+
+static int handle_ping(struct sevent_ws_conn *c, const ws_frame_header *hdr, const uint8_t *payload) {
+    if(send_frame(c, WS_OPCODE_PONG, payload, (size_t)hdr->payload_len) != 0)
+        return SEVENT_WS_ERR_WRITE;
+    return 0;
+}
+
+static int handle_pong(struct sevent_ws_conn *c, const ws_frame_header *hdr, const uint8_t *payload) {
+    if(c->on_pong)
+        c->on_pong(c->user_data, payload, (size_t)hdr->payload_len);
+    if(c->destroyed) return -1;
+    return 0;
+}
+
+static int handle_close(struct sevent_ws_conn *c, const ws_frame_header *hdr, const uint8_t *payload) {
+    uint16_t    code   = 1000;
+    const char *reason = "";
+    size_t      rl     = 0;
+    if(hdr->payload_len >= 2) {
+        code   = (uint16_t)((payload[0] << 8) | payload[1]);
+        reason = (const char *)(payload + 2);
+        rl     = (size_t)hdr->payload_len - 2;
+        if(!ws_close_code_valid(code))
+            return SEVENT_WS_ERR_PROTOCOL;
+    }
+    if(c->state == WS_STATE_CLOSING)
+        ws_enter_closed(c, code, reason, rl);
+    else {
+        /* CLOSE 回应: 尽力发送, 失败仍继续关闭 */
+        (void)send_frame(c, WS_OPCODE_CLOSE, payload, (size_t)hdr->payload_len);
+        ws_enter_closed(c, code, reason, rl);
+    }
+    return 0;
+}
+
+static int process_frames(struct sevent_ws_conn *c) {
     while(c->recv_pos < c->recv_len) {
+        if(c->destroyed) return 0;
         size_t          avail = c->recv_len - c->recv_pos;
         const uint8_t  *p     = c->recv_buf + c->recv_pos;
         ws_frame_header hdr;
@@ -391,23 +464,21 @@ static void process_frames(struct sevent_ws_conn *c) {
         if(n == 0)
             break;
         if(n < 0) {
-            ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
-            return;
+            return SEVENT_WS_ERR_PROTOCOL;
         }
         /* 32 位截断保护: uint64_t payload_len 转 size_t 前检查溢出 */
         if(hdr.payload_len > SIZE_MAX - (size_t)n) {
-            ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
-            return;
+            return SEVENT_WS_ERR_PROTOCOL;
         }
         size_t frame_size = (size_t)n + (size_t)hdr.payload_len;
         if(avail < frame_size) {
             /* 单帧 > recv_cap 时进入流式读取, 不再等整帧收齐 */
             if(frame_size > c->recv_cap) {
-                c->stream_active    = 1;
-                c->stream_opcode    = hdr.opcode;
-                c->stream_remaining = hdr.payload_len;
-                c->stream_total     = hdr.payload_len;
-                c->stream_fin       = hdr.fin;
+                c->stream_active     = 1;
+                c->stream_opcode     = hdr.opcode;
+                c->stream_remaining  = hdr.payload_len;
+                c->stream_total      = hdr.payload_len;
+                c->stream_fin        = hdr.fin;
                 c->recv_pos         += (size_t)n; /* 消费帧头 */
                 stream_consume(c);
             }
@@ -419,117 +490,40 @@ static void process_frames(struct sevent_ws_conn *c) {
 
         /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
         if((hdr.opcode & 0x08) && hdr.payload_len > 125) {
-            ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
-            return;
+            return SEVENT_WS_ERR_PROTOCOL;
         }
 
+        int ret = 0;
         switch(hdr.opcode) {
         case WS_OPCODE_TEXT:
-        case WS_OPCODE_BINARY:
-            if(c->frag_pending) {
-                ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
-                return;
-            }
-            if(hdr.fin) {
-                /* 单帧消息 (不分块, 一次回调) */
-                if(c->on_message) {
-                    void *d = c->user_data;
-                    c->on_message(d,
-                                  payload,
-                                  (size_t)hdr.payload_len,
-                                  (hdr.opcode == WS_OPCODE_BINARY) ? 1 : 0,
-                                  1,
-                                  hdr.payload_len);
-                }
-                if(c->destroyed)
-                    return;
-            } else {
-                /* 分片起始: 缓存 → frag_flush 分块吐出 */
-                c->frag_opcode  = hdr.opcode;
-                c->frag_pending = 1;
-                if(frag_append(c, payload, (size_t)hdr.payload_len) != 0) {
-                    ws_fatal(c, SEVENT_ERR_NOMEM);
-                    return;
-                }
-                frag_flush(c, 0);
-                if(c->destroyed)
-                    return;
-            }
-            break;
-        case WS_OPCODE_CONT:
-            if(!c->frag_pending) {
-                ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
-                return;
-            }
-            if(frag_append(c, payload, (size_t)hdr.payload_len) != 0) {
-                ws_fatal(c, SEVENT_ERR_NOMEM);
-                return;
-            }
-            frag_flush(c, hdr.fin);
-            if(c->destroyed)
-                return;
-            break;
-        case WS_OPCODE_PING:
-            if(send_frame(c, WS_OPCODE_PONG, payload, (size_t)hdr.payload_len) != 0) {
-                ws_fatal(c, SEVENT_WS_ERR_WRITE);
-                return;
-            }
-            if(c->destroyed)
-                return; /* send_frame 触发 ws_fatal→destroy */
-            break;
-        case WS_OPCODE_PONG:
-            if(c->on_pong)
-                c->on_pong(c->user_data, payload, (size_t)hdr.payload_len);
-            if(c->destroyed)
-                return;
-            break;
-        case WS_OPCODE_CLOSE: {
-            uint16_t    code   = 1000;
-            const char *reason = "";
-            size_t      rl     = 0;
-            if(hdr.payload_len >= 2) {
-                code   = (uint16_t)((payload[0] << 8) | payload[1]);
-                reason = (const char *)(payload + 2);
-                rl     = (size_t)hdr.payload_len - 2;
-                /* RFC 6455 §7.4: 校验 Close 码合法性 */
-                if(!ws_close_code_valid(code)) {
-                    ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
-                    return;
-                }
-            }
-            if(c->state == WS_STATE_CLOSING)
-                ws_enter_closed(c, code, reason, rl);
-            else {
-                send_frame(c, WS_OPCODE_CLOSE, payload, (size_t)hdr.payload_len);
-                if(c->destroyed)
-                    return; /* send_frame 触发 ws_fatal→destroy */
-                ws_enter_closed(c, code, reason, rl);
-            }
-            return;
-        }
+        case WS_OPCODE_BINARY: ret = handle_text_binary(c, &hdr, payload); break;
+        case WS_OPCODE_CONT:   ret = handle_cont(c, &hdr, payload); break;
+        case WS_OPCODE_PING:   ret = handle_ping(c, &hdr, payload); break;
+        case WS_OPCODE_PONG:   ret = handle_pong(c, &hdr, payload); break;
         default:
-            /* RFC §5.2: 保留 opcode → 协议错误 */
-            ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
-            return;
+            return SEVENT_WS_ERR_PROTOCOL;
+        case WS_OPCODE_CLOSE:
+            /* CLOSE: on_close 中用 close() 非 destroy(), 之后 c 仍存活 */
+            ret = handle_close(c, &hdr, payload);
+            return ret;
         }
+        if(ret < 0) return -1;
+        if(ret > 0) return ret;
         c->recv_pos += frame_size;
     }
+    return 0;
 }
 
 static void on_data(void *data) {
     struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
     WS_LOCK(c);
-    if(c->destroyed) {
-        WS_UNLOCK(c);
-        return;
-    }
+
     /* 只读一次 (select 确保可读), 然后纯处理 buffer 已有数据 */
     int n = recv_read(c);
     if(n == 0) {
-        if(!c->stream_active)
-            process_frames(c);
-        if(!c->destroyed)
-            ws_enter_closed(c, 1006, "connection closed", 18);
+        /* EOF: 先处理 buffer 中残留帧 (可能含 CLOSE 帧), 再关连接 */
+        process_frames(c);
+        ws_enter_closed(c, 1006, "connection closed", 18);
         WS_UNLOCK(c);
         return;
     }
@@ -538,22 +532,35 @@ static void on_data(void *data) {
         WS_UNLOCK(c);
         return;
     }
-    /* 循环处理 buffer 积压:
-     *   粘包: 多帧一次收齐, 逐一处理
-     *   流式 + 粘包: 大帧流完后紧跟小帧
-     *   退出条件: 数据耗尽 | 无进展(等更多数据) | 销毁
-     *   安全门: 最多 buffer_size 轮 (单字节帧最坏情况)
-     */
-    for(int _i = 0; _i < (int)c->recv_cap && !c->destroyed; _i++) {
-        if(c->recv_pos >= c->recv_len)
-            break;
-        size_t prev = c->recv_pos;
-        if(c->stream_active)
-            stream_consume(c);
-        else
-            process_frames(c);
-        if(c->recv_pos == prev)
-            break;
+
+    if(c->stream_active) {
+        /* 流式模式下可能多次循环: stream_consume 每次消费 up to recv_cap */
+        int err = 0;
+        while(c->recv_pos < c->recv_len && err == 0) {
+            size_t prev = c->recv_pos;
+            if(c->stream_active)
+                stream_consume(c);
+            if(!c->stream_active)
+                err = process_frames(c);
+            if(c->recv_pos == prev)
+                break;
+        }
+        if(err) {
+            WS_UNLOCK(c);
+            ws_fatal(c, err);
+            return;
+        }
+    } else {
+        int err = process_frames(c);
+        if(err) {
+            WS_UNLOCK(c);
+            ws_fatal(c, err);
+            return;
+        }
+    }
+    if(c->destroyed) {
+        WS_UNLOCK(c);
+        return;
     }
     WS_UNLOCK(c);
 }
@@ -571,9 +578,12 @@ static void on_handshake_data(void *data) {
     }
     int n = recv_read(c);
     if(n <= 0) {
-        if(n == 0 || (errno != EAGAIN && errno != EINTR))
+        if(n == 0 || (errno != EAGAIN && errno != EINTR)) {
+            WS_UNLOCK(c);
             ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
-        WS_UNLOCK(c);
+        } else {
+            WS_UNLOCK(c);
+        }
         return;
     }
     ws_handshake_response resp;
@@ -586,8 +596,8 @@ static void on_handshake_data(void *data) {
         /* 失败时如有 on_http_response 则回调原始数据 */
         if(c->on_http_response)
             c->on_http_response(c->user_data, resp.status_code, (const char *)c->recv_buf, c->recv_len, "", 0);
-        ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
         WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
         return;
     }
     /* 分离 header (含状态行) 和 body */
@@ -611,8 +621,8 @@ static void on_handshake_data(void *data) {
     } else {
         /* 兼容旧模式: 库内部校验 accept */
         if(ws_verify_accept(c->sec_ws_key, resp.accept) != 0) {
-            ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
             WS_UNLOCK(c);
+            ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
             return;
         }
     }
@@ -621,9 +631,23 @@ static void on_handshake_data(void *data) {
     ws_update_io(c, on_data);
     if(c->on_open)
         c->on_open(c->user_data);
+    if(c->destroyed) {
+        WS_UNLOCK(c);
+        return;
+    }
     /* 握手响应 + WS 帧粘包: 立即处理残留帧 */
-    if(c->recv_len > c->recv_pos)
-        process_frames(c);
+    if(c->recv_len > c->recv_pos) {
+        int err = process_frames(c);
+        if(err > 0) {
+            WS_UNLOCK(c);
+            ws_fatal(c, err);
+            return;
+        }
+    }
+    if(c->destroyed) {
+        WS_UNLOCK(c);
+        return;
+    }
     WS_UNLOCK(c);
 }
 
@@ -640,17 +664,13 @@ static void on_connect_timeout(void *data) {
     c->connect_timer = NULL;
     if(t)
         sevent_timer_unregister(c->ev, t);
-    ws_fatal(c, SEVENT_WS_ERR_CONNECT);
     WS_UNLOCK(c);
+    ws_fatal(c, SEVENT_WS_ERR_CONNECT);
 }
 
 static void on_connect_ready(void *data) {
     struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
     WS_LOCK(c);
-    if(c->destroyed) {
-        WS_UNLOCK(c);
-        return;
-    }
     /* 连接有结果了, 关超时定时器 */
     if(c->connect_timer) {
         sevent_timer_unregister(c->ev, c->connect_timer);
@@ -659,8 +679,8 @@ static void on_connect_ready(void *data) {
     int       err = 0;
     socklen_t el  = sizeof(err);
     if(getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &err, &el) != 0 || err != 0) {
-        ws_fatal(c, SEVENT_WS_ERR_CONNECT);
         WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_WS_ERR_CONNECT);
         return;
     }
     ws_gen_key(c->sec_ws_key);
@@ -668,14 +688,14 @@ static void on_connect_ready(void *data) {
     int  req_len = ws_build_request(
             req, sizeof(req), c->host, c->port, c->path, c->sec_ws_key, c->sub_protocol[0] ? c->sub_protocol : NULL);
     if(req_len < 0) {
-        ws_fatal(c, SEVENT_ERR_NOMEM);
         WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_ERR_NOMEM);
         return;
     }
     ssize_t w = write(c->fd, req, (size_t)req_len);
     if(w < 0) {
-        ws_fatal(c, SEVENT_WS_ERR_CONNECT);
         WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_WS_ERR_CONNECT);
         return;
     }
     c->state = WS_STATE_HANDSHAKE;
@@ -793,12 +813,18 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     return c;
 }
 
+static int do_send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len) {
+    return send_frame(c, opcode, payload, len);
+}
+
 int sevent_ws_send_text(sevent_ws_conn *c, const void *data, size_t len) {
     if(!c)
         return SEVENT_ERR_INVAL;
     WS_LOCK(c);
-    int r = (data || len == 0) ? send_frame(c, WS_OPCODE_TEXT, data, len) : SEVENT_ERR_INVAL;
+    int r = (data || len == 0) ? do_send_frame(c, WS_OPCODE_TEXT, data, len) : SEVENT_ERR_INVAL;
     WS_UNLOCK(c);
+    if(r == SEVENT_WS_ERR_WRITE)
+        ws_fatal(c, r);
     return r;
 }
 
@@ -806,8 +832,10 @@ int sevent_ws_send_binary(sevent_ws_conn *c, const void *data, size_t len) {
     if(!c)
         return SEVENT_ERR_INVAL;
     WS_LOCK(c);
-    int r = (data || len == 0) ? send_frame(c, WS_OPCODE_BINARY, data, len) : SEVENT_ERR_INVAL;
+    int r = (data || len == 0) ? do_send_frame(c, WS_OPCODE_BINARY, data, len) : SEVENT_ERR_INVAL;
     WS_UNLOCK(c);
+    if(r == SEVENT_WS_ERR_WRITE)
+        ws_fatal(c, r);
     return r;
 }
 
@@ -815,12 +843,14 @@ int sevent_ws_ping(sevent_ws_conn *c, const void *payload, size_t len) {
     if(!c || len > 125)
         return SEVENT_ERR_INVAL;
     WS_LOCK(c);
-    int r = send_frame(c, WS_OPCODE_PING, payload, len);
+    int r = do_send_frame(c, WS_OPCODE_PING, payload, len);
     WS_UNLOCK(c);
+    if(r == SEVENT_WS_ERR_WRITE)
+        ws_fatal(c, r);
     return r;
 }
 
-int sevent_ws_close(sevent_ws_conn *c, uint16_t code, const char *reason) {
+int sevent_ws_shutdown(sevent_ws_conn *c, uint16_t code, const char *reason) {
     if(!c)
         return SEVENT_ERR_INVAL;
     WS_LOCK(c);
@@ -836,15 +866,16 @@ int sevent_ws_close(sevent_ws_conn *c, uint16_t code, const char *reason) {
     cp[1] = (uint8_t)(code);
     if(rl > 0)
         memcpy(cp + 2, reason, rl);
-    int ret = send_frame(c, WS_OPCODE_CLOSE, cp, 2 + rl);
-    /* send_frame 中 ws_flush 可能触发 ws_fatal→ws_enter_closed 置为 CLOSED */
+    int ret = do_send_frame(c, WS_OPCODE_CLOSE, cp, 2 + rl);
     if(ret == SEVENT_SUCCESS && !c->destroyed && c->state != WS_STATE_CLOSED)
         c->state = WS_STATE_CLOSING;
     WS_UNLOCK(c);
+    if(ret == SEVENT_WS_ERR_WRITE)
+        ws_fatal(c, ret);
     return ret;
 }
 
-void sevent_ws_destroy(sevent_ws_conn *c) {
+void sevent_ws_close(sevent_ws_conn *c) {
     if(!c)
         return;
     /* destroy 无锁 — loop 线程专用 */
@@ -855,8 +886,6 @@ void sevent_ws_destroy(sevent_ws_conn *c) {
         sevent_timer_unregister(c->ev, c->connect_timer);
         c->connect_timer = NULL;
     }
-    sevent_i_free(c->recv_buf);
-    sevent_i_free(c->frag_buf);
     ws_write_node *wn = c->write_head;
     while(wn) {
         ws_write_node *n = wn->next;
@@ -864,9 +893,16 @@ void sevent_ws_destroy(sevent_ws_conn *c) {
         sevent_i_free(wn);
         wn = n;
     }
+    c->write_head = NULL;
+}
+
+void sevent_ws_destroy(sevent_ws_conn *c) {
+    sevent_ws_close(c);
 #ifdef SEVENT_WS_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif
+    sevent_i_free(c->recv_buf);
+    sevent_i_free(c->frag_buf);
     sevent_i_free(c);
 }
 
