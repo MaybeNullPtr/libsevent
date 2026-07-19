@@ -64,7 +64,7 @@ static void on_stdin_read(void *d) {
     if(!fgets(buf, sizeof(buf), stdin)) {
         printf("\n[EOF]\n");
         clearerr(stdin);
-        sevent_ws_close(g_ws, 1000, "");
+        sevent_ws_shutdown(g_ws, 1000, "");
         return;
     }
     size_t len = strlen(buf);
@@ -77,7 +77,7 @@ static void on_stdin_read(void *d) {
     }
     if(!strcmp(buf, "/quit") || !strcmp(buf, "/exit")) {
         printf("[bye]\n");
-        sevent_ws_close(g_ws, 1000, "");
+        sevent_ws_shutdown(g_ws, 1000, "");
         return;
     }
     if(!strcmp(buf, "/ping")) {
