@@ -623,12 +623,34 @@ static void on_handshake_data(void *data) {
     WS_UNLOCK(c);
 }
 
+/* 连接超时回调 */
+static void on_connect_timeout(void *data) {
+    struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
+    WS_LOCK(c);
+    if(c->destroyed || c->state != WS_STATE_CONNECTING) {
+        WS_UNLOCK(c);
+        return;
+    }
+    /* 先关定时器再 ws_fatal, 防止 destroy 路径下 c 释放后定时器悬空 */
+    sevent_timer_t t = c->connect_timer;
+    c->connect_timer = NULL;
+    if(t)
+        sevent_timer_unregister(c->ev, t);
+    ws_fatal(c, SEVENT_WS_ERR_CONNECT);
+    WS_UNLOCK(c);
+}
+
 static void on_connect_ready(void *data) {
     struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
     WS_LOCK(c);
     if(c->destroyed) {
         WS_UNLOCK(c);
         return;
+    }
+    /* 连接有结果了, 关超时定时器 */
+    if(c->connect_timer) {
+        sevent_timer_unregister(c->ev, c->connect_timer);
+        c->connect_timer = NULL;
     }
     int       err = 0;
     socklen_t el  = sizeof(err);
@@ -692,6 +714,7 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const struct sevent_ws_con
     c->on_http_response = cfg->on_http_response;
     c->on_pong          = cfg->on_pong;
     c->user_data        = cfg->user_data;
+    c->connect_timeout_ms = cfg->connect_timeout_ms;
 
     /* 固定大小接收/分片缓冲区 */
     size_t bufsz = cfg->recv_buf_size ? cfg->recv_buf_size : 4096;
@@ -755,6 +778,14 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const struct sevent_ws_con
         sevent_i_free(c);
         return NULL;
     }
+    /* 连接超时定时器 */
+    {
+        int t_ms = c->connect_timeout_ms;
+        if(t_ms == 0)
+            t_ms = 10000; /* 默认 10 秒 */
+        if(t_ms > 0)
+            c->connect_timer = sevent_timer_register(c->ev, (unsigned int)t_ms, on_connect_timeout, c);
+    }
     return c;
 }
 
@@ -816,6 +847,10 @@ void sevent_ws_destroy(sevent_ws_conn *c) {
     c->destroyed = 1;
     c->state     = WS_STATE_CLOSED;
     ws_close_socket(c);
+    if(c->connect_timer) {
+        sevent_timer_unregister(c->ev, c->connect_timer);
+        c->connect_timer = NULL;
+    }
     sevent_i_free(c->recv_buf);
     sevent_i_free(c->frag_buf);
     ws_write_node *wn = c->write_head;

@@ -57,6 +57,8 @@ struct sevent_ws_conn {
     char     path[256];
     char     sub_protocol[64];
     int      ping_interval_ms;
+    int      connect_timeout_ms;
+    sevent_timer_t connect_timer;
 
     /* ---- 用户回调 ---- */
     void                         *user_data;

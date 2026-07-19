@@ -1753,11 +1753,93 @@ static int t_invalid_close_code(void) {
     return 0;
 }
 
+/* ==================== 连接超时测试 ==================== */
+
+static int t_connect_timeout(void) {
+    /* 连不通的地址 + 超时 → 触发 on_error */
+    sevent_context *ctx = sevent_create();
+    if(!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host              = "10.0.0.1"; /* 不可达 */
+    cfg.path              = "/";
+    cfg.on_error          = ev_error;
+    cfg.connect_timeout_ms = 10;
+    g_ev                  = 0;
+    sevent_ws_conn *ws = sevent_ws_connect(ctx, &cfg);
+    if(!ws) return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 3) break;
+    }
+    if(g_ev != 3) return 1;
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_connect_timeout_not_reached(void) {
+    /* 连自环 + 超时很长 → 正常连接成功, 不触发超时 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host              = "127.0.0.1";
+    cfg.path              = "/";
+    cfg.on_open           = ev_open;
+    cfg.connect_timeout_ms = 5000;
+    g_ev                  = 0;
+    sevent_ws_conn *ws;
+    int sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0) return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0) return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1) break;
+    }
+    if(g_ev != 1) return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_connect_timeout_disabled(void) {
+    /* timeout=-1 → 不设超时, 正常连接 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host              = "127.0.0.1";
+    cfg.path              = "/";
+    cfg.on_open           = ev_open;
+    cfg.connect_timeout_ms = -1;
+    g_ev                  = 0;
+    sevent_ws_conn *ws;
+    int sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0) return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0) return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1) break;
+    }
+    if(g_ev != 1) return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
 int main(void) {
     struct {
         const char *n;
         int (*f)(void);
-    } tests[] = {{"recv_invalid_control_payload", t_recv_invalid_control_payload},
+    } tests[] = {{"connect_timeout", t_connect_timeout},
+                 {"connect_timeout_not_reached", t_connect_timeout_not_reached},
+                 {"connect_timeout_disabled", t_connect_timeout_disabled},
+                 {"recv_invalid_control_payload", t_recv_invalid_control_payload},
                  {"recv_invalid_close_code", t_recv_invalid_close_code},
                  {"invalid_ping_payload", t_invalid_ping_payload},
                  {"invalid_close_code", t_invalid_close_code},
