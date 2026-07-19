@@ -1,6 +1,7 @@
 #ifndef SEVENT_H
 #define SEVENT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus

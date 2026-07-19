@@ -68,7 +68,7 @@ static void gen_mask_key(uint8_t key[4]) {
 }
 
 /* RFC 6455 §7.4: 校验 Close 码是否合法 */
-static int ws_close_code_valid(uint16_t code) {
+static bool ws_close_code_valid(uint16_t code) {
     if(code < 1000)
         return 0; /* 0-999 保留 */
     if(code == 1005 || code == 1006)
@@ -136,14 +136,14 @@ static int recv_read(struct sevent_ws_conn *c) {
 /* 大帧流式读取: 从 recv_buf 分块回调 payload */
 static void stream_consume(struct sevent_ws_conn *c) {
     void *d      = c->user_data;
-    int   is_bin = (c->stream_opcode == WS_OPCODE_BINARY);
+    bool  is_bin = (c->stream_opcode == WS_OPCODE_BINARY);
 
     while(c->recv_pos < c->recv_len && c->stream_remaining > 0) {
         size_t avail = c->recv_len - c->recv_pos;
         size_t chunk = (avail < c->recv_cap) ? avail : c->recv_cap;
         if(chunk > c->stream_remaining)
             chunk = (size_t)c->stream_remaining;
-        int last = (chunk == c->stream_remaining) ? c->stream_fin : 0;
+        bool last = (chunk == c->stream_remaining) ? c->stream_fin : 0;
 
         if(c->on_message)
             c->on_message(d, c->recv_buf + c->recv_pos, chunk, is_bin, last, c->stream_total);
@@ -161,7 +161,7 @@ static void stream_consume(struct sevent_ws_conn *c) {
  *  异步写队列
  * ==================================================================== */
 
-static int ws_enqueue(struct sevent_ws_conn *c, uint8_t *data, size_t len, int is_ctrl) {
+static int ws_enqueue(struct sevent_ws_conn *c, uint8_t *data, size_t len, bool is_ctrl) {
     ws_write_node *n = SEVENT_I_NEW(n);
     if(!n) {
         sevent_i_free(data);
@@ -266,7 +266,7 @@ static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payl
         ws_frame_apply_mask(buf + hdr_len, len, mask_key);
     }
 
-    int is_ctrl = (opcode == WS_OPCODE_PING || opcode == WS_OPCODE_PONG || opcode == WS_OPCODE_CLOSE);
+    bool is_ctrl = (opcode == WS_OPCODE_PING || opcode == WS_OPCODE_PONG || opcode == WS_OPCODE_CLOSE);
 
     /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
     if(is_ctrl && len > 125) {
@@ -336,7 +336,7 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
     if(c->frag_len + len > c->recv_cap) {
         if(c->on_message && c->frag_len > 0) {
             void *d      = c->user_data;
-            int   is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
+            bool  is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
             c->on_message(d, c->frag_buf, c->frag_len, is_bin, 0, 0);
             if(c->destroyed)
                 return 0;
@@ -350,7 +350,7 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
 }
 
 /* 从 frag_buf 吐出完整块给 on_message, fin=1 表示最后一次 */
-static void frag_flush(struct sevent_ws_conn *c, int fin) {
+static void frag_flush(struct sevent_ws_conn *c, bool fin) {
     if(!c->on_message) {
         if(fin) {
             c->frag_pending = 0;
@@ -360,7 +360,7 @@ static void frag_flush(struct sevent_ws_conn *c, int fin) {
         return;
     }
     void *d      = c->user_data;
-    int   is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
+    bool  is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
 
     while(c->frag_len >= c->recv_cap) {
         c->on_message(d, c->frag_buf, c->recv_cap, is_bin, 0, 0);

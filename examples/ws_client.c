@@ -22,7 +22,7 @@
 static sevent_context *g_ctx;
 static sevent_ws_conn *g_ws;
 
-static void on_message(void *u, const void *m, size_t l, int bin, int fin, uint64_t total) {
+static void on_message(void *u, const void *m, size_t l, bool bin, bool fin, uint64_t total) {
     (void)u;
     (void)fin;
     (void)total;

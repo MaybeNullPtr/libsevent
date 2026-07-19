@@ -46,7 +46,7 @@ typedef struct sevent_ws_conn sevent_ws_conn;
 /* ===== 回调类型 ===== */
 typedef void (*sevent_ws_on_open_fn)(void *user_data);
 typedef void (*sevent_ws_on_message_fn)(
-        void *user_data, const void *msg, size_t len, int binary, int fin, uint64_t total);
+        void *user_data, const void *msg, size_t len, bool binary, bool fin, uint64_t total);
 typedef void (*sevent_ws_on_close_fn)(void *user_data, uint16_t code, const char *reason, size_t reason_len);
 typedef void (*sevent_ws_on_error_fn)(void *user_data, int err);
 typedef void (*sevent_ws_on_pong_fn)(void *user_data, const void *payload, size_t len);

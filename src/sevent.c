@@ -63,7 +63,7 @@ struct sevent_io {
     sevent_io_write_fn     write_cb;
     void                  *data;
     struct sevent_context *ctx;
-    int                    deleted; /* unregister 标记, 用于快照保护 */
+    bool deleted; /* unregister 标记, 用于快照保护 */
 };
 
 struct sevent_timer {
@@ -74,7 +74,7 @@ struct sevent_timer {
     sevent_timer_fn        cb;
     void                  *data;
     struct sevent_context *ctx;
-    int                    deleted; /* unregister 标记 */
+    bool deleted; /* unregister 标记 */
 };
 
 struct sevent_post {
@@ -325,7 +325,7 @@ static int run_build_fdset(sevent_context    *ctx,
             iosnap[n_io++] = io;
     }
 
-    int has_timer = (ctx->timer_list != NULL);
+    bool has_timer = (ctx->timer_list != NULL);
 
     if(has_timer) {
         unsigned int next_timer = (unsigned int)-1;
@@ -404,7 +404,7 @@ struct expire_entry {
     int                  times; /* 需要连续触发多少次 */
 };
 
-static void run_timers(sevent_context *ctx, int has_timer, long delta, int *fired) {
+static void run_timers(sevent_context *ctx, bool has_timer, long delta, int *fired) {
     if(!has_timer || delta <= 0)
         return;
 

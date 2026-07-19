@@ -37,7 +37,7 @@ static void ev_open(void *d) {
     (void)d;
     g_ev = 1;
 }
-static void ev_msg(void *d, const void *m, size_t l, int b, int fin, uint64_t total) {
+static void ev_msg(void *d, const void *m, size_t l, bool b, bool fin, uint64_t total) {
     (void)d;
     (void)b;
     (void)fin;
@@ -49,7 +49,7 @@ static void ev_msg(void *d, const void *m, size_t l, int b, int fin, uint64_t to
 }
 
 /* 分片测试专用回调: 累计调用次数 + 总长度 */
-static void ev_msg_frag(void *d, const void *m, size_t l, int b, int fin, uint64_t total) {
+static void ev_msg_frag(void *d, const void *m, size_t l, bool b, bool fin, uint64_t total) {
     (void)d;
     (void)b;
     g_last_total = total;
@@ -108,7 +108,7 @@ static void   ev_http_resp(void *d, int code, const char *h, size_t hl, const ch
 
 /* 粘包/分包测试专用: 计数 + 累积内容 */
 static int  g_call_count;
-static void ev_msg_count(void *d, const void *m, size_t l, int b, int fin, uint64_t total) {
+static void ev_msg_count(void *d, const void *m, size_t l, bool b, bool fin, uint64_t total) {
     (void)d;
     (void)b;
     (void)fin;
