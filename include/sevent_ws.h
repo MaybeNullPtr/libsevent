@@ -49,6 +49,7 @@ typedef void (*sevent_ws_on_message_fn)(
         void *user_data, const void *msg, size_t len, int binary, int fin, uint64_t total);
 typedef void (*sevent_ws_on_close_fn)(void *user_data, uint16_t code, const char *reason, size_t reason_len);
 typedef void (*sevent_ws_on_error_fn)(void *user_data, int err);
+typedef void (*sevent_ws_on_pong_fn)(void *user_data, const void *payload, size_t len);
 typedef void (*sevent_ws_on_http_response_fn)(
         void *user_data, int status_code, const char *headers, size_t headers_len, const char *body, size_t body_len);
 
@@ -66,6 +67,7 @@ struct sevent_ws_config {
     sevent_ws_on_message_fn       on_message;
     sevent_ws_on_close_fn         on_close;
     sevent_ws_on_error_fn         on_error;
+    sevent_ws_on_pong_fn          on_pong;          /* 收到 PONG 时触发, NULL=忽略 */
     sevent_ws_on_http_response_fn on_http_response; /* HTTP 升级响应, 含非 101 */
 
     void *user_data; /* 透传给回调的参数 */

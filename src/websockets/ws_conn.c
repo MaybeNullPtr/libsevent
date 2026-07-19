@@ -474,6 +474,10 @@ static void process_frames(struct sevent_ws_conn *c) {
                 return; /* send_frame 触发 ws_fatal→destroy */
             break;
         case WS_OPCODE_PONG:
+            if(c->on_pong)
+                c->on_pong(c->user_data, payload, (size_t)hdr.payload_len);
+            if(c->destroyed)
+                return;
             break;
         case WS_OPCODE_CLOSE: {
             uint16_t    code   = 1000;
@@ -686,6 +690,7 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const struct sevent_ws_con
     c->on_close         = cfg->on_close;
     c->on_error         = cfg->on_error;
     c->on_http_response = cfg->on_http_response;
+    c->on_pong          = cfg->on_pong;
     c->user_data        = cfg->user_data;
 
     /* 固定大小接收/分片缓冲区 */

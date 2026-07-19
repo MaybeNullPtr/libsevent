@@ -77,6 +77,19 @@ static void ev_error(void *d, int err) {
 }
 static void ev_tick(void *d) { (void)d; }
 
+/* PONG 回调记录 */
+static int      g_pong_fired;
+static char     g_pong_payload[256];
+static size_t   g_pong_len;
+static void ev_pong(void *d, const void *p, size_t l) {
+    (void)d;
+    g_pong_fired = 1;
+    g_pong_len    = l < sizeof(g_pong_payload) ? l : sizeof(g_pong_payload) - 1;
+    if(l > 0 && p)
+        memcpy(g_pong_payload, p, g_pong_len);
+    g_pong_payload[g_pong_len] = '\0';
+}
+
 /* HTTP 响应回调记录 */
 static int      g_http_status;
 static char     g_http_body[256];
@@ -393,6 +406,45 @@ static int t_auto_pong(void) {
     }
     if(pl < 0 || h.opcode != WS_OPCODE_PONG)
         return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_on_pong(void) {
+    /* 收到 PONG → on_pong 回调被触发 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host    = "127.0.0.1";
+    cfg.path    = "/";
+    cfg.on_open = ev_open;
+    cfg.on_pong = ev_pong;
+    g_ev         = 0;
+    g_pong_fired = 0;
+    g_pong_len   = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0) return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0) return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1) break;
+    }
+    if(g_ev != 1) return 1;
+
+    /* 服务端发 PONG (payload = "pongdata") */
+    wsend(sfd, WS_OPCODE_PONG, "pongdata", 8);
+    g_pong_fired = 0;
+    for(int i = 0; i < 50; i++) {
+        sevent_run_once(ctx);
+        if(g_pong_fired) break;
+    }
+    if(!g_pong_fired) return 1;
+    if(g_pong_len != 8 || strcmp(g_pong_payload, "pongdata") != 0) return 1;
     close(sfd);
     sevent_ws_destroy(ws);
     sevent_destroy(ctx);
@@ -1713,6 +1765,7 @@ int main(void) {
                  {"client_send_text", t_client_send_text},
                  {"client_send_binary", t_client_send_binary},
                  {"auto_pong", t_auto_pong},
+                 {"on_pong", t_on_pong},
                  {"large_msg", t_large_msg},
                  {"client_ping", t_client_ping},
                  {"client_close", t_client_close},

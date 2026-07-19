@@ -64,6 +64,7 @@ struct sevent_ws_conn {
     sevent_ws_on_message_fn       on_message;
     sevent_ws_on_close_fn         on_close;
     sevent_ws_on_error_fn         on_error;
+    sevent_ws_on_pong_fn          on_pong;
     sevent_ws_on_http_response_fn on_http_response;
 
     /* ---- 握手状态 ---- */
