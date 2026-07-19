@@ -809,7 +809,11 @@ int sevent_ws_send_text(sevent_ws_conn *c, const void *data, size_t len) {
     if(!c)
         return SEVENT_ERR_INVAL;
     WS_LOCK(c);
-    int r = (data || len == 0) ? send_frame(c, WS_OPCODE_TEXT, data, len) : SEVENT_ERR_INVAL;
+    int r;
+    if(data || len == 0)
+        r = send_frame(c, WS_OPCODE_TEXT, data, len);
+    else
+        r = SEVENT_ERR_INVAL;
     WS_UNLOCK(c);
     if(r == SEVENT_WS_ERR_WRITE)
         ws_fatal(c, r);
@@ -820,7 +824,11 @@ int sevent_ws_send_binary(sevent_ws_conn *c, const void *data, size_t len) {
     if(!c)
         return SEVENT_ERR_INVAL;
     WS_LOCK(c);
-    int r = (data || len == 0) ? send_frame(c, WS_OPCODE_BINARY, data, len) : SEVENT_ERR_INVAL;
+    int r;
+    if(data || len == 0)
+        r = send_frame(c, WS_OPCODE_BINARY, data, len);
+    else
+        r = SEVENT_ERR_INVAL;
     WS_UNLOCK(c);
     if(r == SEVENT_WS_ERR_WRITE)
         ws_fatal(c, r);
