@@ -772,8 +772,9 @@ TEST(handshake_full_roundtrip) {
 #define TEST_LIST                                                                                                                                                       \
     T(sha1_empty)                                                                                                                                                       \
     T(sha1_abc)                                                                                                                                                         \
-    T(sha1_len_448) T(sha1_streaming) T(sha1_million_a) T(sha1_ws_key) T(base64_empty) T(base64_single) T(                                                              \
-            base64_double) T(base64_triple) T(base64_4bytes) T(base64_5bytes) T(base64_6bytes) T(base64_binary)                                                         \
+    T(sha1_len_448)                                                                                                                                                     \
+    T(sha1_streaming) T(sha1_million_a) T(sha1_ws_key) T(base64_empty) T(base64_single) T(base64_double) T(                                                             \
+            base64_triple) T(base64_4bytes) T(base64_5bytes) T(base64_6bytes) T(base64_binary)                                                                          \
             T(base64_insufficient_buffer) T(base64_just_fit) T(base64_encode_size) T(frame_parse_small_unmasked) T(                                                     \
                     frame_parse_small_masked) T(frame_parse_medium_length) T(frame_parse_large_length)                                                                  \
                     T(frame_parse_incomplete) T(frame_parse_incomplete_ext16) T(frame_parse_incomplete_ext64) T(                                                        \

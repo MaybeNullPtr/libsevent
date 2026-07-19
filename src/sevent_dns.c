@@ -11,9 +11,7 @@
 #include <string.h>
 #include <netdb.h>
 
-int sevent_dns_resolve(const char *host, uint16_t port,
-                       struct sockaddr_storage *out_addr,
-                       socklen_t *out_addrlen) {
+int sevent_dns_resolve(const char *host, uint16_t port, struct sockaddr_storage *out_addr, socklen_t *out_addrlen) {
     if(!host || !out_addr || !out_addrlen)
         return -1;
 
@@ -45,12 +43,12 @@ int sevent_dns_resolve(const char *host, uint16_t port,
     hints.ai_socktype = SOCK_STREAM;
 
     char port_str[8];
-    int n = snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+    int  n = snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
     if(n < 0 || (size_t)n >= sizeof(port_str))
         return -1;
 
     struct addrinfo *result = NULL;
-    int rc = getaddrinfo(host, port_str, &hints, &result);
+    int              rc     = getaddrinfo(host, port_str, &hints, &result);
     if(rc != 0 || !result)
         return -1;
 

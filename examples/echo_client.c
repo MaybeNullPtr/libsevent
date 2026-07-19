@@ -46,7 +46,7 @@ typedef struct {
     int             fd, rem, len, off, err, eagain;
     long            bytes_read, bytes_written;
     char           *buf;
-    sevent_io *hio;
+    sevent_io      *hio;
     sevent_context *ctx;
 } cli_t;
 
@@ -66,7 +66,7 @@ static void cli_reg_read(cli_t *c) {
     if(c->hio)
         sevent_io_unregister(c->ctx, c->hio);
     sevent_io_handler h = {.fd = c->fd, .io_read = on_read, .data = c};
-    c->hio                     = sevent_io_register(c->ctx, &h);
+    c->hio              = sevent_io_register(c->ctx, &h);
     if(!c->hio) {
         fprintf(stderr, "reg_read fail\n");
         exit(1);
@@ -80,7 +80,7 @@ static void cli_reg_write(cli_t *c) {
     if(c->hio)
         sevent_io_unregister(c->ctx, c->hio);
     sevent_io_handler h = {.fd = c->fd, .io_write = on_write, .data = c};
-    c->hio                     = sevent_io_register(c->ctx, &h);
+    c->hio              = sevent_io_register(c->ctx, &h);
     if(!c->hio) {
         fprintf(stderr, "reg_write fail\n");
         exit(1);

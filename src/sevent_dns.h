@@ -34,9 +34,7 @@ extern "C" {
  * 快速路径: host 是字面 IP 时直接 inet_pton, 不走 getaddrinfo.
  * 返回: 0=成功, <0=解析失败.
  */
-int sevent_dns_resolve(const char *host, uint16_t port,
-                       struct sockaddr_storage *out_addr,
-                       socklen_t *out_addrlen);
+int sevent_dns_resolve(const char *host, uint16_t port, struct sockaddr_storage *out_addr, socklen_t *out_addrlen);
 
 #ifdef __cplusplus
 }

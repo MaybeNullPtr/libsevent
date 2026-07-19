@@ -328,12 +328,12 @@ TEST(memory_no_leak) {
         ASSERT(ctx != NULL);
 
         /* 注册多个 IO */
-        int         fds[10][2];
+        int        fds[10][2];
         sevent_io *ios[10];
         for(int i = 0; i < 10; i++) {
             ASSERT_EQ(0, pipe(fds[i]));
             sevent_io_handler h = {.fd = fds[i][0], .io_read = count_cb};
-            ios[i]                     = sevent_io_register(ctx, &h);
+            ios[i]              = sevent_io_register(ctx, &h);
             ASSERT(ios[i] != NULL);
         }
 
@@ -702,7 +702,7 @@ TEST(timer_self_unregister_in_callback) {
 
 /* 回调中 unregister 另一个到期 timer: 被取消的应跳过 */
 static sevent_timer *g_cross_target;
-static int            g_cross_a_fired;
+static int           g_cross_a_fired;
 
 static void on_timer_cross_a(void *data) {
     if(g_cross_a_fired)
@@ -832,7 +832,7 @@ TEST(integration_io_timer_post) {
     ASSERT_EQ(0, pipe(fds));
 
     sevent_io_handler h  = {.fd = fds[0], .io_read = count_cb};
-    sevent_io *ih = sevent_io_register(ctx, &h);
+    sevent_io        *ih = sevent_io_register(ctx, &h);
     ASSERT(ih != NULL);
 
     sevent_timer *th = sevent_timer_register(ctx, 50, count_cb, NULL);
@@ -919,7 +919,7 @@ TEST(edge_many_timers) {
     ASSERT(ctx != NULL);
 
     sevent_timer *timers[100];
-    int            count = 0;
+    int           count = 0;
     for(int i = 0; i < 100; i++) {
         sevent_timer *t = sevent_timer_register(ctx, 1000, count_cb, NULL);
         if(!t)
@@ -941,7 +941,7 @@ TEST(edge_unregister_twice_safe) {
     ASSERT_EQ(0, pipe(fds));
 
     sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
-    sevent_io *hdl = sevent_io_register(ctx, &h);
+    sevent_io        *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl != NULL);
 
     sevent_io_unregister(ctx, hdl);
@@ -961,7 +961,7 @@ TEST(edge_io_unregister_multiple) {
     ASSERT_EQ(0, pipe(fds));
 
     sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
-    sevent_io *hdl = sevent_io_register(ctx, &h);
+    sevent_io        *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl != NULL);
 
     /* 多次释放应安全 */
@@ -997,7 +997,7 @@ TEST(edge_io_unregister_after_free) {
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
     sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
-    sevent_io *hdl = sevent_io_register(ctx, &h);
+    sevent_io        *hdl = sevent_io_register(ctx, &h);
     ASSERT(hdl != NULL);
 
     sevent_io_unregister(ctx, hdl); /* death_io */
@@ -1031,7 +1031,7 @@ TEST(edge_io_unregister_wrong_ctx) {
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
     sevent_io_handler h   = {.fd = fds[0], .io_read = count_cb};
-    sevent_io *hdl = sevent_io_register(ctx1, &h);
+    sevent_io        *hdl = sevent_io_register(ctx1, &h);
     ASSERT(hdl != NULL);
 
     /* 用 ctx2 注销 ctx1 的句柄: 遍历 ctx2->io_list 找不到 → 安全 no-op */
@@ -1116,7 +1116,7 @@ static void *ts_io_worker(void *arg) {
 
     /* loop 运行中跨线程注册 IO */
     sevent_io_handler h  = {.fd = ts_pipe_fds[0], .io_read = count_cb};
-    sevent_io *io = sevent_io_register(g_ts_ctx, &h);
+    sevent_io        *io = sevent_io_register(g_ts_ctx, &h);
     (void)io;
 
     /* 写 pipe 触发可读, 让 IO 回调在下一轮执行 */
@@ -1173,7 +1173,7 @@ static void *ts_stress_worker(void *arg) {
 
     /* 注册 IO (跨线程) */
     sevent_io_handler h  = {.fd = rd, .io_read = count_cb};
-    sevent_io *io = sevent_io_register(g_stress.ctx, &h);
+    sevent_io        *io = sevent_io_register(g_stress.ctx, &h);
     if(!io)
         return NULL;
 
@@ -1237,12 +1237,12 @@ TEST(observability_io_count) {
     sevent_get_counts(ctx, &io, NULL, NULL);
     ASSERT_EQ(0, io);
 
-    int         fds[3][2];
+    int        fds[3][2];
     sevent_io *handles[3];
     for(int i = 0; i < 3; i++) {
         ASSERT_EQ(0, pipe(fds[i]));
         sevent_io_handler h = {.fd = fds[i][0], .io_read = count_cb};
-        handles[i]                 = sevent_io_register(ctx, &h);
+        handles[i]          = sevent_io_register(ctx, &h);
         ASSERT(handles[i] != NULL);
     }
     sevent_get_counts(ctx, &io, NULL, NULL);
@@ -1340,7 +1340,7 @@ TEST(observability_combined) {
     int fds[2];
     ASSERT_EQ(0, pipe(fds));
     sevent_io_handler h    = {.fd = fds[0], .io_read = count_cb};
-    sevent_io *io_h = sevent_io_register(ctx, &h);
+    sevent_io        *io_h = sevent_io_register(ctx, &h);
     ASSERT(io_h != NULL);
 
     sevent_timer *t = sevent_timer_register(ctx, 100, count_cb, NULL);
@@ -1415,9 +1415,9 @@ TEST(dns_resolve) {
     /* 5) 公共域名 (无反代, 国内优先) */
     {
         const char *public_domains[] = {
-            "example.com", /* IANA 保留, 长期有效 */
-            "baidu.com",   /* 国内 */
-            "qq.com",      /* 国内 */
+                "example.com", /* IANA 保留, 长期有效 */
+                "baidu.com",   /* 国内 */
+                "qq.com",      /* 国内 */
         };
         for(size_t i = 0; i < sizeof(public_domains) / sizeof(public_domains[0]); i++) {
             int rc = sevent_dns_resolve(public_domains[i], 80, &addr, &addrlen);
@@ -1425,8 +1425,7 @@ TEST(dns_resolve) {
                 ASSERT(addrlen >= sizeof(struct sockaddr_in));
                 ASSERT(AF_INET == addr.ss_family || AF_INET6 == addr.ss_family);
             } else {
-                fprintf(stderr, "      [SKIP] %s resolve failed (no network?)\n",
-                        public_domains[i]);
+                fprintf(stderr, "      [SKIP] %s resolve failed (no network?)\n", public_domains[i]);
             }
         }
     }
@@ -1447,7 +1446,8 @@ TEST(dns_resolve) {
     T(core_create_destroy)                                                                                                              \
     T(core_create_destroy_many)                                                                                                         \
     T(core_run_stop)                                                                                                                    \
-    T(core_run_once_empty) T(core_run_once_with_post) T(core_post_order) T(core_wakeup) T(core_stop_aborts_pending) T(                  \
+    T(core_run_once_empty)                                                                                                              \
+    T(core_run_once_with_post) T(core_post_order) T(core_wakeup) T(core_stop_aborts_pending) T(                                         \
             core_double_stop_safe) T(core_destroy_null_safe) T(core_run_null) T(core_run_once_null)                                     \
             T(core_post_null_handler) T(core_ignore_sigpipe) T(core_restart_loop) T(core_set_allocator) T(                              \
                     memory_no_leak) T(post_defer_to_next_iter) T(post_dispatch_same_thread)                                             \

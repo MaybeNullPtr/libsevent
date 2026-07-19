@@ -30,7 +30,7 @@
 
 struct client {
     int            fd;
-    sevent_io *h_io;
+    sevent_io     *h_io;
     char           name[32]; /* fd 编号, 用于识别 */
     struct client *next;
 };

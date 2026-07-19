@@ -69,10 +69,14 @@ static void gen_mask_key(uint8_t key[4]) {
 
 /* RFC 6455 §7.4: 校验 Close 码是否合法 */
 static int ws_close_code_valid(uint16_t code) {
-    if(code < 1000)               return 0; /* 0-999 保留 */
-    if(code == 1005 || code == 1006) return 0; /* 仅内部, 不可发送 */
-    if(code >= 1016 && code <= 2999) return 0; /* 未分配 */
-    if(code > 4999)               return 0; /* 保留/非法 */
+    if(code < 1000)
+        return 0; /* 0-999 保留 */
+    if(code == 1005 || code == 1006)
+        return 0; /* 仅内部, 不可发送 */
+    if(code >= 1016 && code <= 2999)
+        return 0; /* 未分配 */
+    if(code > 4999)
+        return 0; /* 保留/非法 */
     return 1;
 }
 
@@ -189,7 +193,7 @@ static int ws_enqueue(struct sevent_ws_conn *c, uint8_t *data, size_t len, int i
 static size_t ws_flush(struct sevent_ws_conn *c) {
     while(c->write_head) {
         ws_write_node *n = c->write_head;
-        ssize_t               w = write(c->fd, n->data + n->offset, n->len - n->offset);
+        ssize_t        w = write(c->fd, n->data + n->offset, n->len - n->offset);
         if(w > 0) {
             n->offset += (size_t)w;
             if(n->offset < n->len)
@@ -271,8 +275,8 @@ static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payl
     }
     /* RFC 6455 §7.4: Close 帧状态码合法性 */
     if(opcode == WS_OPCODE_CLOSE && len >= 2) {
-        const uint8_t *cp = (const uint8_t *)payload;
-        uint16_t close_code = (uint16_t)(cp[0] << 8 | cp[1]);
+        const uint8_t *cp         = (const uint8_t *)payload;
+        uint16_t       close_code = (uint16_t)(cp[0] << 8 | cp[1]);
         if(!ws_close_code_valid(close_code)) {
             sevent_i_free(buf);
             return SEVENT_ERR_INVAL;
@@ -632,7 +636,7 @@ static void on_connect_timeout(void *data) {
         return;
     }
     /* 先关定时器再 ws_fatal, 防止 destroy 路径下 c 释放后定时器悬空 */
-    sevent_timer *t = c->connect_timer;
+    sevent_timer *t  = c->connect_timer;
     c->connect_timer = NULL;
     if(t)
         sevent_timer_unregister(c->ev, t);
@@ -707,13 +711,13 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
         strncpy(c->sub_protocol, cfg->sub_protocol, sizeof(c->sub_protocol) - 1);
         c->sub_protocol[sizeof(c->sub_protocol) - 1] = '\0';
     }
-    c->on_open          = cfg->on_open;
-    c->on_message       = cfg->on_message;
-    c->on_close         = cfg->on_close;
-    c->on_error         = cfg->on_error;
-    c->on_http_response = cfg->on_http_response;
-    c->on_pong          = cfg->on_pong;
-    c->user_data        = cfg->user_data;
+    c->on_open            = cfg->on_open;
+    c->on_message         = cfg->on_message;
+    c->on_close           = cfg->on_close;
+    c->on_error           = cfg->on_error;
+    c->on_http_response   = cfg->on_http_response;
+    c->on_pong            = cfg->on_pong;
+    c->user_data          = cfg->user_data;
     c->connect_timeout_ms = cfg->connect_timeout_ms;
 
     /* 固定大小接收/分片缓冲区 */

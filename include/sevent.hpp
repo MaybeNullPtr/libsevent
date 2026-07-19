@@ -75,7 +75,7 @@ private:
     IoGuard(sevent_context *ctx, sevent_io *h) : ctx_(ctx), h_(h) {}
 
     sevent_context *ctx_ = nullptr;
-    sevent_io *h_   = nullptr;
+    sevent_io      *h_   = nullptr;
 };
 
 class TimerGuard {
@@ -116,7 +116,7 @@ private:
     TimerGuard(sevent_context *ctx, sevent_timer *h) : ctx_(ctx), h_(h) {}
 
     sevent_context *ctx_ = nullptr;
-    sevent_timer *h_   = nullptr;
+    sevent_timer   *h_   = nullptr;
 };
 
 /* ====================================================================

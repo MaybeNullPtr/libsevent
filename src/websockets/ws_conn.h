@@ -41,7 +41,7 @@ struct sevent_ws_conn {
     sevent_context *ev;
 
     /* ---- socket ---- */
-    int         fd;
+    int        fd;
     sevent_io *io_handle;
 
     /* ---- 状态 ---- */
@@ -52,12 +52,12 @@ struct sevent_ws_conn {
 #endif
 
     /* ---- 用户配置副本 ---- */
-    char     host[256];
-    uint16_t port;
-    char     path[256];
-    char     sub_protocol[64];
-    int      ping_interval_ms;
-    int      connect_timeout_ms;
+    char          host[256];
+    uint16_t      port;
+    char          path[256];
+    char          sub_protocol[64];
+    int           ping_interval_ms;
+    int           connect_timeout_ms;
     sevent_timer *connect_timer;
 
     /* ---- 用户回调 ---- */
@@ -95,7 +95,7 @@ struct sevent_ws_conn {
     /* ---- 写队列 (Round 5 启用) ---- */
     ws_write_node *write_head;
     ws_write_node *write_tail;
-    int                   write_count;
+    int            write_count;
 
     /* ---- 关闭状态 ---- */
     uint16_t close_code;

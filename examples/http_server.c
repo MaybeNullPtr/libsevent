@@ -27,10 +27,10 @@
 /* ---- 每个 HTTP 连接的状态 ---- */
 
 struct http_conn {
-    int         fd;
+    int        fd;
     sevent_io *h_io;
-    char        buf[4096];
-    int         buf_len;
+    char       buf[4096];
+    int        buf_len;
 };
 
 static sevent_context *g_ctx;

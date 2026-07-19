@@ -24,9 +24,9 @@
 /* ---- 每个客户端连接的状态 ---- */
 
 struct client {
-    int         fd;   /* 客户端 socket fd */
+    int        fd;   /* 客户端 socket fd */
     sevent_io *h_io; /* 自己的注册句柄，断连时用于注销 */
-    char        buf[4096];
+    char       buf[4096];
 };
 
 static sevent_context *g_ctx; /* 所有回调共享 ctx */
