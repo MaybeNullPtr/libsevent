@@ -186,7 +186,10 @@ static void on_srv_read(void *data) {
     if(g_srv.state == S_DONE)
         return;
 
-    ssize_t n = read(g_srv.client_fd, g_srv.buf + g_srv.len, sizeof(g_srv.buf) - g_srv.len);
+    if(g_srv.len >= sizeof(g_srv.buf))
+        return;
+    size_t  space = sizeof(g_srv.buf) - g_srv.len;
+    ssize_t n     = read(g_srv.client_fd, g_srv.buf + g_srv.len, space);
     if(n <= 0) {
         if(g_test_pass == 0) {
             fprintf(stderr, "  FAIL: server connection lost\n");
