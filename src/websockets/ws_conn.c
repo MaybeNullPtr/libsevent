@@ -745,29 +745,18 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     size_t bufsz = cfg->recv_buf_size ? cfg->recv_buf_size : 4096;
     c->recv_buf  = (uint8_t *)sevent_i_malloc(bufsz);
     c->frag_buf  = (uint8_t *)sevent_i_malloc(bufsz);
-    if(!c->recv_buf || !c->frag_buf) {
-        sevent_i_free(c->recv_buf);
-        sevent_i_free(c->frag_buf);
-        sevent_i_free(c);
-        return NULL;
-    }
+    if(!c->recv_buf || !c->frag_buf)
+        goto cleanup;
     c->recv_cap = bufsz;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if(fd < 0) {
-        sevent_i_free(c->recv_buf);
-        sevent_i_free(c->frag_buf);
-        sevent_i_free(c);
-        return NULL;
-    }
+    if(fd < 0)
+        goto cleanup;
     {
         int fl = fcntl(fd, F_GETFL);
         if(fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) {
             close(fd);
-            sevent_i_free(c->recv_buf);
-            sevent_i_free(c->frag_buf);
-            sevent_i_free(c);
-            return NULL;
+            goto cleanup;
         }
     }
     c->fd = fd;
@@ -777,18 +766,12 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     addr.sin_port   = htons(c->port);
     if(inet_pton(AF_INET, c->host, &addr.sin_addr) <= 0) {
         close(fd);
-        sevent_i_free(c->recv_buf);
-        sevent_i_free(c->frag_buf);
-        sevent_i_free(c);
-        return NULL;
+        goto cleanup;
     }
     int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     if(rc < 0 && errno != EINPROGRESS) {
         close(fd);
-        sevent_i_free(c->recv_buf);
-        sevent_i_free(c->frag_buf);
-        sevent_i_free(c);
-        return NULL;
+        goto cleanup;
     }
     sevent_io_handler h;
     h.fd         = fd;
@@ -798,10 +781,7 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->io_handle = sevent_io_register(ev, &h);
     if(!c->io_handle) {
         close(fd);
-        sevent_i_free(c->recv_buf);
-        sevent_i_free(c->frag_buf);
-        sevent_i_free(c);
-        return NULL;
+        goto cleanup;
     }
     /* 连接超时定时器 */
     {
@@ -812,17 +792,24 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
             c->connect_timer = sevent_timer_register(c->ev, (unsigned int)t_ms, on_connect_timeout, c);
     }
     return c;
-}
 
-static int do_send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len) {
-    return send_frame(c, opcode, payload, len);
+cleanup:
+    if(c->fd >= 0)
+        close(c->fd);
+    sevent_i_free(c->recv_buf);
+    sevent_i_free(c->frag_buf);
+#ifdef SEVENT_WS_THREAD_SAFE
+    sevent_mutex_destroy(&c->lock);
+#endif
+    sevent_i_free(c);
+    return NULL;
 }
 
 int sevent_ws_send_text(sevent_ws_conn *c, const void *data, size_t len) {
     if(!c)
         return SEVENT_ERR_INVAL;
     WS_LOCK(c);
-    int r = (data || len == 0) ? do_send_frame(c, WS_OPCODE_TEXT, data, len) : SEVENT_ERR_INVAL;
+    int r = (data || len == 0) ? send_frame(c, WS_OPCODE_TEXT, data, len) : SEVENT_ERR_INVAL;
     WS_UNLOCK(c);
     if(r == SEVENT_WS_ERR_WRITE)
         ws_fatal(c, r);
@@ -833,7 +820,7 @@ int sevent_ws_send_binary(sevent_ws_conn *c, const void *data, size_t len) {
     if(!c)
         return SEVENT_ERR_INVAL;
     WS_LOCK(c);
-    int r = (data || len == 0) ? do_send_frame(c, WS_OPCODE_BINARY, data, len) : SEVENT_ERR_INVAL;
+    int r = (data || len == 0) ? send_frame(c, WS_OPCODE_BINARY, data, len) : SEVENT_ERR_INVAL;
     WS_UNLOCK(c);
     if(r == SEVENT_WS_ERR_WRITE)
         ws_fatal(c, r);
@@ -844,7 +831,7 @@ int sevent_ws_ping(sevent_ws_conn *c, const void *payload, size_t len) {
     if(!c || len > 125)
         return SEVENT_ERR_INVAL;
     WS_LOCK(c);
-    int r = do_send_frame(c, WS_OPCODE_PING, payload, len);
+    int r = send_frame(c, WS_OPCODE_PING, payload, len);
     WS_UNLOCK(c);
     if(r == SEVENT_WS_ERR_WRITE)
         ws_fatal(c, r);
@@ -867,7 +854,7 @@ int sevent_ws_shutdown(sevent_ws_conn *c, uint16_t code, const char *reason) {
     cp[1] = (uint8_t)(code);
     if(rl > 0)
         memcpy(cp + 2, reason, rl);
-    int ret = do_send_frame(c, WS_OPCODE_CLOSE, cp, 2 + rl);
+    int ret = send_frame(c, WS_OPCODE_CLOSE, cp, 2 + rl);
     if(ret == SEVENT_SUCCESS && !c->destroyed && c->state != WS_STATE_CLOSED)
         c->state = WS_STATE_CLOSING;
     WS_UNLOCK(c);
