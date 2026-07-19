@@ -522,8 +522,12 @@ static void on_data(void *data) {
     /* 只读一次 (select 确保可读), 然后纯处理 buffer 已有数据 */
     int n = recv_read(c);
     if(n == 0) {
-        /* EOF: 先处理 buffer 中残留帧 (可能含 CLOSE 帧), 再关连接 */
-        process_frames(c);
+        /* EOF: 对端关连接. 之前每次 on_data 已通过 process_frames 处理完
+         * 所有完整帧, 无需再处理. on_message 中可能调 close (设 destroyed=1). */
+        if(c->destroyed) {
+            WS_UNLOCK(c);
+            return;
+        }
         ws_enter_closed(c, 1006, "connection closed", 18);
         WS_UNLOCK(c);
         return;
