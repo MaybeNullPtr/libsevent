@@ -19,7 +19,7 @@ MODE="${MODE:-fuzzingserver}"
 CASES="${CASES:-[\"*\"]}"
 PORT=9001
 ECHO_PORT=9002
-TIMEOUT=600  # 10分钟总超时
+TIMEOUT=60  # 2分钟总超时
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
@@ -46,7 +46,7 @@ log "    编译完成"
 # ---- 2. 清理遗留 ----
 kill "$(lsof -ti:$PORT 2>/dev/null)" 2>/dev/null || true
 kill "$(lsof -ti:$ECHO_PORT 2>/dev/null)" 2>/dev/null || true
-sg docker -c "docker stop autobahn 2>/dev/null" || true
+sg docker -c "docker rm -f autobahn 2>/dev/null" || true
 sleep 1
 
 mkdir -p "$CONFIG_DIR" "$REPORTS_DIR"
@@ -71,7 +71,8 @@ CONF
     sleep 1
 
     log "[3] 启动 Docker (后台)..."
-    sg docker -c "docker run -d --rm \
+    sg docker -c "docker rm -f autobahn" 2>/dev/null || true
+    sg docker -c "docker run -d \
         -v $CONFIG_DIR:/config \
         -v $REPORTS_DIR:/reports \
         --network host \
@@ -90,6 +91,7 @@ CONF
         CID=$(sg docker -c "docker ps -q --filter name=autobahn" 2>/dev/null || true)
         if [ -z "$CID" ]; then
             log "    Docker 容器已停止"
+        sg docker -c "docker logs autobahn" 2>/dev/null > "$REPORTS_DIR/wstest.log" || true
             break
         fi
 
@@ -111,6 +113,7 @@ CONF
     CID=$(sg docker -c "docker ps -q --filter name=autobahn" 2>/dev/null || true)
     if [ -n "$CID" ]; then
         log "    超时 ${TIMEOUT}s, 停止容器"
+        sg docker -c "docker logs autobahn" 2>/dev/null > "$REPORTS_DIR/wstest.log" || true
         sg docker -c "docker stop autobahn" 2>/dev/null || true
     fi
 
@@ -126,7 +129,8 @@ else
 CONF
 
     log "[2] 启动 Docker fuzzingserver..."
-    sg docker -c "docker run -d --rm \
+    sg docker -c "docker rm -f autobahn" 2>/dev/null || true
+    sg docker -c "docker run -d \
         -v $CONFIG_DIR:/config \
         -v $REPORTS_DIR:/reports \
         --network host \
@@ -149,7 +153,7 @@ CONF
             log "    client 已退出"
             break
         fi
-        DSTATUS=$(sg docker -c "docker ps --filter name=autobahn --format '{{.Status}}'" 2>/dev/null)
+        DSTATUS=$(sg docker -c "docker ps -a --filter name=autobahn --format '{{.Status}}'" 2>/dev/null)
         if [ -z "$DSTATUS" ]; then
             log "    Docker 已停止"
             break
@@ -163,6 +167,7 @@ CONF
         [ -n "$DLOG" ] && log "    [wstest] $DLOG"
     done
 
+    sg docker -c "docker logs autobahn" 2>/dev/null > "$REPORTS_DIR/wstest.log" || true
     kill "$CLIENT_PID" 2>/dev/null || true
     sg docker -c "docker stop autobahn" 2>/dev/null || true
 fi

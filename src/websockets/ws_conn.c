@@ -362,12 +362,24 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
     void *d      = c->user_data;
     bool  is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
 
-    while(c->frag_len >= c->recv_cap) {
-        c->on_message(d, c->frag_buf, c->recv_cap, is_bin, 0, 0);
+    /* 刷出完整 recv_cap 块。
+     *
+     *  条件 (fin || frag_len > recv_cap):
+     *    - fin=1 → 消息结束了，必须把数据全刷出去
+     *    - frag_len > recv_cap → 缓冲区积压超过一块，必须刷（否则放不下）
+     *    - fin=0 && frag_len == recv_cap → 精确填满但不是最后一块，
+     *      不刷，留在缓冲区里等下一帧。避免服务器用单独的 0 字节终止帧
+     *      发 fin=1 时，这里已经把数据用 fin=0 刷出去了。
+     */
+    while(c->frag_len >= c->recv_cap && (fin || c->frag_len > c->recv_cap)) {
+        /* 这次刷完 frag_buf 就空了 → 如果 fin=1 这就是最后一块 */
+        bool last_flag = fin && (c->frag_len == c->recv_cap);
+        c->on_message(d, c->frag_buf, c->recv_cap, is_bin, last_flag ? 1 : 0, 0);
         if(c->destroyed) return 0;
         c->frag_len -= c->recv_cap;
         memmove(c->frag_buf, c->frag_buf + c->recv_cap, c->frag_len);
     }
+    /* 余量 < recv_cap, 消息结束: 刷出最后一小块 */
     if(fin && c->frag_len > 0) {
         c->on_message(d, c->frag_buf, c->frag_len, is_bin, 1, c->frag_total);
         if(c->destroyed) return 0;
