@@ -148,6 +148,7 @@ enable_testing()
 add_test(NAME unit_tests COMMAND test_sevent)
 add_test(NAME ws_unit_tests COMMAND test-ws)
 add_test(NAME ws_conn_tests COMMAND test-ws-conn)
+add_test(NAME frag_terminator_tests COMMAND test-frag-terminator)
 
 # ---------- examples ----------
 
@@ -185,6 +186,15 @@ target_link_libraries(test-ws-conn PRIVATE Threads::Threads)
 if(SEVENT_WS_THREAD_SAFE)
     target_compile_definitions(test-ws-conn PRIVATE SEVENT_WS_THREAD_SAFE)
 endif()
+
+add_executable(test-frag-terminator
+    tests/frag_terminator_test.c
+    ${WEBSOCKET_SOURCES}
+    ${SEVENT_SOURCES}
+)
+target_include_directories(test-frag-terminator PRIVATE include)
+target_include_directories(test-frag-terminator PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test-frag-terminator PRIVATE Threads::Threads)
 
 find_package(Threads REQUIRED)
 
