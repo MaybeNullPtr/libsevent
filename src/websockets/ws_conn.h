@@ -97,6 +97,7 @@ struct sevent_ws_conn {
     ws_write_node *write_head;
     ws_write_node *write_tail;
     int            write_count;
+    uint32_t       mask_seed; /* gen_mask_key 用, 连接初始化时播种 */
 
     /* ---- 关闭状态 ---- */
     uint16_t close_code;

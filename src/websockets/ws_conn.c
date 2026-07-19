@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <time.h>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -47,20 +48,17 @@ static void on_handshake_data(void *data);
  *  内部辅助
  * ==================================================================== */
 
-static unsigned int next_seed(void) {
-    static unsigned int seed = 0;
-    if(seed == 0) {
-        seed  = (unsigned int)(__TIME__[0] ^ (__TIME__[7] << 8) ^ (__TIME__[3] << 16) ^ (__TIME__[5] << 24));
-        seed ^= (unsigned int)(getpid() << 16);
-    }
-    seed ^= seed << 13;
-    seed ^= seed >> 17;
-    seed ^= seed << 5;
-    return seed;
+static unsigned int xorshift32(unsigned int *seed) {
+    unsigned int x = *seed;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *seed = x;
+    return x;
 }
 
-static void gen_mask_key(uint8_t key[4]) {
-    unsigned int r = next_seed();
+static void gen_mask_key(struct sevent_ws_conn *c, uint8_t key[4]) {
+    unsigned int r = xorshift32(&c->mask_seed);
     key[0]         = (uint8_t)(r >> 24);
     key[1]         = (uint8_t)(r >> 16);
     key[2]         = (uint8_t)(r >> 8);
@@ -71,12 +69,14 @@ static void gen_mask_key(uint8_t key[4]) {
 static bool ws_close_code_valid(uint16_t code) {
     if(code < 1000)
         return 0; /* 0-999 保留 */
-    if(code == 1005 || code == 1006)
-        return 0; /* 仅内部, 不可发送 */
+    if(code == 1004 || code == 1005 || code == 1006)
+        return 0; /* 1004-1006 保留/仅内部 */
+    if(code >= 1012 && code <= 1015)
+        return 0; /* 1012-1015 保留 (含 TLS 握手) */
     if(code >= 1016 && code <= 2999)
-        return 0; /* 未分配 */
+        return 0; /* 1016-2999 未分配 */
     if(code > 4999)
-        return 0; /* 保留/非法 */
+        return 0; /* 5000+ 保留/非法 */
     return 1;
 }
 
@@ -255,7 +255,7 @@ static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payl
         return SEVENT_ERR_INVAL;
 
     uint8_t mask_key[4];
-    gen_mask_key(mask_key);
+    gen_mask_key(c, mask_key);
     uint8_t hdr[16];
     int     hdr_len = ws_frame_build_header(hdr, 1, opcode, mask_key, len);
     if(hdr_len < 0)
@@ -490,6 +490,10 @@ static int process_frames(struct sevent_ws_conn *c) {
 
         /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
         if((hdr.opcode & 0x08) && hdr.payload_len > 125) {
+            return SEVENT_WS_ERR_PROTOCOL;
+        }
+        /* RFC 6455 §5.5: 控制帧 MUST NOT be fragmented */
+        if((hdr.opcode & 0x08) && !hdr.fin) {
             return SEVENT_WS_ERR_PROTOCOL;
         }
 
@@ -727,6 +731,10 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->ev    = ev;
     c->fd    = -1;
     c->state = WS_STATE_CONNECTING;
+    {
+        /* 用地址+时间+PID 播种 per-connection mask 序列 */
+        c->mask_seed = (uint32_t)((uintptr_t)c ^ (unsigned int)time(NULL) ^ ((unsigned int)getpid() << 16));
+    }
     strncpy(c->host, cfg->host, sizeof(c->host) - 1);
     c->host[sizeof(c->host) - 1] = '\0';
     c->port                      = cfg->port;

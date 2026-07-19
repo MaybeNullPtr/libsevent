@@ -3,4 +3,5 @@ build-*/
 *.o
 *.a
 test
+Testing/
 .claude/
