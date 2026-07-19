@@ -495,6 +495,11 @@ static int process_frames(struct sevent_ws_conn *c) {
 
         int ret = 0;
         switch(hdr.opcode) {
+        case WS_OPCODE_CLOSE:
+            /* CLOSE: on_close 中用 close() 非 destroy(), 之后 c 仍存活 */
+            ret = handle_close(c, &hdr, payload);
+            if(ret) return ret;
+            return 0;
         case WS_OPCODE_TEXT:
         case WS_OPCODE_BINARY: ret = handle_text_binary(c, &hdr, payload); break;
         case WS_OPCODE_CONT:   ret = handle_cont(c, &hdr, payload); break;
@@ -502,10 +507,6 @@ static int process_frames(struct sevent_ws_conn *c) {
         case WS_OPCODE_PONG:   ret = handle_pong(c, &hdr, payload); break;
         default:
             return SEVENT_WS_ERR_PROTOCOL;
-        case WS_OPCODE_CLOSE:
-            /* CLOSE: on_close 中用 close() 非 destroy(), 之后 c 仍存活 */
-            ret = handle_close(c, &hdr, payload);
-            return ret;
         }
         if(ret < 0) return -1;
         if(ret > 0) return ret;
