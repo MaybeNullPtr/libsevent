@@ -78,15 +78,19 @@ static void ev_error(void *d, int err) {
 static void ev_tick(void *d) { (void)d; }
 
 /* HTTP 响应回调记录 */
-static int  g_http_status;
+static int      g_http_status;
+static char     g_http_body[256];
+static size_t   g_http_body_len;
 static void ev_http_resp(void *d, int code, const char *h, size_t hl, const char *b, size_t bl) {
     (void)d;
     (void)h;
     (void)hl;
-    (void)b;
-    (void)bl;
     g_ev          = 4;
     g_http_status = code;
+    g_http_body_len = bl < sizeof(g_http_body) ? bl : sizeof(g_http_body) - 1;
+    if(bl > 0 && b)
+        memcpy(g_http_body, b, g_http_body_len);
+    g_http_body[g_http_body_len] = '\0';
 }
 
 /* 粘包/分包测试专用: 计数 + 累积内容 */
@@ -939,6 +943,43 @@ static int t_http_fail(void) {
     return 0;
 }
 
+static int t_http_fail_with_body(void) {
+    /* 升级失败, 验证 on_http_response 能拿到 body */
+    sevent_context *ctx = sevent_create();
+    if(!ctx) return 1;
+    struct sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host             = "127.0.0.1";
+    cfg.path             = "/";
+    cfg.on_open          = ev_open;
+    cfg.on_http_response = ev_http_resp;
+    g_ev                 = 0;
+    g_http_status        = 0;
+    g_http_body[0]       = 0;
+    g_http_body_len      = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0) return 1;
+    sevent_run_once(ctx);
+    char    req[4096];
+    ssize_t rn = read(sfd, req, sizeof(req) - 1);
+    if(rn <= 0) return 1;
+    char resp[] = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello";
+    write_all(sfd, resp, strlen(resp));
+    sevent_timer_t _tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    for(int i = 0; i < 500; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 4) break;
+    }
+    if(_tm) sevent_timer_unregister(ctx, _tm);
+    if(g_ev != 4 || g_http_status != 400) return 1;
+    if(g_http_body_len != 5 || strcmp(g_http_body, "hello") != 0) return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
 /* 多帧粘包: 两次 TEXT 帧同一次 read */
 static int t_sticky_multi_frame(void) {
     sevent_context *ctx = sevent_create();
@@ -1682,6 +1723,7 @@ int main(void) {
                  {"frag_proto_error", t_frag_proto_error},
                  {"sticky_packet", t_sticky_packet},
                  {"http_fail", t_http_fail},
+                 {"http_fail_with_body", t_http_fail_with_body},
                  {"sticky_multi_frame", t_sticky_multi_frame},
                  {"sticky_stream_tail", t_sticky_stream_tail},
                  {"stream_total", t_stream_total},

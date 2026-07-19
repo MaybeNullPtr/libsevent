@@ -656,7 +656,8 @@ TEST(handshake_parse_non_101) {
                                      "\r\n";
     ws_handshake_response resp;
     int                   n = ws_parse_response((const uint8_t *)resp_404, strlen(resp_404), &resp);
-    ASSERT_EQ(-1, n);
+    ASSERT_EQ(404, resp.status_code);
+    ASSERT_GT(n, 0); /* 现在非 101 也返回 header 长度, 让调用方提取 body */
 }
 
 TEST(handshake_parse_incomplete) {

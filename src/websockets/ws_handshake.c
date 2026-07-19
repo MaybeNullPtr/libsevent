@@ -156,11 +156,7 @@ int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *res
         resp->status_code = (sp[0] - '0') * 100 + (sp[1] - '0') * 10 + (sp[2] - '0');
     }
 
-    /* 非 101 直接返回 */
-    if(resp->status_code != 101)
-        return -1;
-
-    /* ---- 逐行解析头 ---- */
+    /* ---- 逐行解析头 (无论 101 还是非 101, 都要解 header 长度用于提取 body) ---- */
     p = line_end + 1;
     while((size_t)(p - buf) < header_len - 2) {
         line_end = (const uint8_t *)memchr(p, '\n', header_len - (size_t)(p - buf));
@@ -209,8 +205,8 @@ int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *res
         p = line_end + 1;
     }
 
-    /* 校验必选头 */
-    if(resp->accept[0] == '\0')
+    /* 101 响应必须带 Sec-WebSocket-Accept */
+    if(resp->status_code == 101 && resp->accept[0] == '\0')
         return -1;
 
     return (int)header_len;

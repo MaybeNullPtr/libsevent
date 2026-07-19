@@ -52,12 +52,12 @@ int ws_build_request(char       *buf,
                      const char *key,
                      const char *sub_protocol);
 
-/* ===== 解析 HTTP 101 响应 =====
+/* ===== 解析 HTTP 升级响应 =====
  *
  * 从 buf 中解析服务端握手响应.
- * 返回:   >0 = 解析完成 (resp 已填充, 调用者需 ws_verify_accept)
+ * 返回:   >0 = 解析完成 (resp.status_code 区分 101 与否, 101 需 ws_verify_accept)
  *         0  = 数据不足, 继续等待
- *         <0 = 协议错误 (非 HTTP 响应、非 101 等)
+ *         <0 = 协议错误 (非法 HTTP 响应)
  */
 int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *resp);
 
