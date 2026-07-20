@@ -1441,38 +1441,62 @@ TEST(dns_resolve) {
 
 /* ==================== 测试清单 (X-MACRO) ==================== */
 
-#define TEST_LIST                                                                                                                 \
-    T(dns_resolve)                                                                                                                \
-    T(core_create_destroy)                                                                                                        \
-    T(core_create_destroy_many)                                                                                                   \
-    T(core_run_stop)                                                                                                              \
-    T(core_run_once_empty)                                                                                                        \
-    T(core_run_once_with_post)                                                                                                    \
-    T(core_post_order)                                                                                                            \
-    T(core_wakeup) T(core_stop_aborts_pending) T(core_double_stop_safe) T(core_destroy_null_safe) T(core_run_null) T(             \
-            core_run_once_null) T(core_post_null_handler) T(core_ignore_sigpipe) T(core_restart_loop)                             \
-            T(core_set_allocator) T(memory_no_leak) T(post_defer_to_next_iter) T(post_dispatch_same_thread) T(                    \
-                    post_dispatch_cross_thread) T(io_register_pipe_read) T(io_null_read_cb_no_fire)                               \
-                    T(io_unregister_self_in_callback) T(io_multiple_fds_partial_ready) T(io_write_monitor) T(                     \
-                            io_both_null_rejected) T(timer_interval_zero_rejected) T(timer_unregister_null_safe)                  \
-                            T(timer_fire_once) T(timer_unregister_before_fire) T(timer_dynamic_add_in_callback) T(                \
-                                    timer_dynamic_remove_safe) T(timer_self_unregister_in_callback)                               \
-                                    T(timer_cross_unregister_in_callback) T(timer_register_in_timer_callback) T(                  \
-                                            timer_multi_fire_per_tick) T(timer_multi_fire_self_unregister)                        \
-                                            T(integration_io_timer_post) T(integration_stop_then_destroy) T(                      \
-                                                    edge_null_context_doesnt_crash) T(edge_invalid_fd_rejected)                   \
-                                                    T(edge_null_io_handler) T(edge_large_fd_rejected) T(edge_many_timers) T(      \
-                                                            edge_unregister_twice_safe) T(edge_io_unregister_multiple)            \
-                                                            T(edge_timer_unregister_multiple) T(                                  \
-                                                                    edge_io_unregister_after_free)                                \
-                                                                    T(edge_timer_unregister_after_free) T(                        \
-                                                                            edge_io_unregister_wrong_ctx)                         \
-                                                                            T(edge_timer_unregister_wrong_ctx) T(                 \
-                                                                                    observability_io_count)                       \
-                                                                                    T(observability_timer_count) T(               \
-                                                                                            observability_post_count)             \
-                                                                                            T(observability_get_counts_null_safe) \
-                                                                                                    T(observability_combined)
+#define TEST_LIST                                                                                                      \
+    T(dns_resolve)                                                                                                     \
+    T(core_create_destroy)                                                                                             \
+    T(core_create_destroy_many)                                                                                        \
+    T(core_run_stop)                                                                                                   \
+    T(core_run_once_empty)                                                                                             \
+    T(core_run_once_with_post)                                                                                         \
+    T(core_post_order)                                                                                                 \
+    T(core_wakeup)                                                                                                     \
+    T(core_stop_aborts_pending)                                                                                        \
+    T(core_double_stop_safe)                                                                                           \
+    T(core_destroy_null_safe)                                                                                          \
+    T(core_run_null)                                                                                                   \
+    T(core_run_once_null)                                                                                              \
+    T(core_post_null_handler)                                                                                          \
+    T(core_ignore_sigpipe)                                                                                             \
+    T(core_restart_loop)                                                                                               \
+    T(core_set_allocator)                                                                                              \
+    T(memory_no_leak)                                                                                                  \
+    T(post_defer_to_next_iter)                                                                                         \
+    T(post_dispatch_same_thread)                                                                                       \
+    T(post_dispatch_cross_thread)                                                                                      \
+    T(io_register_pipe_read)                                                                                           \
+    T(io_null_read_cb_no_fire)                                                                                         \
+    T(io_unregister_self_in_callback)                                                                                  \
+    T(io_multiple_fds_partial_ready)                                                                                   \
+    T(io_write_monitor)                                                                                                \
+    T(io_both_null_rejected)                                                                                           \
+    T(timer_interval_zero_rejected)                                                                                    \
+    T(timer_unregister_null_safe)                                                                                      \
+    T(timer_fire_once)                                                                                                 \
+    T(timer_unregister_before_fire)                                                                                    \
+    T(timer_dynamic_add_in_callback)                                                                                   \
+    T(timer_dynamic_remove_safe)                                                                                       \
+    T(timer_self_unregister_in_callback)                                                                               \
+    T(timer_cross_unregister_in_callback)                                                                              \
+    T(timer_register_in_timer_callback)                                                                                \
+    T(timer_multi_fire_per_tick)                                                                                       \
+    T(timer_multi_fire_self_unregister)                                                                                \
+    T(integration_io_timer_post)                                                                                       \
+    T(integration_stop_then_destroy)                                                                                   \
+    T(edge_null_context_doesnt_crash)                                                                                  \
+    T(edge_invalid_fd_rejected)                                                                                        \
+    T(edge_null_io_handler)                                                                                            \
+    T(edge_large_fd_rejected)                                                                                          \
+    T(edge_many_timers)                                                                                                \
+    T(edge_unregister_twice_safe)                                                                                      \
+    T(edge_io_unregister_multiple)                                                                                     \
+    T(edge_timer_unregister_multiple)                                                                                  \
+    T(edge_io_unregister_after_free)                                                                                   \
+    T(edge_timer_unregister_after_free)                                                                                \
+    T(edge_io_unregister_wrong_ctx)                                                                                    \
+    T(edge_timer_unregister_wrong_ctx)                                                                                 \
+    T(observability_io_count)                                                                                          \
+    T(observability_timer_count)                                                                                       \
+    T(observability_post_count) T(observability_get_counts_null_safe) T(observability_combined)
 
 /* ====================================================================
  *  主函数

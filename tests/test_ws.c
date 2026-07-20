@@ -769,33 +769,62 @@ TEST(handshake_full_roundtrip) {
 
 /* removed */
 
-#define TEST_LIST                                                                                                                                                       \
-    T(sha1_empty)                                                                                                                                                       \
-    T(sha1_abc)                                                                                                                                                         \
-    T(sha1_len_448)                                                                                                                                                     \
-    T(sha1_streaming)                                                                                                                                                   \
-    T(sha1_million_a)                                                                                                                                                   \
-    T(sha1_ws_key) T(base64_empty) T(base64_single) T(base64_double) T(base64_triple) T(base64_4bytes) T(                                                               \
-            base64_5bytes) T(base64_6bytes) T(base64_binary) T(base64_insufficient_buffer) T(base64_just_fit)                                                           \
-            T(base64_encode_size) T(frame_parse_small_unmasked) T(frame_parse_small_masked) T(                                                                          \
-                    frame_parse_medium_length) T(frame_parse_large_length) T(frame_parse_incomplete)                                                                    \
-                    T(frame_parse_incomplete_ext16) T(frame_parse_incomplete_ext64) T(frame_parse_incomplete_mask) T(                                                   \
-                            frame_parse_rsv_error) T(frame_parse_msb_length_error) T(frame_parse_continuation)                                                          \
-                            T(frame_build_small_unmasked) T(frame_build_small_masked) T(frame_build_medium) T(                                                          \
-                                    frame_build_large) T(frame_build_invalid_opcode) T(frame_roundtrip_small)                                                           \
-                                    T(frame_apply_mask) T(handshake_gen_key) T(handshake_build_request_basic) T(                                                        \
-                                            handshake_build_request_with_protocol)                                                                                      \
-                                            T(handshake_build_request_buffer_too_small) T(handshake_parse_101_basic) T(                                                 \
-                                                    handshake_parse_101_no_protocol) T(handshake_parse_non_101)                                                         \
-                                                    T(handshake_parse_incomplete) T(handshake_parse_incremental) T(                                                     \
-                                                            handshake_parse_case_insensitive)                                                                           \
-                                                            T(handshake_parse_missing_accept) T(handshake_verify_accept) T(                                             \
-                                                                    handshake_verify_accept_wrong)                                                                      \
-                                                                    T(handshake_full_roundtrip) /* ==================================================================== \
-                                                                                                 *  主函数                                                           \
-                                                                                                 * ==================================================================== \
-                                                                                                 */
+#define TEST_LIST                                                                                                      \
+    T(sha1_empty)                                                                                                      \
+    T(sha1_abc)                                                                                                        \
+    T(sha1_len_448)                                                                                                    \
+    T(sha1_streaming)                                                                                                  \
+    T(sha1_million_a)                                                                                                  \
+    T(sha1_ws_key)                                                                                                     \
+    T(base64_empty)                                                                                                    \
+    T(base64_single)                                                                                                   \
+    T(base64_double)                                                                                                   \
+    T(base64_triple)                                                                                                   \
+    T(base64_4bytes)                                                                                                   \
+    T(base64_5bytes)                                                                                                   \
+    T(base64_6bytes)                                                                                                   \
+    T(base64_binary)                                                                                                   \
+    T(base64_insufficient_buffer)                                                                                      \
+    T(base64_just_fit)                                                                                                 \
+    T(base64_encode_size)                                                                                              \
+    T(frame_parse_small_unmasked)                                                                                      \
+    T(frame_parse_small_masked)                                                                                        \
+    T(frame_parse_medium_length)                                                                                       \
+    T(frame_parse_large_length)                                                                                        \
+    T(frame_parse_incomplete)                                                                                          \
+    T(frame_parse_incomplete_ext16)                                                                                    \
+    T(frame_parse_incomplete_ext64)                                                                                    \
+    T(frame_parse_incomplete_mask)                                                                                     \
+    T(frame_parse_rsv_error)                                                                                           \
+    T(frame_parse_msb_length_error)                                                                                    \
+    T(frame_parse_continuation)                                                                                        \
+    T(frame_build_small_unmasked)                                                                                      \
+    T(frame_build_small_masked)                                                                                        \
+    T(frame_build_medium)                                                                                              \
+    T(frame_build_large)                                                                                               \
+    T(frame_build_invalid_opcode)                                                                                      \
+    T(frame_roundtrip_small)                                                                                           \
+    T(frame_apply_mask)                                                                                                \
+    T(handshake_gen_key)                                                                                               \
+    T(handshake_build_request_basic)                                                                                   \
+    T(handshake_build_request_with_protocol)                                                                           \
+    T(handshake_build_request_buffer_too_small)                                                                        \
+    T(handshake_parse_101_basic)                                                                                       \
+    T(handshake_parse_101_no_protocol)                                                                                 \
+    T(handshake_parse_non_101)                                                                                         \
+    T(handshake_parse_incomplete)                                                                                      \
+    T(handshake_parse_incremental)                                                                                     \
+    T(handshake_parse_case_insensitive)                                                                                \
+    T(handshake_parse_missing_accept)                                                                                  \
+    T(handshake_verify_accept)                                                                                         \
+    T(handshake_verify_accept_wrong)                                                                                   \
+    T(handshake_full_roundtrip)
 
+
+/* ====================================================================                \
+ *  主函数                                                                          \
+ * ====================================================================                \
+ */
 int main(void) {
     struct test_entry *test_list = NULL;
 #define T(name)                                                                                                        \

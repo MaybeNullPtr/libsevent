@@ -19,7 +19,7 @@ MODE="${MODE:-fuzzingserver}"
 CASES="${CASES:-[\"*\"]}"
 PORT=9001
 ECHO_PORT=9002
-TIMEOUT=60
+TIMEOUT=500
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 

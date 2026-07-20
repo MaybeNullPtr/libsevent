@@ -39,6 +39,10 @@
 #define WS_UNLOCK(c) ((void)0)
 #endif
 
+/* recv_buf 同时用于 HTTP 升级响应读取, 至少确保能放下 101 响应头 */
+#define SEVENT_WS_RECV_MIN 1024
+#define SEVENT_WS_RECV_DEFAULT 4096
+
 /* 前向声明 (IO 回调, 供 ws_update_io / send_frame 引用) */
 static void on_write_ready(void *data);
 static void on_data(void *data);
@@ -155,8 +159,12 @@ static void stream_consume(struct sevent_ws_conn *c) {
         c->recv_pos         += chunk;
         c->stream_remaining -= chunk;
     }
-    if(c->stream_remaining == 0)
+    if(c->stream_remaining == 0) {
         c->stream_active = 0;
+        /* 流式读取完成了一个 fin=1 的分片 → 分片消息结束 */
+        if(c->stream_fin)
+            c->frag_pending = 0;
+    }
 }
 
 /* ====================================================================
@@ -374,9 +382,12 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
      *      不刷，留在缓冲区里等下一帧。避免服务器用单独的 0 字节终止帧
      *      发 fin=1 时，这里已经把数据用 fin=0 刷出去了。
      */
+    bool sent_fin = false;
     while(c->frag_len >= c->recv_cap && (fin || c->frag_len > c->recv_cap)) {
         /* 这次刷完 frag_buf 就空了 → 如果 fin=1 这就是最后一块 */
         bool last_flag = fin && (c->frag_len == c->recv_cap);
+        if(last_flag)
+            sent_fin = true;
         c->on_message(d, c->frag_buf, c->recv_cap, is_bin, last_flag ? 1 : 0, 0);
         if(c->destroyed)
             return 0;
@@ -389,6 +400,17 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
         if(c->destroyed)
             return 0;
         c->frag_len     = 0;
+        c->frag_pending = 0;
+        c->frag_total   = 0;
+    } else if(fin && !sent_fin) {
+        /* 零负载终止帧或 while 循环未覆盖 fin=1:
+         * 数据可能已通过流式读取(stream_consume)送达,
+         * 仍需通知上层消息结束。 */
+        if(c->on_message && c->frag_pending) {
+            c->on_message(d, c->frag_buf, 0, is_bin, 1, c->frag_total);
+            if(c->destroyed)
+                return 0;
+        }
         c->frag_pending = 0;
         c->frag_total   = 0;
     } else if(fin) {
@@ -501,7 +523,15 @@ static int process_frames(struct sevent_ws_conn *c) {
                 c->stream_remaining = hdr.payload_len;
                 c->stream_total     = hdr.payload_len;
                 c->stream_fin       = hdr.fin;
-                c->recv_pos         += (size_t)n; /* 消费帧头 */
+                /* 流式读取绕过 frag_append/frag_flush,
+                 * 但后续 0 字节终止帧需经 handle_cont → 依赖 frag_pending */
+                if(!hdr.fin && hdr.opcode != WS_OPCODE_CLOSE && hdr.opcode != WS_OPCODE_PING &&
+                   hdr.opcode != WS_OPCODE_PONG) {
+                    c->frag_pending = 1;
+                    if(hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY)
+                        c->frag_opcode = hdr.opcode;
+                }
+                c->recv_pos += (size_t)n; /* 消费帧头 */
                 stream_consume(c);
             }
             break;
@@ -619,13 +649,20 @@ static void on_handshake_data(void *data) {
         return;
     }
     int n = recv_read(c);
-    if(n <= 0) {
-        if(n == 0 || (errno != EAGAIN && errno != EINTR)) {
+    if(n < 0) {
+        if(errno != EAGAIN && errno != EINTR) {
             WS_UNLOCK(c);
             ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
         } else {
             WS_UNLOCK(c);
         }
+        return;
+    }
+    /* n >= 0: 刚读到数据或缓冲区满 (recv_read 返回 0, 但 recv_len > 0).
+     * 只要有数据就尝试解析; 空缓冲区则是对端关闭连接. */
+    if(c->recv_len == 0) {
+        WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
         return;
     }
     ws_handshake_response resp;
@@ -786,10 +823,15 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->user_data          = cfg->user_data;
     c->connect_timeout_ms = cfg->connect_timeout_ms;
 
-    /* 固定大小接收/分片缓冲区 */
-    size_t bufsz = cfg->recv_buf_size ? cfg->recv_buf_size : 4096;
-    c->recv_buf  = (uint8_t *)sevent_i_malloc(bufsz);
-    c->frag_buf  = (uint8_t *)sevent_i_malloc(bufsz);
+    /* 固定大小接收/分片缓冲区.
+     * recv_buf 同时用于 HTTP 握手响应读取, 至少 SEVENT_WS_RECV_MIN. */
+    size_t bufsz = cfg->recv_buf_size;
+    if(bufsz == 0)
+        bufsz = SEVENT_WS_RECV_DEFAULT;
+    if(bufsz < SEVENT_WS_RECV_MIN)
+        bufsz = SEVENT_WS_RECV_MIN;
+    c->recv_buf = (uint8_t *)sevent_i_malloc(bufsz);
+    c->frag_buf = (uint8_t *)sevent_i_malloc(bufsz);
     if(!c->recv_buf || !c->frag_buf)
         goto cleanup;
     c->recv_cap = bufsz;
