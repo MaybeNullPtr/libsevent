@@ -129,7 +129,7 @@ static void gen_mask_key(struct sevent_ws_conn *c, uint8_t key[4]) {
 
 /* RFC 6455 §7.4: 校验 Close 码是否合法 */
 static bool ws_close_code_valid(uint16_t code) {
-    if(code < 1000)
+    if(code < SEVENT_WS_CLOSE_NORMAL)
         return 0; /* 0-999 保留 */
     if(code == 1004 || code == 1005 || code == 1006)
         return 0; /* 1004-1006 保留/仅内部 */
@@ -462,7 +462,7 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
     if(fin && c->frag_len > 0) {
         /* RFC 6455 §5.6: 分片 TEXT 结束时校验 UTF-8 */
         if(!is_bin && !ws_utf8_validate(c->frag_buf, c->frag_len)) {
-            ws_send_close_code(c, 1007);
+            ws_send_close_code(c, SEVENT_WS_CLOSE_INVALID_PAYLOAD);
             return 0;
         }
         c->on_message(d, c->frag_buf, c->frag_len, is_bin, 1, c->frag_total);
@@ -500,7 +500,7 @@ static int handle_text_binary(struct sevent_ws_conn *c, const ws_frame_header *h
     if(hdr->fin) {
         /* RFC 6455 §5.6: TEXT 帧 payload 必须是 UTF-8 */
         if(hdr->opcode == WS_OPCODE_TEXT && !ws_utf8_validate(payload, (size_t)hdr->payload_len)) {
-            ws_send_close_code(c, 1007);
+            ws_send_close_code(c, SEVENT_WS_CLOSE_INVALID_PAYLOAD);
             return -1;
         }
         if(c->on_message) {
@@ -551,7 +551,7 @@ static int handle_pong(struct sevent_ws_conn *c, const ws_frame_header *hdr, con
 }
 
 static int handle_close(struct sevent_ws_conn *c, const ws_frame_header *hdr, const uint8_t *payload) {
-    uint16_t    code   = 1000;
+    uint16_t    code   = SEVENT_WS_CLOSE_NORMAL;
     const char *reason = "";
     size_t      rl     = 0;
     if(hdr->payload_len >= 2) {
@@ -562,7 +562,7 @@ static int handle_close(struct sevent_ws_conn *c, const ws_frame_header *hdr, co
             return SEVENT_WS_ERR_PROTOCOL;
         /* RFC 6455 §5.5.1: reason 必须是 UTF-8 */
         if(rl > 0 && !ws_utf8_validate((const uint8_t *)reason, rl)) {
-            ws_send_close_code(c, 1007);
+            ws_send_close_code(c, SEVENT_WS_CLOSE_INVALID_PAYLOAD);
             return 0;
         }
     }
@@ -674,12 +674,12 @@ static void on_data(void *data) {
             WS_UNLOCK(c);
             return;
         }
-        ws_enter_closed(c, 1006, "connection closed", 18);
+        ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, "connection closed", 18);
         WS_UNLOCK(c);
         return;
     }
     if(n < 0 && errno != EAGAIN && errno != EINTR) {
-        ws_enter_closed(c, 1006, "read error", 10);
+        ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, "read error", 10);
         WS_UNLOCK(c);
         return;
     }
@@ -953,7 +953,7 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     {
         int t_ms = c->connect_timeout_ms;
         if(t_ms == 0)
-            t_ms = 10000; /* 默认 10 秒 */
+            t_ms = SEVENT_WS_CONNECT_TIMEOUT_MS;
         if(t_ms > 0)
             c->connect_timer = sevent_timer_register(c->ev, (unsigned int)t_ms, on_connect_timeout, c);
     }
