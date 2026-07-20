@@ -43,6 +43,13 @@
 #define SEVENT_WS_RECV_MIN 1024
 #define SEVENT_WS_RECV_DEFAULT 4096
 
+/* UTF-8 校验: 1=启用 (默认), 0=禁用. 纯运行时校验, 大消息下耗时约 1ns/字节.
+ * 禁用后不校验 TEXT payload 和 Close reason 的 UTF-8 合法性 (RFC 违规,
+ * 但对端通常不受影响). 编译时通过 -DSEVENT_WS_UTF8_CHECK=0 关闭. */
+#ifndef SEVENT_WS_UTF8_CHECK
+#define SEVENT_WS_UTF8_CHECK 1
+#endif
+
 /* 前向声明 */
 static int  send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len);
 static void on_write_ready(void *data);
@@ -53,8 +60,9 @@ static void on_handshake_data(void *data);
  *  内部辅助
  * ==================================================================== */
 
-/* UTF-8 校验 (RFC 3629). 返回 true 表示合法. */
+/* UTF-8 校验 (RFC 3629). 返回 true 表示合法. SEVENT_WS_UTF8_CHECK=0 时跳过. */
 static bool ws_utf8_validate(const uint8_t *data, size_t len) {
+#if SEVENT_WS_UTF8_CHECK
     size_t i = 0;
     while(i < len) {
         uint8_t b = data[i];
@@ -108,6 +116,11 @@ static bool ws_utf8_validate(const uint8_t *data, size_t len) {
         }
     }
     return true;
+#else
+    (void)data;
+    (void)len;
+    return true;
+#endif
 }
 
 static unsigned int xorshift32(unsigned int *seed) {
