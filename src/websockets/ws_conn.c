@@ -43,7 +43,8 @@
 #define SEVENT_WS_RECV_MIN 1024
 #define SEVENT_WS_RECV_DEFAULT 4096
 
-/* 前向声明 (IO 回调, 供 ws_update_io / send_frame 引用) */
+/* 前向声明 */
+static int  send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len);
 static void on_write_ready(void *data);
 static void on_data(void *data);
 static void on_handshake_data(void *data);
@@ -51,6 +52,63 @@ static void on_handshake_data(void *data);
 /* ====================================================================
  *  内部辅助
  * ==================================================================== */
+
+/* UTF-8 校验 (RFC 3629). 返回 true 表示合法. */
+static bool ws_utf8_validate(const uint8_t *data, size_t len) {
+    size_t i = 0;
+    while(i < len) {
+        uint8_t b = data[i];
+        if(b <= 0x7F) {
+            i++;
+        } else if(b >= 0xC2 && b <= 0xDF) {
+            if(i + 1 >= len || (data[i + 1] & 0xC0) != 0x80)
+                return false;
+            i += 2;
+        } else if(b == 0xE0) {
+            if(i + 2 >= len || (data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80)
+                return false;
+            if(data[i + 1] < 0xA0)
+                return false; /* overlong */
+            i += 3;
+        } else if(b >= 0xE1 && b <= 0xEC) {
+            if(i + 2 >= len || (data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80)
+                return false;
+            i += 3;
+        } else if(b == 0xED) {
+            if(i + 2 >= len || (data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80)
+                return false;
+            if(data[i + 1] > 0x9F)
+                return false; /* surrogate U+D800-U+DFFF */
+            i += 3;
+        } else if(b >= 0xEE && b <= 0xEF) {
+            if(i + 2 >= len || (data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80)
+                return false;
+            i += 3;
+        } else if(b == 0xF0) {
+            if(i + 3 >= len || (data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80 ||
+               (data[i + 3] & 0xC0) != 0x80)
+                return false;
+            if(data[i + 1] < 0x90)
+                return false; /* overlong */
+            i += 4;
+        } else if(b >= 0xF1 && b <= 0xF3) {
+            if(i + 3 >= len || (data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80 ||
+               (data[i + 3] & 0xC0) != 0x80)
+                return false;
+            i += 4;
+        } else if(b == 0xF4) {
+            if(i + 3 >= len || (data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80 ||
+               (data[i + 3] & 0xC0) != 0x80)
+                return false;
+            if(data[i + 1] > 0x8F)
+                return false; /* > U+10FFFF */
+            i += 4;
+        } else {
+            return false; /* 0x80-0xBF standalone, 0xC0-0xC1, 0xF5-0xFF */
+        }
+    }
+    return true;
+}
 
 static unsigned int xorshift32(unsigned int *seed) {
     unsigned int x = *seed;
@@ -102,6 +160,12 @@ static void ws_enter_closed(struct sevent_ws_conn *c, uint16_t code, const char 
     ws_close_socket(c);
     if(c->on_close)
         c->on_close(c->user_data, code, reason, reason_len);
+}
+
+static void ws_send_close_code(struct sevent_ws_conn *c, uint16_t code) {
+    uint8_t cp[] = { (uint8_t)(code >> 8), (uint8_t)(code & 0xFF) };
+    (void)send_frame(c, WS_OPCODE_CLOSE, cp, sizeof(cp));
+    ws_enter_closed(c, code, "", 0);
 }
 
 static void ws_fatal(struct sevent_ws_conn *c, int err) {
@@ -396,6 +460,11 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
     }
     /* 余量 < recv_cap, 消息结束: 刷出最后一小块 */
     if(fin && c->frag_len > 0) {
+        /* RFC 6455 §5.6: 分片 TEXT 结束时校验 UTF-8 */
+        if(!is_bin && !ws_utf8_validate(c->frag_buf, c->frag_len)) {
+            ws_send_close_code(c, 1007);
+            return 0;
+        }
         c->on_message(d, c->frag_buf, c->frag_len, is_bin, 1, c->frag_total);
         if(c->destroyed)
             return 0;
@@ -429,6 +498,11 @@ static int handle_text_binary(struct sevent_ws_conn *c, const ws_frame_header *h
     if(c->frag_pending)
         return SEVENT_WS_ERR_PROTOCOL;
     if(hdr->fin) {
+        /* RFC 6455 §5.6: TEXT 帧 payload 必须是 UTF-8 */
+        if(hdr->opcode == WS_OPCODE_TEXT && !ws_utf8_validate(payload, (size_t)hdr->payload_len)) {
+            ws_send_close_code(c, 1007);
+            return -1;
+        }
         if(c->on_message) {
             c->on_message(c->user_data,
                           payload,
@@ -486,6 +560,11 @@ static int handle_close(struct sevent_ws_conn *c, const ws_frame_header *hdr, co
         rl     = (size_t)hdr->payload_len - 2;
         if(!ws_close_code_valid(code))
             return SEVENT_WS_ERR_PROTOCOL;
+        /* RFC 6455 §5.5.1: reason 必须是 UTF-8 */
+        if(rl > 0 && !ws_utf8_validate((const uint8_t *)reason, rl)) {
+            ws_send_close_code(c, 1007);
+            return 0;
+        }
     }
     if(c->state == WS_STATE_CLOSING)
         ws_enter_closed(c, code, reason, rl);
