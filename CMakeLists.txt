@@ -126,9 +126,9 @@ if(NOT CLANG_FORMAT)
     message(WARNING "clang-format not found, format targets disabled")
 else()
 file(GLOB_RECURSE SEVENT_FORMAT_FILES
-    ${CMAKE_SOURCE_DIR}/src/*
-    ${CMAKE_SOURCE_DIR}/include/*
-    ${CMAKE_SOURCE_DIR}/tests/*
+    ${CMAKE_SOURCE_DIR}/src/*.c ${CMAKE_SOURCE_DIR}/src/*.h
+    ${CMAKE_SOURCE_DIR}/include/*.h
+    ${CMAKE_SOURCE_DIR}/tests/*.c ${CMAKE_SOURCE_DIR}/tests/*.cpp ${CMAKE_SOURCE_DIR}/tests/*.h
     ${CMAKE_SOURCE_DIR}/examples/*.c ${CMAKE_SOURCE_DIR}/examples/*.cpp
     ${CMAKE_SOURCE_DIR}/examples/*.hpp ${CMAKE_SOURCE_DIR}/examples/*.h
 )
