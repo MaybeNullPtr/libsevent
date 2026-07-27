@@ -15,6 +15,7 @@ option(SEVENT_ENABLE_EVENTFD "Use eventfd for wakeup (Linux)" ON)
 option(SEVENT_ENABLE_PIPE     "Use pipe for wakeup (POSIX)" ON)
 option(SEVENT_WS_THREAD_SAFE
     "WebSocket client with thread-safe API (adds per-connection mutex locking)" OFF)
+option(SEVENT_WS_DEFLATE "WebSocket permessage-deflate compression (requires zlib)" OFF)
 
 option(SEVENT_ASAN "Build with AddressSanitizer (memory/leak detection)" OFF)
 option(SEVENT_TSAN "Build with ThreadSanitizer (data race detection)" OFF)
@@ -88,6 +89,7 @@ set(WEBSOCKET_SOURCES
     src/websockets/ws_frame.c
     src/websockets/ws_handshake.c
     src/websockets/ws_conn.c
+    src/websockets/ws_deflate.c
 )
 
 add_library(sevent_ws STATIC ${WEBSOCKET_SOURCES})
@@ -102,6 +104,14 @@ target_link_libraries(sevent_ws PUBLIC sevent)
 
 if(SEVENT_WS_THREAD_SAFE)
     target_compile_definitions(sevent_ws PRIVATE SEVENT_WS_THREAD_SAFE)
+endif()
+
+# permessage-deflate 压缩 (RFC 7692), 需要 zlib
+if(SEVENT_WS_DEFLATE)
+    find_package(ZLIB REQUIRED)
+    target_compile_definitions(sevent_ws PRIVATE SEVENT_WS_DEFLATE)
+    target_include_directories(sevent_ws PRIVATE ${ZLIB_INCLUDE_DIRS})
+    target_link_libraries(sevent_ws PRIVATE ${ZLIB_LIBRARIES})
 endif()
 
 # ---------- tests ----------
@@ -150,6 +160,7 @@ add_test(NAME ws_unit_tests COMMAND test-ws)
 add_test(NAME ws_conn_tests COMMAND test-ws-conn)
 add_test(NAME frag_stream_tests COMMAND test-frag-stream)
 add_test(NAME redirect_tests COMMAND test-redirect)
+add_test(NAME deflate_tests COMMAND test-deflate)
 
 # ---------- examples ----------
 
@@ -208,7 +219,24 @@ target_link_libraries(test-redirect PRIVATE Threads::Threads)
 target_include_directories(test-redirect PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test-redirect PRIVATE Threads::Threads)
 
+add_executable(test-deflate
+    tests/test_deflate.c
+    ${SEVENT_SOURCES}
+    src/websockets/ws_deflate.c
+)
+target_include_directories(test-deflate PRIVATE include)
+target_include_directories(test-deflate PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test-deflate PRIVATE Threads::Threads)
+
 find_package(Threads REQUIRED)
+
+if(SEVENT_WS_DEFLATE)
+    foreach(t test-ws test-ws-conn test-frag-stream test-redirect test-deflate)
+        target_compile_definitions(${t} PRIVATE SEVENT_WS_DEFLATE)
+        target_include_directories(${t} PRIVATE ${ZLIB_INCLUDE_DIRS})
+        target_link_libraries(${t} PRIVATE ${ZLIB_LIBRARIES})
+    endforeach()
+endif()
 
 add_executable(example-echo-client
     examples/echo_client.c
@@ -259,6 +287,11 @@ target_include_directories(example-ws-client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(example-ws-client PRIVATE Threads::Threads)
 if(SEVENT_WS_THREAD_SAFE)
     target_compile_definitions(example-ws-client PRIVATE SEVENT_WS_THREAD_SAFE)
+endif()
+if(SEVENT_WS_DEFLATE)
+    target_compile_definitions(example-ws-client PRIVATE SEVENT_WS_DEFLATE)
+    target_include_directories(example-ws-client PRIVATE ${ZLIB_INCLUDE_DIRS})
+    target_link_libraries(example-ws-client PRIVATE ${ZLIB_LIBRARIES})
 endif()
 
 # ---------- DNS example ----------
