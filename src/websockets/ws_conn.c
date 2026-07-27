@@ -1118,12 +1118,14 @@ cleanup:
 int sevent_ws_send_text(sevent_ws_conn *c, const void *data, size_t len) {
     if(!c)
         return SEVENT_ERR_INVAL;
+    if(!data && len > 0)
+        return SEVENT_ERR_INVAL;
+    /* RFC 6455 §5.6: TEXT 帧 payload MUST 为合法 UTF-8 */
+    if(len > 0 && !ws_utf8_validate((const uint8_t *)data, len))
+        return SEVENT_ERR_INVAL;
+    /* 空帧 (len=0) 直接放行, send_frame 会构造零长度帧 */
     WS_LOCK(c);
-    int r;
-    if(data || len == 0)
-        r = send_frame(c, WS_OPCODE_TEXT, data, len);
-    else
-        r = SEVENT_ERR_INVAL;
+    int r = send_frame(c, WS_OPCODE_TEXT, data, len);
     WS_UNLOCK(c);
     if(r == SEVENT_WS_ERR_WRITE)
         ws_fatal(c, r);
