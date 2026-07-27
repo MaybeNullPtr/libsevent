@@ -135,7 +135,7 @@ int sevent_wakeup(sevent_context *ctx);
 
 /*
  * 投递异步任务, loop 的 post 阶段按 FIFO 顺序执行.
- * 回调内调用时, 新任务在本轮继续执行 (post 阶段逐个处理).
+ * 回调内调用时, 新任务加入新队列, 在下轮 post 阶段处理.
  * 返回: SEVENT_SUCCESS 或 SEVENT_ERR_NOMEM.
  * 线程: 跨线程 (内部锁, post_lock).
  */

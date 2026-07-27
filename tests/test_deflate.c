@@ -306,6 +306,49 @@ static void test_params(void) {
         ws_deflate_destroy(df);
         return;
     }
+
+    /* 第二轮: 不同数据, 验证 no_context_takeover 重置有效 */
+    {
+        char buf2[32];
+        memset(buf2, 'C', sizeof(buf2));
+        size_t om2 = ws_deflate_compress_maxlen(df, sizeof(buf2));
+        if(om2 == 0) {
+            FAIL("compress_maxlen=0 (2nd)");
+            free(comp);
+            ws_deflate_destroy(df);
+            return;
+        }
+        uint8_t *c2 = (uint8_t *)realloc(comp, om2);
+        if(!c2) {
+            FAIL("realloc (2nd)");
+            free(comp);
+            ws_deflate_destroy(df);
+            return;
+        }
+        comp     = c2;
+        size_t cl2 = om2;
+        if(!ws_deflate_compress(df, (const uint8_t *)buf2, sizeof(buf2), comp, &cl2)) {
+            FAIL("compress (2nd)");
+            free(comp);
+            ws_deflate_destroy(df);
+            return;
+        }
+        uint8_t dec2[64];
+        size_t  dl2 = sizeof(dec2);
+        if(!ws_deflate_decompress(df, comp, cl2, dec2, &dl2)) {
+            FAIL("decompress (2nd)");
+            free(comp);
+            ws_deflate_destroy(df);
+            return;
+        }
+        if(dl2 != sizeof(buf2) || memcmp(dec2, buf2, sizeof(buf2)) != 0) {
+            FAIL("mismatch (2nd)");
+            free(comp);
+            ws_deflate_destroy(df);
+            return;
+        }
+    }
+
     PASS();
     free(comp);
     ws_deflate_destroy(df);
