@@ -175,6 +175,10 @@ static void ws_enter_closed(struct sevent_ws_conn *c, uint16_t code, const char 
     if(c->state == WS_STATE_CLOSED || c->destroyed)
         return;
     c->state = WS_STATE_CLOSED;
+    if(c->ping_timer) {
+        sevent_timer_unregister(c->ev, c->ping_timer);
+        c->ping_timer = NULL;
+    }
     ws_close_socket(c);
     if(c->on_close)
         c->on_close(c->user_data, code, reason, reason_len);
@@ -190,6 +194,14 @@ static void ws_fatal(struct sevent_ws_conn *c, int err) {
     if(c->destroyed || c->state == WS_STATE_CLOSED)
         return;
     c->state = WS_STATE_CLOSED;
+    if(c->connect_timer) {
+        sevent_timer_unregister(c->ev, c->connect_timer);
+        c->connect_timer = NULL;
+    }
+    if(c->ping_timer) {
+        sevent_timer_unregister(c->ev, c->ping_timer);
+        c->ping_timer = NULL;
+    }
     ws_close_socket(c);
     if(c->on_error)
         c->on_error(c->user_data, err);
@@ -471,6 +483,18 @@ static int ws_tcp_connect(const char *host, uint16_t port) {
         return -1;
     }
     return fd;
+}
+
+/* ---- PING 定时器: 按 interval 发空 PING ---- */
+static void on_ping_timer(void *data) {
+    struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
+    WS_LOCK(c);
+    if(c->destroyed || c->state != WS_STATE_OPEN) {
+        WS_UNLOCK(c);
+        return;
+    }
+    (void)send_frame(c, WS_OPCODE_PING, NULL, 0);
+    WS_UNLOCK(c);
 }
 
 /* ---- 为已连接的 fd 注册 IO 回调 + 连接超时定时器 ---- */
@@ -946,6 +970,9 @@ static void on_handshake_data(void *data) {
         WS_UNLOCK(c);
         return;
     }
+    /* 启动 PING 心跳定时器 */
+    if(c->ping_interval_ms > 0 && !c->ping_timer)
+        c->ping_timer = sevent_timer_register(c->ev, (unsigned int)c->ping_interval_ms, on_ping_timer, c);
     /* 握手响应 + WS 帧粘包: 立即处理残留帧 */
     if(c->recv_len > c->recv_pos) {
         int err = process_frames(c);
@@ -1054,6 +1081,7 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->on_pong            = cfg->on_pong;
     c->user_data          = cfg->user_data;
     c->connect_timeout_ms = cfg->connect_timeout_ms;
+    c->ping_interval_ms   = cfg->ping_interval_ms;
 
     /* 固定大小接收/分片缓冲区.
      * recv_buf 同时用于 HTTP 握手响应读取, 至少 SEVENT_WS_RECV_MIN. */
@@ -1163,6 +1191,10 @@ void sevent_ws_close(sevent_ws_conn *c) {
     if(c->connect_timer) {
         sevent_timer_unregister(c->ev, c->connect_timer);
         c->connect_timer = NULL;
+    }
+    if(c->ping_timer) {
+        sevent_timer_unregister(c->ev, c->ping_timer);
+        c->ping_timer = NULL;
     }
     ws_write_node *wn = c->write_head;
     while(wn) {
