@@ -33,9 +33,9 @@ static std::chrono::steady_clock::time_point g_case_start;
 static std::vector<uint8_t>                  g_acc;
 
 static void connect_path(const std::string &path);
-static void do_count();
-static void do_case();
-static void do_report();
+static void do_count(void *data);
+static void do_case(void *data);
+static void do_report(void *data);
 
 static void on_open(void *) {
     g_case_start = std::chrono::steady_clock::now();
@@ -57,12 +57,12 @@ static void on_close(void *, uint16_t, const char *, size_t) {
         std::printf("%s case %d/%d done (%ldms)\n", now_str(), g_cur, g_total, ms);
         g_cur++;
         if(g_cur <= g_total)
-            sevent_post(g_ctx, (sevent_handler_fn)do_case, nullptr);
+            sevent_post(g_ctx, do_case, nullptr);
         else {
             std::printf("%s all %d cases done, generating report...\n", now_str(), g_total);
             g_run  = false;
             g_done = true;
-            sevent_post(g_ctx, (sevent_handler_fn)do_report, nullptr);
+            sevent_post(g_ctx, do_report, nullptr);
         }
     } else {
         if(g_total > 0) {
@@ -89,11 +89,11 @@ static void on_error(void *, int err) {
     if(g_run) {
         g_cur++;
         if(g_cur <= g_total)
-            sevent_post(g_ctx, (sevent_handler_fn)do_case, nullptr);
+            sevent_post(g_ctx, do_case, nullptr);
         else {
             g_run  = false;
             g_done = true;
-            sevent_post(g_ctx, (sevent_handler_fn)do_report, nullptr);
+            sevent_post(g_ctx, do_report, nullptr);
         }
     } else {
         sevent_stop(g_ctx);
@@ -142,26 +142,29 @@ static void connect_path(const std::string &path) {
     g_ws           = sevent_ws_connect(g_ctx, &cfg);
 }
 
-static void do_count() {
+static void do_count(void *data) {
+    (void)data;
     connect_path("/getCaseCount");
     if(!g_ws)
-        sevent_timer_register(g_ctx, 1000, (sevent_timer_fn)do_count, nullptr);
+        sevent_timer_register(g_ctx, 1000, do_count, nullptr);
 }
 
-static void do_case() {
+static void do_case(void *data) {
+    (void)data;
     char path[256];
     std::snprintf(path, sizeof(path), "/runCase?case=%d&agent=%s", g_cur, g_agent.c_str());
     connect_path(path);
     if(!g_ws)
-        sevent_timer_register(g_ctx, 500, (sevent_timer_fn)do_case, nullptr);
+        sevent_timer_register(g_ctx, 500, do_case, nullptr);
 }
 
-static void do_report() {
+static void do_report(void *data) {
+    (void)data;
     char path[256];
     std::snprintf(path, sizeof(path), "/updateReports?agent=%s", g_agent.c_str());
     connect_path(path);
     if(!g_ws)
-        sevent_timer_register(g_ctx, 1000, (sevent_timer_fn)do_report, nullptr);
+        sevent_timer_register(g_ctx, 1000, do_report, nullptr);
 }
 
 int main(int argc, char **argv) {

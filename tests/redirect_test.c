@@ -28,6 +28,9 @@
 static sevent_context *g_ctx;
 static int             g_pass;
 
+/* 包装: sevent_timer_fn 参数为 void*，中转 sevent_stop */
+static void stop_timer(void *d) { sevent_stop((sevent_context *)d); }
+
 /* ---- 小辅助: 创建 nonblock + REUSEADDR 监听 socket ----------------- */
 static int tcp_listen(uint16_t port) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -352,7 +355,7 @@ int main(void) {
     }
 
     /* 安全网 (5s fallback) */
-    sevent_timer_register(g_ctx, 5000, (sevent_timer_fn)sevent_stop, g_ctx);
+    sevent_timer_register(g_ctx, 5000, stop_timer, g_ctx);
 
     /* 跑事件循环 — on_msg 正常路径会提前 stop */
     sevent_run(g_ctx);

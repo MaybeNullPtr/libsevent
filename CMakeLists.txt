@@ -125,8 +125,8 @@ target_include_directories(test_sevent PRIVATE include)
 target_link_libraries(test_sevent PRIVATE Threads::Threads)
 
 add_custom_target(check
-    COMMAND test_sevent
-    DEPENDS test_sevent
+    COMMAND ctest --output-on-failure
+    DEPENDS test_sevent test-ws test-ws-conn test-frag-stream test-redirect test-deflate
 )
 
 # ---------- 代码格式化 (需要 clang-format) ----------
