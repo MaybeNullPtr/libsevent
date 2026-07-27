@@ -68,7 +68,7 @@ static void on_close(void *, uint16_t, const char *, size_t) {
         if(g_total > 0) {
             g_run = true;
             g_cur = 1;
-            do_case();
+            do_case(NULL);
         } else {
             std::fprintf(stderr, "[error] no cases\n");
             sevent_stop(g_ctx);
@@ -178,7 +178,7 @@ int main(int argc, char **argv) {
     if(!g_ctx)
         return 1;
     sevent_ignore_sigpipe();
-    do_count();
+    do_count(NULL);
     sevent_run(g_ctx);
     if(g_ws)
         sevent_ws_destroy(g_ws);
