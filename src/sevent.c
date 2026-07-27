@@ -84,7 +84,7 @@ struct sevent_post {
 };
 
 struct sevent_context {
-    volatile int    running;
+    volatile bool   running;
     sevent_thread_t loop_thread; /* loop 所在线程, 用于 dispatch 判断 */
     int             wake_fds[2];
 
@@ -182,7 +182,7 @@ sevent_context *sevent_create(void) {
 void sevent_destroy(sevent_context *ctx) {
     if(!ctx)
         return;
-    ctx->running = 0;
+    ctx->running = false;
 
     /* 释放所有异步任务 */
     {
@@ -233,7 +233,7 @@ void sevent_destroy(sevent_context *ctx) {
 void sevent_stop(sevent_context *ctx) {
     if(!ctx)
         return;
-    ctx->running = 0;
+    ctx->running = false;
     sevent_wakeup(ctx);
 }
 
@@ -295,16 +295,17 @@ static void run_free_death(sevent_context *ctx) {
  * 构建 fd_set 和 IO 快照, 计算 select 超时.
  * 返回 1 应继续 select, 0 表示无 IO 无定时器, 跳过 select.
  */
-static int run_build_fdset(sevent_context    *ctx,
-                           fd_set            *rfds,
-                           fd_set            *wfds,
-                           struct sevent_io **iosnap,
-                           int               *out_n_io,
-                           int               *out_max_fd,
-                           int               *out_has_io,
-                           int               *out_has_timer,
-                           struct timeval    *tv) {
-    int n_io = 0, max_fd, has_io = 0;
+static bool run_build_fdset(sevent_context    *ctx,
+                            fd_set            *rfds,
+                            fd_set            *wfds,
+                            struct sevent_io **iosnap,
+                            int               *out_n_io,
+                            int               *out_max_fd,
+                            bool              *out_has_io,
+                            bool              *out_has_timer,
+                            struct timeval    *tv) {
+    int  n_io   = 0, max_fd;
+    bool has_io = false;
 
     sevent_mutex_lock(&ctx->lock);
 
@@ -314,7 +315,7 @@ static int run_build_fdset(sevent_context    *ctx,
     max_fd = ctx->wake_fds[0];
 
     for(struct sevent_io *io = ctx->io_list; io; io = io->next) {
-        has_io = 1;
+        has_io = true;
         if(io->read_cb)
             FD_SET(io->fd, rfds);
         if(io->write_cb)
@@ -344,11 +345,11 @@ static int run_build_fdset(sevent_context    *ctx,
     *out_max_fd    = max_fd;
     *out_has_io    = has_io;
     *out_has_timer = has_timer;
-    return (has_io || has_timer) ? 1 : 0;
+    return has_io || has_timer;
 }
 
 static void run_io_callbacks(
-        sevent_context *ctx, int nfds, fd_set *rfds, fd_set *wfds, struct sevent_io **iosnap, int n_io, int *fired) {
+        sevent_context *ctx, int nfds, fd_set *rfds, fd_set *wfds, struct sevent_io **iosnap, int n_io, bool *fired) {
     if(nfds <= 0)
         return;
     if(FD_ISSET(ctx->wake_fds[0], rfds))
@@ -362,10 +363,10 @@ static void run_io_callbacks(
             continue;
         if(io->read_cb && FD_ISSET(io->fd, rfds)) {
             io->read_cb(io->data);
-            *fired = 1;
+            *fired = true;
         } else if(io->write_cb && FD_ISSET(io->fd, wfds)) {
             io->write_cb(io->data);
-            *fired = 1;
+            *fired = true;
         }
     }
 }
@@ -380,7 +381,7 @@ int sevent_dispatch(sevent_context *ctx, sevent_handler_fn h, void *data) {
     return sevent_post(ctx, h, data);
 }
 
-static void run_posts(sevent_context *ctx, int *fired) {
+static void run_posts(sevent_context *ctx, bool *fired) {
     /* 双队列: 将 pending 队列入队到本地 active, 新任务进 pending 下轮处理 */
     sevent_mutex_lock(&ctx->post_lock);
     struct sevent_post *active = ctx->post_pending;
@@ -391,7 +392,7 @@ static void run_posts(sevent_context *ctx, int *fired) {
     while(active) {
         struct sevent_post *next = active->next;
         active->cb(active->data);
-        *fired = 1;
+        *fired = true;
         sev_free_fn(active);
         active = next;
     }
@@ -404,7 +405,7 @@ struct expire_entry {
     int                  times; /* 需要连续触发多少次 */
 };
 
-static void run_timers(sevent_context *ctx, bool has_timer, long delta, int *fired) {
+static void run_timers(sevent_context *ctx, bool has_timer, long delta, bool *fired) {
     if(!has_timer || delta <= 0)
         return;
 
@@ -442,7 +443,7 @@ static void run_timers(sevent_context *ctx, bool has_timer, long delta, int *fir
             continue; /* 回调前已被其他回调 unregister，跳过 */
         for(int k = 0; k < expired[i].times; k++) {
             t->cb(t->data);
-            *fired = 1;
+            *fired = true;
         }
     }
 }
@@ -456,16 +457,17 @@ int sevent_run_once(sevent_context *ctx) {
 
     fd_set            rfds, wfds;
     struct sevent_io *iosnap[FD_SETSIZE];
-    int               n_io, max_fd, has_io, has_timer;
+    int               n_io, max_fd;
+    bool              has_io, has_timer;
     long              delta = 0;
-    int               fired = 0;
+    bool              fired = false;
 
     /* 阶段 0: 释放上一轮的延迟链表 */
     run_free_death(ctx);
 
     /* 阶段 1: 构建 fd_set + 超时 */
     struct timeval tv;
-    int            do_select = run_build_fdset(ctx, &rfds, &wfds, iosnap, &n_io, &max_fd, &has_io, &has_timer, &tv);
+    bool           do_select = run_build_fdset(ctx, &rfds, &wfds, iosnap, &n_io, &max_fd, &has_io, &has_timer, &tv);
 
     /* 阶段 2: select */
     if(do_select) {
@@ -504,13 +506,13 @@ int sevent_run_once(sevent_context *ctx) {
     /* 阶段 5: 定时器 */
     run_timers(ctx, has_timer, delta, &fired);
 
-    return fired ? 1 : 0;
+    return fired;
 }
 
 int sevent_run(sevent_context *ctx) {
     if(!ctx)
         return SEVENT_ERR_INVAL;
-    ctx->running = 1;
+    ctx->running = true;
     while(ctx->running)
         sevent_run_once(ctx);
     return SEVENT_SUCCESS;
