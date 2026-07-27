@@ -11,6 +11,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* 无效 socket 标记 */
+#define SEVENT_INVALID_SOCKET (-1)
+
 #ifdef SEVENT_WS_THREAD_SAFE
 #include "../../include/sevent_platform.h"
 #endif
@@ -34,7 +37,7 @@ typedef struct ws_write_node {
     uint8_t              *data;    /* 完整帧 (含帧头) */
     size_t                len;     /* 总长度 */
     size_t                offset;  /* 已写入偏移 */
-    int                   is_ctrl; /* 控制帧, 优先发送 */
+    bool                  is_ctrl; /* 控制帧, 优先发送 */
 } ws_write_node;
 
 /* 内部连接结构 */
@@ -81,14 +84,14 @@ struct sevent_ws_conn {
     size_t   recv_pos; /* 已消费偏移 */
 
     /* ---- 大帧流式读取 (单帧 > recv_cap 时分块) ---- */
-    int      stream_active;
+    bool     stream_active;
     uint8_t  stream_opcode;
     uint64_t stream_remaining;
     uint64_t stream_total; /* 原始帧 payload 总长, 传给 on_message */
-    int      stream_fin;   /* 原始帧 FIN 位 */
+    bool     stream_fin;   /* 原始帧 FIN 位 */
 
     /* ---- 分片累积 (RFC 6455 §5.4, frag_buf 大小 = recv_cap) ---- */
-    int      frag_pending; /* 1=正在接收分片序列 */
+    bool     frag_pending; /* 正在接收分片序列 */
     uint8_t  frag_opcode;  /* 原始 opcode (TEXT/BINARY) */
     uint8_t *frag_buf;
     size_t   frag_len;
