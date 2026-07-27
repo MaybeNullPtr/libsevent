@@ -84,12 +84,16 @@ bool ws_deflate_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8
     df->deflate.next_out  = out;
     df->deflate.avail_out = (uInt)*out_cap;
 
-    if(deflate(&df->deflate, Z_SYNC_FLUSH) != Z_OK)
+    if(deflate(&df->deflate, Z_SYNC_FLUSH) != Z_OK) {
+        deflateReset(&df->deflate);
         return false;
+    }
 
     size_t used = *out_cap - df->deflate.avail_out;
-    if(used < 4)
+    if(used < 4) {
+        deflateReset(&df->deflate);
         return false; /* 尾部都放不下, 不可能 */
+    }
 
     /* RFC 7692 §6: 去掉尾部 0x00 0x00 0xff 0xff (Z_SYNC_FLUSH 固定输出) */
     *out_cap = used - 4;
@@ -123,8 +127,10 @@ bool ws_deflate_decompress(ws_deflate *df, const uint8_t *in, size_t in_len, uin
     int rc = inflate(&df->inflate, Z_SYNC_FLUSH);
     sevent_i_free(buf);
 
-    if(rc != Z_OK && rc != Z_STREAM_END)
+    if(rc != Z_OK && rc != Z_STREAM_END) {
+        inflateReset(&df->inflate);
         return false;
+    }
 
     size_t used = *out_cap - df->inflate.avail_out;
     *out_cap    = used;
