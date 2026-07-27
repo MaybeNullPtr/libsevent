@@ -222,7 +222,8 @@ void sevent_destroy(sevent_context *ctx) {
 
     if(ctx->wake_fds[0] >= 0)
         close(ctx->wake_fds[0]);
-    if(ctx->wake_fds[1] >= 0)
+    /* eventfd 模式下 wake_fds[0] == wake_fds[1], 避免重复关闭 */
+    if(ctx->wake_fds[1] >= 0 && ctx->wake_fds[1] != ctx->wake_fds[0])
         close(ctx->wake_fds[1]);
 
     sevent_mutex_destroy(&ctx->lock);

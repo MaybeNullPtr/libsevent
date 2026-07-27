@@ -499,19 +499,23 @@ static void on_ping_timer(void *data) {
 
 /* ---- 为已连接的 fd 注册 IO 回调 + 连接超时定时器 ---- */
 static bool ws_register_connect_io(struct sevent_ws_conn *c, int fd) {
-    c->fd        = fd;
     c->io_handle = sevent_io_register(c->ev, &(sevent_io_handler){.fd = fd, .io_write = on_connect_ready, .data = c});
     if(!c->io_handle) {
-        c->fd = SEVENT_INVALID_SOCKET;
         close(fd);
         return false;
     }
+    c->fd    = fd;
     c->state = WS_STATE_CONNECTING;
     int t_ms = c->connect_timeout_ms;
     if(t_ms == 0)
         t_ms = SEVENT_WS_CONNECT_TIMEOUT_MS;
-    if(t_ms > 0)
+    if(t_ms > 0) {
         c->connect_timer = sevent_timer_register(c->ev, (unsigned int)t_ms, on_connect_timeout, c);
+        if(!c->connect_timer) {
+            ws_close_socket(c);
+            return false;
+        }
+    }
     return true;
 }
 
