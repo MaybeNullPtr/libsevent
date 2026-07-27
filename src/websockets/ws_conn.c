@@ -43,6 +43,9 @@
 #define SEVENT_WS_RECV_MIN 1024
 #define SEVENT_WS_RECV_DEFAULT 4096
 
+/* 最大重定向次数 */
+#define SEVENT_WS_MAX_REDIRECTS 5
+
 /* UTF-8 校验: 1=启用 (默认), 0=禁用. 纯运行时校验, 大消息下耗时约 1ns/字节.
  * 禁用后不校验 TEXT payload 和 Close reason 的 UTF-8 合法性 (RFC 违规,
  * 但对端通常不受影响). 编译时通过 -DSEVENT_WS_UTF8_CHECK=0 关闭. */
@@ -55,6 +58,8 @@ static int  send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *pay
 static void on_write_ready(void *data);
 static void on_data(void *data);
 static void on_handshake_data(void *data);
+static void on_connect_ready(void *data);
+static void on_connect_timeout(void *data);
 
 /* ====================================================================
  *  内部辅助
@@ -387,6 +392,102 @@ static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payl
     }
 
     return SEVENT_SUCCESS;
+}
+
+/* ====================================================================
+ *  重定向支持
+ * ==================================================================== */
+
+/* 解析 Location: 支持 ws://host[:port]/path 和 /relative/path */
+static int ws_redirect_parse(struct sevent_ws_conn *c, const char *loc) {
+    if(loc[0] == '/') {
+        strncpy(c->path, loc, sizeof(c->path) - 1);
+        c->path[sizeof(c->path) - 1] = '\0';
+        return 0;
+    }
+    if(strncmp(loc, "ws://", 5) != 0)
+        return -1;
+    loc += 5;
+
+    const char *p = loc;
+    while(*p && *p != ':' && *p != '/')
+        p++;
+    size_t hlen = (size_t)(p - loc);
+    if(hlen == 0 || hlen >= sizeof(c->host))
+        return -1;
+    memcpy(c->host, loc, hlen);
+    c->host[hlen] = '\0';
+
+    if(*p == ':') {
+        long port = 0;
+        p++;
+        while(*p >= '0' && *p <= '9') {
+            port = port * 10 + (long)(*p - '0');
+            p++;
+        }
+        if(port <= 0 || port > 65535)
+            return -1;
+        c->port = (uint16_t)port;
+    } else {
+        c->port = 80;
+    }
+    if(*p == '/') {
+        strncpy(c->path, p, sizeof(c->path) - 1);
+        c->path[sizeof(c->path) - 1] = '\0';
+    } else {
+        strncpy(c->path, "/", sizeof(c->path));
+    }
+    return 0;
+}
+
+/* ---- 创建 nonblock TCP socket + connect (EINPROGRESS 也算成功) ---- */
+static int ws_tcp_connect(const char *host, uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if(fd < 0) return -1;
+    /* 最佳尝试 SO_REUSEADDR — 失败不影响建连 */
+#ifdef SO_REUSEADDR
+    { int on = 1; (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)); }
+#endif
+    int fl = fcntl(fd, F_GETFL);
+    if(fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) { close(fd); return -1; }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(port);
+    if(inet_pton(AF_INET, host, &addr.sin_addr) <= 0) { close(fd); return -1; }
+    int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    if(rc < 0 && errno != EINPROGRESS) { close(fd); return -1; }
+    return fd;
+}
+
+/* ---- 为已连接的 fd 注册 IO 回调 + 连接超时定时器 ---- */
+static int ws_register_connect_io(struct sevent_ws_conn *c, int fd) {
+    c->fd = fd;
+    c->io_handle = sevent_io_register(c->ev,
+        &(sevent_io_handler){ .fd = fd, .io_write = on_connect_ready, .data = c });
+    if(!c->io_handle) { c->fd = -1; close(fd); return -1; }
+    c->state = WS_STATE_CONNECTING;
+    int t_ms = c->connect_timeout_ms;
+    if(t_ms == 0) t_ms = SEVENT_WS_CONNECT_TIMEOUT_MS;
+    if(t_ms > 0)
+        c->connect_timer = sevent_timer_register(c->ev, (unsigned int)t_ms, on_connect_timeout, c);
+    return 0;
+}
+
+/* 重连: 关闭旧 socket, 创建新 TCP 连接, 注册 on_connect_ready */
+static int ws_redirect_reconnect(struct sevent_ws_conn *c) {
+    /* 清理旧连接 */
+    if(c->connect_timer) {
+        sevent_timer_unregister(c->ev, c->connect_timer);
+        c->connect_timer = NULL;
+    }
+    ws_close_socket(c);
+    c->recv_len = 0;
+    c->recv_pos = 0;
+
+    int fd = ws_tcp_connect(c->host, c->port);
+    if(fd < 0) return -1;
+    return ws_register_connect_io(c, fd);
 }
 
 /* ====================================================================
@@ -771,6 +872,27 @@ static void on_handshake_data(void *data) {
         ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
         return;
     }
+    /* 3xx 重定向: 库内部处理, 不回调上层 */
+    if(resp.status_code >= 300 && resp.status_code < 400 && resp.location[0]) {
+        if(c->redirect_count >= SEVENT_WS_MAX_REDIRECTS) {
+            WS_UNLOCK(c);
+            ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
+            return;
+        }
+        if(ws_redirect_parse(c, resp.location) != 0) {
+            WS_UNLOCK(c);
+            ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
+            return;
+        }
+        c->redirect_count++;
+        if(ws_redirect_reconnect(c) != 0) {
+            WS_UNLOCK(c);
+            ws_fatal(c, SEVENT_WS_ERR_CONNECT);
+            return;
+        }
+        WS_UNLOCK(c);
+        return;
+    }
     /* 分离 header (含状态行) 和 body */
     const char *headers = (const char *)c->recv_buf;
     size_t      hlen    = (size_t)ret;
@@ -928,48 +1050,9 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
         goto cleanup;
     c->recv_cap = bufsz;
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if(fd < 0)
-        goto cleanup;
-    {
-        int fl = fcntl(fd, F_GETFL);
-        if(fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) {
-            close(fd);
-            goto cleanup;
-        }
-    }
-    c->fd = fd;
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(c->port);
-    if(inet_pton(AF_INET, c->host, &addr.sin_addr) <= 0) {
-        close(fd);
-        goto cleanup;
-    }
-    int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-    if(rc < 0 && errno != EINPROGRESS) {
-        close(fd);
-        goto cleanup;
-    }
-    sevent_io_handler h;
-    h.fd         = fd;
-    h.io_read    = NULL;
-    h.io_write   = on_connect_ready;
-    h.data       = c;
-    c->io_handle = sevent_io_register(ev, &h);
-    if(!c->io_handle) {
-        close(fd);
-        goto cleanup;
-    }
-    /* 连接超时定时器 */
-    {
-        int t_ms = c->connect_timeout_ms;
-        if(t_ms == 0)
-            t_ms = SEVENT_WS_CONNECT_TIMEOUT_MS;
-        if(t_ms > 0)
-            c->connect_timer = sevent_timer_register(c->ev, (unsigned int)t_ms, on_connect_timeout, c);
-    }
+    int fd = ws_tcp_connect(c->host, c->port);
+    if(fd < 0) goto cleanup;
+    if(ws_register_connect_io(c, fd) != 0) goto cleanup;
     return c;
 
 cleanup:

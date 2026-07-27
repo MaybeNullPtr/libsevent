@@ -117,6 +117,7 @@ int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *res
     resp->status_code = 0;
     resp->accept[0]   = '\0';
     resp->protocol[0] = '\0';
+    resp->location[0] = '\0';
 
     /* ---- 查找 HTTP 响应结尾 (\r\n\r\n) ---- */
     const uint8_t *end = NULL;
@@ -199,6 +200,12 @@ int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *res
                     copy = sizeof(resp->protocol) - 1;
                 memcpy(resp->protocol, val, copy);
                 resp->protocol[copy] = '\0';
+            } else if(ci_eq((const char *)p, name_len, "location")) {
+                size_t copy = val_len;
+                if(copy >= sizeof(resp->location))
+                    copy = sizeof(resp->location) - 1;
+                memcpy(resp->location, val, copy);
+                resp->location[copy] = '\0';
             }
         }
 

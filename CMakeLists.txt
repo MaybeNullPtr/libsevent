@@ -149,6 +149,7 @@ add_test(NAME unit_tests COMMAND test_sevent)
 add_test(NAME ws_unit_tests COMMAND test-ws)
 add_test(NAME ws_conn_tests COMMAND test-ws-conn)
 add_test(NAME frag_stream_tests COMMAND test-frag-stream)
+add_test(NAME redirect_tests COMMAND test-redirect)
 
 # ---------- examples ----------
 
@@ -195,6 +196,17 @@ add_executable(test-frag-stream
 target_include_directories(test-frag-stream PRIVATE include)
 target_include_directories(test-frag-stream PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test-frag-stream PRIVATE Threads::Threads)
+
+add_executable(test-redirect
+    tests/redirect_test.c
+    ${WEBSOCKET_SOURCES}
+    ${SEVENT_SOURCES}
+)
+target_include_directories(test-redirect PRIVATE include)
+target_include_directories(test-redirect PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test-redirect PRIVATE Threads::Threads)
+target_include_directories(test-redirect PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test-redirect PRIVATE Threads::Threads)
 
 find_package(Threads REQUIRED)
 

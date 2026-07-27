@@ -56,6 +56,7 @@ struct sevent_ws_conn {
     char          host[256];
     uint16_t      port;
     char          path[256];
+    int           redirect_count; /* 已跟随重定向次数, 超限报错 */
     char          sub_protocol[64];
     int           ping_interval_ms;
     int           connect_timeout_ms;

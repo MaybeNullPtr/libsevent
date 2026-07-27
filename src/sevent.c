@@ -486,6 +486,11 @@ int sevent_run_once(sevent_context *ctx) {
                 return SEVENT_ERR_INVAL;
             /* EINTR (信号打断) / EBADF (fd 在 select 期间被 unregister+close):
                跳过 IO 回调, fall through 到 posts + timers */
+            if(errno == EBADF) {
+                /* select 立即返回 EBADF → delta=0 → 定时器不触发 → CPU 空转.
+                 * 设置 delta=1 保证至少 1ms 让定时器降频触发 */
+                if(delta < 1) delta = 1;
+            }
         } else {
             /* 阶段 3: IO 回调 */
             run_io_callbacks(ctx, nfds, &rfds, &wfds, iosnap, n_io, &fired);
