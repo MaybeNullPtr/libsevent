@@ -83,7 +83,8 @@ static void on_redir_conn(void *data) {
                        "Content-Length: 0\r\n"
                        "\r\n",
                       PORT_ECHO);
-    write(fd, resp, (size_t)rl);
+    ssize_t rw = write(fd, resp, (size_t)rl);
+    (void)rw;
 close:
     if(g_redir_io) {
         sevent_io_unregister(g_ctx, g_redir_io);
@@ -190,7 +191,8 @@ static void on_echo_read(void *data) {
                                    "Sec-WebSocket-Accept: %s\r\n"
                                    "\r\n",
                                   b64);
-                write(g_echo_fd, resp, (size_t)rl);
+                ssize_t rw = write(g_echo_fd, resp, (size_t)rl);
+                (void)rw;
                 g_echo_hs  = 1;
                 g_echo_len = 0;
                 return;
@@ -224,7 +226,8 @@ static void on_echo_read(void *data) {
             uint8_t *out = (uint8_t *)malloc((size_t)hh + (size_t)hdr.payload_len);
             memcpy(out, rh, (size_t)hh);
             memcpy(out + hh, pld, (size_t)hdr.payload_len);
-            write(g_echo_fd, out, (size_t)(hh + hdr.payload_len));
+            ssize_t rw = write(g_echo_fd, out, (size_t)(hh + hdr.payload_len));
+            (void)rw;
             free(out);
         }
         pos += fsize;
