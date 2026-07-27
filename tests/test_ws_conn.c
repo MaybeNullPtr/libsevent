@@ -1685,6 +1685,7 @@ static int t_recv_invalid_close_code(void) {
     uint8_t cp[2] = {0x03, 0xE7}; /* 999 */
     uint8_t hdr[16];
     int     hl = ws_frame_build_header(hdr, 0, WS_OPCODE_CLOSE, NULL, 2);
+    /* fin=0 不表示分包, 只测非法 close code */
     if(hl < 0)
         return 1;
     uint8_t *raw = malloc((size_t)hl + 2);

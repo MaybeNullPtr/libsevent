@@ -118,11 +118,9 @@ endif()
 
 add_executable(test_sevent
     tests/test_sevent.c
-    ${SEVENT_SOURCES}
 )
-
 target_include_directories(test_sevent PRIVATE include)
-target_link_libraries(test_sevent PRIVATE Threads::Threads)
+target_link_libraries(test_sevent PRIVATE sevent)
 
 add_custom_target(check
     COMMAND ctest --output-on-failure
@@ -180,53 +178,42 @@ target_include_directories(example-timer-demo PRIVATE include)
 
 add_executable(test-ws
     tests/test_ws.c
-    ${WEBSOCKET_SOURCES}
-    ${SEVENT_SOURCES}
 )
 target_include_directories(test-ws PRIVATE include)
 target_include_directories(test-ws PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test-ws PRIVATE Threads::Threads)
+target_link_libraries(test-ws PRIVATE sevent_ws)
 
 add_executable(test-ws-conn
     tests/test_ws_conn.c
-    ${WEBSOCKET_SOURCES}
-    ${SEVENT_SOURCES}
 )
 target_include_directories(test-ws-conn PRIVATE include)
 target_include_directories(test-ws-conn PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test-ws-conn PRIVATE Threads::Threads)
+target_link_libraries(test-ws-conn PRIVATE sevent_ws)
 if(SEVENT_WS_THREAD_SAFE)
     target_compile_definitions(test-ws-conn PRIVATE SEVENT_WS_THREAD_SAFE)
 endif()
 
 add_executable(test-frag-stream
     tests/frag_stream_test.c
-    ${WEBSOCKET_SOURCES}
-    ${SEVENT_SOURCES}
 )
 target_include_directories(test-frag-stream PRIVATE include)
 target_include_directories(test-frag-stream PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test-frag-stream PRIVATE Threads::Threads)
+target_link_libraries(test-frag-stream PRIVATE sevent_ws)
 
 add_executable(test-redirect
     tests/redirect_test.c
-    ${WEBSOCKET_SOURCES}
-    ${SEVENT_SOURCES}
 )
 target_include_directories(test-redirect PRIVATE include)
 target_include_directories(test-redirect PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test-redirect PRIVATE Threads::Threads)
-target_include_directories(test-redirect PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test-redirect PRIVATE Threads::Threads)
+target_link_libraries(test-redirect PRIVATE sevent_ws)
 
 add_executable(test-deflate
     tests/test_deflate.c
-    ${SEVENT_SOURCES}
     src/websockets/ws_deflate.c
 )
 target_include_directories(test-deflate PRIVATE include)
 target_include_directories(test-deflate PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(test-deflate PRIVATE Threads::Threads)
+target_link_libraries(test-deflate PRIVATE sevent)
 
 find_package(Threads REQUIRED)
 

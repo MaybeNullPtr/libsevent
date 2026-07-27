@@ -392,10 +392,6 @@ TEST(frame_parse_large_length) {
     buf[4] = 0x00;
     buf[5] = 0x00;
     buf[6] = 0x00;
-    buf[7] = 0x01;
-    buf[8] = 0x00;
-    buf[9] = 0x17; /* = 0x000117 = 70000 - 256 - 255 ... */
-    /* Actually let me compute 70000 = 0x11170 */
     memset(buf + 2, 0, 8);
     uint64_t v = 70000;
     for(int i = 7; i >= 0; i--) {

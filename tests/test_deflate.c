@@ -81,8 +81,8 @@ static void test_roundtrip(void) {
             continue;
         }
 
-        /* 小消息压缩后不可能膨胀到超过原文+16 */
-        if(in_len > 0 && comp_len > in_len + 16) {
+        /* 小消息压缩后不应过度膨胀 */
+        if(comp_len > (in_len > 0 ? in_len + 16 : 32)) {
             FAIL("compression expanded");
             free(comp);
             ws_deflate_destroy(df);
