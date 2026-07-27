@@ -35,17 +35,17 @@ extern "C" {
 #define SEVENT_WS_ERR_WRITE 0x3005     /* 写错误 */
 
 /* ===== WebSocket Close 码 (RFC 6455 §7.4.1) ===== */
-#define SEVENT_WS_CLOSE_NORMAL       1000 /* 正常关闭 */
-#define SEVENT_WS_CLOSE_GOING_AWAY   1001 /* 服务端关闭/客户端离开 */
-#define SEVENT_WS_CLOSE_PROTOCOL_ERR 1002 /* 协议错误 */
-#define SEVENT_WS_CLOSE_UNSUPPORTED  1003 /* 收到不支持的数据类型 */
+#define SEVENT_WS_CLOSE_NORMAL 1000          /* 正常关闭 */
+#define SEVENT_WS_CLOSE_GOING_AWAY 1001      /* 服务端关闭/客户端离开 */
+#define SEVENT_WS_CLOSE_PROTOCOL_ERR 1002    /* 协议错误 */
+#define SEVENT_WS_CLOSE_UNSUPPORTED 1003     /* 收到不支持的数据类型 */
 #define SEVENT_WS_CLOSE_INVALID_PAYLOAD 1007 /* 非法 payload (如 UTF-8 错误) */
-#define SEVENT_WS_CLOSE_POLICY       1008 /* 策略违反 */
-#define SEVENT_WS_CLOSE_TOO_BIG      1009 /* 消息太大 */
-#define SEVENT_WS_CLOSE_EXTENSION    1010 /* 缺少强制扩展协商 */
-#define SEVENT_WS_CLOSE_SERVER_ERR   1011 /* 服务端内部错误 */
+#define SEVENT_WS_CLOSE_POLICY 1008          /* 策略违反 */
+#define SEVENT_WS_CLOSE_TOO_BIG 1009         /* 消息太大 */
+#define SEVENT_WS_CLOSE_EXTENSION 1010       /* 缺少强制扩展协商 */
+#define SEVENT_WS_CLOSE_SERVER_ERR 1011      /* 服务端内部错误 */
 /* 以下为保留/内部使用码, 应用不应主动发送 */
-#define SEVENT_WS_CLOSE_ABNORMAL     1006 /* 异常断开 (仅内部, 不可发送) */
+#define SEVENT_WS_CLOSE_ABNORMAL 1006 /* 异常断开 (仅内部, 不可发送) */
 /* 1012-1015 为 TLS 握手等保留 */
 
 /* ===== 连接超时默认值 ===== */

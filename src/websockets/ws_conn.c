@@ -181,7 +181,7 @@ static void ws_enter_closed(struct sevent_ws_conn *c, uint16_t code, const char 
 }
 
 static void ws_send_close_code(struct sevent_ws_conn *c, uint16_t code) {
-    uint8_t cp[] = { (uint8_t)(code >> 8), (uint8_t)(code & 0xFF) };
+    uint8_t cp[] = {(uint8_t)(code >> 8), (uint8_t)(code & 0xFF)};
     (void)send_frame(c, WS_OPCODE_CLOSE, cp, sizeof(cp));
     ws_enter_closed(c, code, "", 0);
 }
@@ -443,32 +443,49 @@ static int ws_redirect_parse(struct sevent_ws_conn *c, const char *loc) {
 /* ---- 创建 nonblock TCP socket + connect (EINPROGRESS 也算成功) ---- */
 static int ws_tcp_connect(const char *host, uint16_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if(fd < 0) return -1;
-    /* 最佳尝试 SO_REUSEADDR — 失败不影响建连 */
+    if(fd < 0)
+        return -1;
+        /* 最佳尝试 SO_REUSEADDR — 失败不影响建连 */
 #ifdef SO_REUSEADDR
-    { int on = 1; (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)); }
+    {
+        int on = 1;
+        (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    }
 #endif
     int fl = fcntl(fd, F_GETFL);
-    if(fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) { close(fd); return -1; }
+    if(fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) {
+        close(fd);
+        return -1;
+    }
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port   = htons(port);
-    if(inet_pton(AF_INET, host, &addr.sin_addr) <= 0) { close(fd); return -1; }
+    if(inet_pton(AF_INET, host, &addr.sin_addr) <= 0) {
+        close(fd);
+        return -1;
+    }
     int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-    if(rc < 0 && errno != EINPROGRESS) { close(fd); return -1; }
+    if(rc < 0 && errno != EINPROGRESS) {
+        close(fd);
+        return -1;
+    }
     return fd;
 }
 
 /* ---- 为已连接的 fd 注册 IO 回调 + 连接超时定时器 ---- */
 static bool ws_register_connect_io(struct sevent_ws_conn *c, int fd) {
-    c->fd = fd;
-    c->io_handle = sevent_io_register(c->ev,
-        &(sevent_io_handler){ .fd = fd, .io_write = on_connect_ready, .data = c });
-    if(!c->io_handle) { c->fd = SEVENT_INVALID_SOCKET; close(fd); return false; }
+    c->fd        = fd;
+    c->io_handle = sevent_io_register(c->ev, &(sevent_io_handler){.fd = fd, .io_write = on_connect_ready, .data = c});
+    if(!c->io_handle) {
+        c->fd = SEVENT_INVALID_SOCKET;
+        close(fd);
+        return false;
+    }
     c->state = WS_STATE_CONNECTING;
     int t_ms = c->connect_timeout_ms;
-    if(t_ms == 0) t_ms = SEVENT_WS_CONNECT_TIMEOUT_MS;
+    if(t_ms == 0)
+        t_ms = SEVENT_WS_CONNECT_TIMEOUT_MS;
     if(t_ms > 0)
         c->connect_timer = sevent_timer_register(c->ev, (unsigned int)t_ms, on_connect_timeout, c);
     return true;
@@ -486,7 +503,8 @@ static bool ws_redirect_reconnect(struct sevent_ws_conn *c) {
     c->recv_pos = 0;
 
     int fd = ws_tcp_connect(c->host, c->port);
-    if(fd < 0) return false;
+    if(fd < 0)
+        return false;
     return ws_register_connect_io(c, fd);
 }
 
@@ -1051,8 +1069,10 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->recv_cap = bufsz;
 
     int fd = ws_tcp_connect(c->host, c->port);
-    if(fd < 0) goto cleanup;
-    if(!ws_register_connect_io(c, fd)) goto cleanup;
+    if(fd < 0)
+        goto cleanup;
+    if(!ws_register_connect_io(c, fd))
+        goto cleanup;
     return c;
 
 cleanup:

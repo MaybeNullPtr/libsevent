@@ -489,7 +489,8 @@ int sevent_run_once(sevent_context *ctx) {
             if(errno == EBADF) {
                 /* select 立即返回 EBADF → delta=0 → 定时器不触发 → CPU 空转.
                  * 设置 delta=1 保证至少 1ms 让定时器降频触发 */
-                if(delta < 1) delta = 1;
+                if(delta < 1)
+                    delta = 1;
             }
         } else {
             /* 阶段 3: IO 回调 */
