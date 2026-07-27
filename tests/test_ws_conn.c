@@ -1431,7 +1431,7 @@ static int t_state_checks(void) {
         return 1;
     c->ev    = ctx;
     c->fd    = fds[1];
-    c->state = 4; /* WS_STATE_CLOSED */
+    c->state = WS_STATE_CLOSED;
     if(sevent_ws_send_text(c, "x", 1) != -1)
         return 1;
     if(sevent_ws_send_binary(c, "x", 1) != -1)

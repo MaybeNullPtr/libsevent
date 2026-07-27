@@ -167,8 +167,12 @@ sevent_context *sevent_create(void) {
 
     ctx->wake_fds[0] = ctx->wake_fds[1] = -1;
 
-    sevent_mutex_init(&ctx->lock);
-    sevent_mutex_init(&ctx->post_lock);
+    if(sevent_mutex_init(&ctx->lock) != 0 || sevent_mutex_init(&ctx->post_lock) != 0) {
+        sevent_mutex_destroy(&ctx->lock);
+        sevent_mutex_destroy(&ctx->post_lock);
+        sev_free_fn(ctx);
+        return NULL;
+    }
 
     if(sevent_wakeup_pair(ctx->wake_fds) < 0) {
         sevent_mutex_destroy(&ctx->lock);
@@ -431,8 +435,8 @@ static void run_timers(sevent_context *ctx, bool has_timer, long delta, bool *fi
             expired[n_expired].times = fire_count;
             n_expired++;
         } else if(fire_count > 0) {
-            /* 数组满了，设 0 让下轮 delta>0 立即补触发 */
-            t->remaining_ms = 0;
+            /* 数组满了，设 1 让下轮再次触发，避免 delta=0 跳过 */
+            t->remaining_ms = 1;
         }
     }
     sevent_mutex_unlock(&ctx->lock);
@@ -607,8 +611,6 @@ sevent_timer *sevent_timer_register(sevent_context *ctx, unsigned int interval_m
 void sevent_timer_unregister(sevent_context *ctx, sevent_timer *h) {
     if(!ctx || !h)
         return;
-    if(!ctx)
-        return;
     sevent_mutex_lock(&ctx->lock);
     /* 遍历活跃链表查找 h. 不在链表中说明已释放或从不属于此 ctx,
        指针比较不依赖 h 有效性, 已释放句柄不会误匹配. */
@@ -623,6 +625,7 @@ void sevent_timer_unregister(sevent_context *ctx, sevent_timer *h) {
         }
     }
     sevent_mutex_unlock(&ctx->lock);
+    sevent_wakeup(ctx);
 }
 
 /* ==================== 可观测性 ==================== */
