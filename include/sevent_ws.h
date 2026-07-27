@@ -72,7 +72,7 @@ typedef void (*sevent_ws_on_http_response_fn)(
 
 /* ===== 配置结构体 ===== */
 typedef struct sevent_ws_config {
-    const char *host;               /* 服务器主机名/IP ("127.0.0.1") */
+    const char *host;               /* 服务器 IP 地址 ("127.0.0.1") */
     uint16_t    port;               /* 端口 (80) */
     const char *path;               /* 路径 ("/ws") */
     const char *sub_protocol;       /* 子协议, NULL=不协商 */
