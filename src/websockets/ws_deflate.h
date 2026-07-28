@@ -43,6 +43,31 @@ bool ws_deflate_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8
 /* 解压一条消息. out_cap 不足时返回 false. */
 bool ws_deflate_decompress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap);
 
+/* ===== 流式压缩 ===== */
+
+/* 重置压缩流，准备压缩新消息. */
+void ws_deflate_compress_reset(ws_deflate *df);
+
+/* 压缩一段数据，同一消息可多次调用. out_cap 传入容量, 传出实际输出长度.
+ * 返回 false 表示输出缓冲不足，调用方应增大缓冲重试（当前输入已丢弃）. */
+bool ws_deflate_compress_stream(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap);
+
+/* 结束压缩，Z_SYNC_FLUSH 收尾并去掉尾部 4 字节.
+ * out_cap 不足时返回 false，调用方应增大缓冲重试. */
+bool ws_deflate_compress_end(ws_deflate *df, uint8_t *out, size_t *out_cap);
+
+/* ===== 流式解压 ===== */
+
+/* 重置解压流，准备解压新消息. */
+void ws_deflate_decompress_reset(ws_deflate *df);
+
+/* 解压一段数据，同一消息可多次调用. */
+bool ws_deflate_decompress_stream(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap);
+
+/* 结束解压，拼接 0x0000FFFF 尾部后 inflate 收尾.
+ * 调用方在最后一段数据传入后调此函数. */
+bool ws_deflate_decompress_end(ws_deflate *df, uint8_t *out, size_t *out_cap);
+
 #ifdef __cplusplus
 }
 #endif

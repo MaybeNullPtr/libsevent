@@ -140,6 +140,117 @@ bool ws_deflate_decompress(ws_deflate *df, const uint8_t *in, size_t in_len, uin
     return true;
 }
 
+/* ===== 流式压缩 ===== */
+
+void ws_deflate_compress_reset(ws_deflate *df) {
+    if(df)
+        deflateReset(&df->deflate);
+}
+
+bool ws_deflate_compress_stream(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap) {
+    if(!df || !in || !out || !out_cap)
+        return false;
+    if(in_len > UINT_MAX || *out_cap > UINT_MAX)
+        return false;
+
+    df->deflate.next_in   = (uint8_t *)in;
+    df->deflate.avail_in  = (uInt)in_len;
+    df->deflate.next_out  = out;
+    df->deflate.avail_out = (uInt)*out_cap;
+
+    int rc = deflate(&df->deflate, Z_NO_FLUSH);
+    if(rc != Z_OK) {
+        deflateReset(&df->deflate);
+        return false;
+    }
+
+    *out_cap = *out_cap - df->deflate.avail_out;
+    return true;
+}
+
+bool ws_deflate_compress_end(ws_deflate *df, uint8_t *out, size_t *out_cap) {
+    if(!df || !out || !out_cap)
+        return false;
+    if(*out_cap > UINT_MAX)
+        return false;
+
+    df->deflate.next_in   = NULL;
+    df->deflate.avail_in  = 0;
+    df->deflate.next_out  = out;
+    df->deflate.avail_out = (uInt)*out_cap;
+
+    /* Z_SYNC_FLUSH 刷出所有积压数据 + 尾部 0x0000FFFF */
+    if(deflate(&df->deflate, Z_SYNC_FLUSH) != Z_OK) {
+        deflateReset(&df->deflate);
+        return false;
+    }
+
+    size_t used = *out_cap - df->deflate.avail_out;
+    if(used < 4) {
+        deflateReset(&df->deflate);
+        return false;
+    }
+    *out_cap = used - 4;
+
+    if(df->client_no_context_takeover)
+        deflateReset(&df->deflate);
+    return true;
+}
+
+/* ===== 流式解压 ===== */
+
+void ws_deflate_decompress_reset(ws_deflate *df) {
+    if(df)
+        inflateReset(&df->inflate);
+}
+
+bool ws_deflate_decompress_stream(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap) {
+    if(!df || !in || !out || !out_cap)
+        return false;
+    if(in_len > UINT_MAX || *out_cap > UINT_MAX)
+        return false;
+
+    df->inflate.next_in   = (uint8_t *)in;
+    df->inflate.avail_in  = (uInt)in_len;
+    df->inflate.next_out  = out;
+    df->inflate.avail_out = (uInt)*out_cap;
+
+    int rc = inflate(&df->inflate, Z_NO_FLUSH);
+    if(rc != Z_OK && rc != Z_BUF_ERROR) {
+        inflateReset(&df->inflate);
+        return false;
+    }
+
+    *out_cap = *out_cap - df->inflate.avail_out;
+    return true;
+}
+
+bool ws_deflate_decompress_end(ws_deflate *df, uint8_t *out, size_t *out_cap) {
+    if(!df || !out || !out_cap)
+        return false;
+    if(*out_cap > UINT_MAX)
+        return false;
+
+    /* 拼接尾部 0x0000FFFF */
+    uint8_t tail[4] = {0x00, 0x00, 0xFF, 0xFF};
+    df->inflate.next_in   = tail;
+    df->inflate.avail_in  = 4;
+    df->inflate.next_out  = out;
+    df->inflate.avail_out = (uInt)*out_cap;
+
+    int rc = inflate(&df->inflate, Z_SYNC_FLUSH);
+    if(rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
+        inflateReset(&df->inflate);
+        return false;
+    }
+
+    *out_cap = *out_cap - df->inflate.avail_out;
+
+    if(df->server_no_context_takeover)
+        inflateReset(&df->inflate);
+    return true;
+}
+
 #else /* !SEVENT_WS_DEFLATE */
 
 struct ws_deflate {
@@ -176,6 +287,32 @@ bool ws_deflate_decompress(ws_deflate *df, const uint8_t *in, size_t in_len, uin
     (void)in_len;
     (void)out;
     (void)out_cap;
+    return false;
+}
+
+/* stub: 流式操作 */
+
+void ws_deflate_compress_reset(ws_deflate *df) { (void)df; }
+
+bool ws_deflate_compress_stream(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap) {
+    (void)df; (void)in; (void)in_len; (void)out; (void)out_cap;
+    return false;
+}
+
+bool ws_deflate_compress_end(ws_deflate *df, uint8_t *out, size_t *out_cap) {
+    (void)df; (void)out; (void)out_cap;
+    return false;
+}
+
+void ws_deflate_decompress_reset(ws_deflate *df) { (void)df; }
+
+bool ws_deflate_decompress_stream(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap) {
+    (void)df; (void)in; (void)in_len; (void)out; (void)out_cap;
+    return false;
+}
+
+bool ws_deflate_decompress_end(ws_deflate *df, uint8_t *out, size_t *out_cap) {
+    (void)df; (void)out; (void)out_cap;
     return false;
 }
 

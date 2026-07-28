@@ -359,6 +359,255 @@ static void test_params(void) {
 }
 
 /* ====================================================================
+ *  测试: 流式压缩/解压
+ * ==================================================================== */
+
+/* 将 (in,in_len) 分 nchunks 段, 每段依次压缩 → 合著 total_comp。返回 comp 长度。 */
+static size_t stream_compress(ws_deflate *df, const uint8_t *in, size_t in_len,
+                               uint8_t *comp, size_t comp_cap, int nchunks) {
+    size_t chunk = in_len / (size_t)nchunks;
+    size_t pos   = 0;
+    size_t total = 0;
+
+    while(pos < in_len) {
+        size_t sz = (pos + chunk < in_len) ? chunk : (in_len - pos);
+        size_t out_sz = comp_cap - total;
+        if(out_sz == 0)
+            return 0;
+        if(!ws_deflate_compress_stream(df, in + pos, sz, comp + total, &out_sz))
+            return 0;
+        total += out_sz;
+        pos   += sz;
+    }
+
+    size_t end_sz = comp_cap - total;
+    if(end_sz == 0)
+        return 0;
+    if(!ws_deflate_compress_end(df, comp + total, &end_sz))
+        return 0;
+    total += end_sz;
+    return total;
+}
+
+/* 将压缩数据 comp/comp_len 输入 inflate, 分 nchunks 段逐步解压。返回解压总长度。 */
+static size_t stream_decompress(ws_deflate *df, const uint8_t *comp, size_t comp_len,
+                                 uint8_t *out, size_t out_cap, int nchunks) {
+    size_t chunk = comp_len / (size_t)nchunks;
+    size_t pos   = 0;
+    size_t total = 0;
+
+    while(pos < comp_len) {
+        size_t sz = (pos + chunk < comp_len) ? chunk : (comp_len - pos);
+        size_t out_sz = out_cap - total;
+        if(out_sz == 0)
+            return 0;
+        if(!ws_deflate_decompress_stream(df, comp + pos, sz, out + total, &out_sz))
+            return 0;
+        total += out_sz;
+        pos   += sz;
+    }
+
+    size_t end_sz = out_cap - total;
+    if(end_sz == 0)
+        return 0;
+    ws_deflate_decompress_end(df, out + total, &end_sz);
+    total += end_sz;
+    return total;
+}
+
+static void test_stream_roundtrip(void) {
+#ifdef SEVENT_WS_DEFLATE
+    TEST("stream roundtrip 8KB x4 chunks");
+    ws_deflate *df = NULL;
+    if(!ws_deflate_create(&df, NULL)) {
+        FAIL("create");
+        return;
+    }
+
+    char src[8192];
+    /* 用可预测但非完全重复的数据填充 */
+    for(size_t i = 0; i < sizeof(src); i++)
+        src[i] = (uint8_t)(i * 73 + 17);
+
+    size_t cmax = ws_deflate_compress_maxlen(df, sizeof(src));
+    uint8_t *comp = (uint8_t *)malloc(cmax);
+    if(!comp) { FAIL("malloc"); ws_deflate_destroy(df); return; }
+
+    size_t cl = stream_compress(df, (const uint8_t *)src, sizeof(src), comp, cmax, 4);
+    if(cl == 0) { FAIL("stream_compress"); free(comp); ws_deflate_destroy(df); return; }
+
+    uint8_t *dec = (uint8_t *)malloc(sizeof(src) + 64);
+    if(!dec) { FAIL("malloc dec"); free(comp); ws_deflate_destroy(df); return; }
+
+    size_t dl = stream_decompress(df, comp, cl, dec, sizeof(src) + 64, 4);
+    if(dl != sizeof(src) || memcmp(dec, src, sizeof(src)) != 0) {
+        FAIL("mismatch");
+    } else {
+        PASS();
+    }
+
+    free(dec);
+    free(comp);
+    ws_deflate_destroy(df);
+#else
+    TEST("stream roundtrip (stub)");
+    PASS();
+#endif
+}
+
+static void test_stream_chunked(void) {
+#ifdef SEVENT_WS_DEFLATE
+    TEST("stream byte-by-byte");
+    ws_deflate *df = NULL;
+    if(!ws_deflate_create(&df, NULL)) {
+        FAIL("create");
+        return;
+    }
+
+    const char *msg = "Streaming deflate test message!";
+    size_t      len = strlen(msg);
+
+    /* 逐字节压缩 */
+    size_t cmax = ws_deflate_compress_maxlen(df, len);
+    uint8_t *comp = (uint8_t *)malloc(cmax);
+    if(!comp) { FAIL("malloc"); ws_deflate_destroy(df); return; }
+
+    ws_deflate_compress_reset(df);
+    size_t cpos = 0;
+    for(size_t i = 0; i < len; i++) {
+        size_t sz = cmax - cpos;
+        if(sz == 0) { FAIL("comp full"); free(comp); ws_deflate_destroy(df); return; }
+        if(!ws_deflate_compress_stream(df, (const uint8_t *)(msg + i), 1, comp + cpos, &sz))
+            { FAIL("compress_stream"); free(comp); ws_deflate_destroy(df); return; }
+        cpos += sz;
+    }
+    size_t esz = cmax - cpos;
+    if(esz == 0 || !ws_deflate_compress_end(df, comp + cpos, &esz))
+        { FAIL("compress_end"); free(comp); ws_deflate_destroy(df); return; }
+    cpos += esz;
+
+    /* 逐字节解压 */
+    uint8_t dec[256];
+    ws_deflate_decompress_reset(df);
+    size_t dpos = 0;
+    for(size_t i = 0; i < cpos; i++) {
+        size_t sz = sizeof(dec) - dpos;
+        if(sz == 0) { FAIL("dec full"); free(comp); ws_deflate_destroy(df); return; }
+        if(!ws_deflate_decompress_stream(df, comp + i, 1, dec + dpos, &sz))
+            { FAIL("decompress_stream"); free(comp); ws_deflate_destroy(df); return; }
+        dpos += sz;
+    }
+    size_t desz = sizeof(dec) - dpos;
+    ws_deflate_decompress_end(df, dec + dpos, &desz);
+    dpos += desz;
+
+    if(dpos != len || memcmp(dec, msg, len) != 0) {
+        FAIL("mismatch");
+    } else {
+        PASS();
+    }
+
+    free(comp);
+    ws_deflate_destroy(df);
+#else
+    TEST("stream byte-by-byte (stub)");
+    PASS();
+#endif
+}
+
+static void test_stream_compression(void) {
+#ifdef SEVENT_WS_DEFLATE
+    TEST("stream compressible 1KB");
+    ws_deflate *df = NULL;
+    if(!ws_deflate_create(&df, NULL)) {
+        FAIL("create");
+        return;
+    }
+
+    char buf[1024];
+    memset(buf, 'A', sizeof(buf));
+
+    size_t cmax = ws_deflate_compress_maxlen(df, sizeof(buf));
+    uint8_t *comp = (uint8_t *)malloc(cmax);
+    if(!comp) { FAIL("malloc"); ws_deflate_destroy(df); return; }
+
+    size_t cl = stream_compress(df, (const uint8_t *)buf, sizeof(buf), comp, cmax, 4);
+    if(cl == 0 || cl >= sizeof(buf)) {
+        FAIL("no compression");
+        free(comp);
+        ws_deflate_destroy(df);
+        return;
+    }
+
+    uint8_t dec[1024 + 64];
+    size_t  dl = stream_decompress(df, comp, cl, dec, sizeof(dec), 4);
+    if(dl != sizeof(buf) || memcmp(dec, buf, sizeof(buf)) != 0) {
+        FAIL("mismatch");
+    } else {
+        PASS();
+    }
+    free(comp);
+    ws_deflate_destroy(df);
+#else
+    TEST("stream compressible 1KB (stub)");
+    PASS();
+#endif
+}
+
+static void test_stream_params(void) {
+#ifdef SEVENT_WS_DEFLATE
+    TEST("stream params: client_no_context_takeover");
+    ws_deflate_params p  = {.client_no_context_takeover = true};
+    ws_deflate       *df = NULL;
+    if(!ws_deflate_create(&df, &p)) {
+        FAIL("create");
+        return;
+    }
+
+    char buf[64];
+    memset(buf, 'B', sizeof(buf));
+
+    size_t cmax = ws_deflate_compress_maxlen(df, sizeof(buf));
+    uint8_t *comp = (uint8_t *)malloc(cmax);
+    if(!comp) { FAIL("malloc"); ws_deflate_destroy(df); return; }
+
+    size_t cl = stream_compress(df, (const uint8_t *)buf, sizeof(buf), comp, cmax, 2);
+    if(cl == 0) { FAIL("compress"); free(comp); ws_deflate_destroy(df); return; }
+
+    uint8_t dec[128];
+    size_t  dl = stream_decompress(df, comp, cl, dec, sizeof(dec), 2);
+    if(dl != sizeof(buf) || memcmp(dec, buf, sizeof(buf)) != 0) {
+        FAIL("mismatch");
+        free(comp);
+        ws_deflate_destroy(df);
+        return;
+    }
+
+    /* 第二轮: 不同数据，验证 reset 有效 */
+    char buf2[32];
+    memset(buf2, 'C', sizeof(buf2));
+    ws_deflate_compress_reset(df);
+    ws_deflate_decompress_reset(df);
+
+    cl = stream_compress(df, (const uint8_t *)buf2, sizeof(buf2), comp, cmax, 2);
+    if(cl == 0) { FAIL("compress (2nd)"); free(comp); ws_deflate_destroy(df); return; }
+
+    dl = stream_decompress(df, comp, cl, dec, sizeof(dec), 2);
+    if(dl != sizeof(buf2) || memcmp(dec, buf2, sizeof(buf2)) != 0) {
+        FAIL("mismatch (2nd)");
+    } else {
+        PASS();
+    }
+
+    free(comp);
+    ws_deflate_destroy(df);
+#else
+    TEST("stream params (stub)");
+    PASS();
+#endif
+}
+
+/* ====================================================================
  *  main
  * ==================================================================== */
 int main(void) {
@@ -369,6 +618,10 @@ int main(void) {
     test_compressible();
     test_errors();
     test_params();
+    test_stream_roundtrip();
+    test_stream_chunked();
+    test_stream_compression();
+    test_stream_params();
 
     int ok = (g_pass == g_total);
     printf("%s: %d/%d passed\n", ok ? "PASS" : "FAIL", g_pass, g_total);
