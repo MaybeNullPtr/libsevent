@@ -149,6 +149,13 @@ int sevent_post(sevent_context *ctx, sevent_handler_fn h, void *data);
  */
 int sevent_dispatch(sevent_context *ctx, sevent_handler_fn h, void *data);
 
+/*
+ * 查询 event loop 是否在运行中.
+ * 返回: 1 = 运行中, 0 = 未运行或 ctx 为 NULL.
+ * 线程: 跨线程 (仅读 running 标志, 不持锁).
+ */
+int sevent_is_running(sevent_context *ctx);
+
 /* ==================== 信号 ==================== */
 
 /*

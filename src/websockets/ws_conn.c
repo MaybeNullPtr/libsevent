@@ -129,11 +129,11 @@ static bool ws_utf8_validate(const uint8_t *data, size_t len) {
 }
 
 static unsigned int xorshift32(unsigned int *seed) {
-    unsigned int x = *seed;
+    unsigned int x  = *seed;
     x              ^= x << 13;
     x              ^= x >> 17;
     x              ^= x << 5;
-    *seed          = x;
+    *seed           = x;
     return x;
 }
 
@@ -457,7 +457,7 @@ static int ws_tcp_connect(const char *host, uint16_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if(fd < 0)
         return -1;
-        /* 最佳尝试 SO_REUSEADDR — 失败不影响建连 */
+    /* 最佳尝试 SO_REUSEADDR — 失败不影响建连 */
 #ifdef SO_REUSEADDR
     {
         int on = 1;
@@ -1212,14 +1212,27 @@ void sevent_ws_close(sevent_ws_conn *c) {
     c->write_head = NULL;
 }
 
-void sevent_ws_destroy(sevent_ws_conn *c) {
-    sevent_ws_close(c);
+static void ws_cleanup_conn(void *data) {
+    struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
 #ifdef SEVENT_WS_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif
     sevent_i_free(c->recv_buf);
     sevent_i_free(c->frag_buf);
     sevent_i_free(c);
+}
+
+void sevent_ws_destroy(sevent_ws_conn *c) {
+    if(!c)
+        return;
+    sevent_ws_close(c);
+    /* 将 free(c) 推迟到 run_posts 阶段, 保证当前调用栈可安全读 c->destroyed */
+    if(c->ev && sevent_is_running(c->ev)) {
+        if(sevent_post(c->ev, ws_cleanup_conn, c) != SEVENT_SUCCESS)
+            ws_cleanup_conn(c); /* OOM, 立即释放 */
+    } else {
+        ws_cleanup_conn(c);
+    }
 }
 
 int sevent_ws_get_state(const sevent_ws_conn *c) {
