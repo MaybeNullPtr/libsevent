@@ -69,9 +69,10 @@ struct sevent_ws_conn {
     sevent_timer *ping_timer;
 
     /* ---- 压缩 (permessage-deflate) ---- */
-    bool          enable_deflate;
-    bool          frag_compressed;
-    ws_deflate    *deflate;
+    bool                    enable_deflate;
+    bool                    frag_compressed;
+    sevent_ws_deflate_level deflate_level; /* 发送压缩等级 */
+    ws_deflate              *deflate;
 
     /* ---- 用户回调 ---- */
     void                         *user_data;

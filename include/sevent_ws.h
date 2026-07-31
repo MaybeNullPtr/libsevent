@@ -70,6 +70,28 @@ typedef void (*sevent_ws_on_pong_fn)(void *user_data, const void *payload, size_
 typedef void (*sevent_ws_on_http_response_fn)(
         void *user_data, int status_code, const char *headers, size_t headers_len, const char *body, size_t body_len);
 
+/* ===== 发送压缩等级 (permessage-deflate, 本端发送侧) =====
+ * 值 1-9 与 zlib deflate level 对应 (1=最快, 9=最大压缩).
+ * DEFAULT=0: 零初始化即默认 (level 6, 发送压缩).
+ * NONE=10: 显式关闭发送压缩 (RFC 7692 允许逐条消息不压缩, RSV1=0). */
+typedef enum {
+    SEVENT_WS_DEFLATE_LEVEL_DEFAULT = 0,
+    SEVENT_WS_DEFLATE_LEVEL_1       = 1,
+    SEVENT_WS_DEFLATE_LEVEL_2       = 2,
+    SEVENT_WS_DEFLATE_LEVEL_3       = 3,
+    SEVENT_WS_DEFLATE_LEVEL_4       = 4,
+    SEVENT_WS_DEFLATE_LEVEL_5       = 5,
+    SEVENT_WS_DEFLATE_LEVEL_6       = 6,
+    SEVENT_WS_DEFLATE_LEVEL_7       = 7,
+    SEVENT_WS_DEFLATE_LEVEL_8       = 8,
+    SEVENT_WS_DEFLATE_LEVEL_9       = 9,
+    SEVENT_WS_DEFLATE_LEVEL_NONE    = 10, /* 发送不压缩 */
+    /* 语义别名 */
+    SEVENT_WS_DEFLATE_LEVEL_FAST     = SEVENT_WS_DEFLATE_LEVEL_1,
+    SEVENT_WS_DEFLATE_LEVEL_BALANCED = SEVENT_WS_DEFLATE_LEVEL_6,
+    SEVENT_WS_DEFLATE_LEVEL_MAX      = SEVENT_WS_DEFLATE_LEVEL_9,
+} sevent_ws_deflate_level;
+
 /* ===== 配置结构体 ===== */
 typedef struct sevent_ws_config {
     const char *host;               /* 服务器 IP 地址 ("127.0.0.1") */
@@ -80,6 +102,7 @@ typedef struct sevent_ws_config {
     int         connect_timeout_ms; /* 连接超时(ms), 0=默认10s, -1=不超时 */
     size_t      recv_buf_size;
     bool        enable_deflate;      /* 接收缓冲区初始大小, 0=默认 4096 */
+    sevent_ws_deflate_level deflate_level; /* 发送压缩等级, 默认 DEFAULT(6) */
 
     /* ---- 用户回调 ---- */
     sevent_ws_on_open_fn          on_open;

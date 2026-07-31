@@ -270,7 +270,6 @@ static void stream_consume(struct sevent_ws_conn *c) {
                 return;
         } else {
             if(c->on_message)
-            if(c->on_message)
                 c->on_message(d, c->recv_buf + c->recv_pos, chunk, is_bin, last, c->stream_total);
             if(c->destroyed)
                 return;
@@ -554,7 +553,9 @@ out:
 
 /* ---- send_message: 含压缩的 TEXT/BINARY 发送 ---- */
 static int send_message(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len) {
-    if(c->deflate && (opcode == WS_OPCODE_TEXT || opcode == WS_OPCODE_BINARY)) {
+    /* NONE=显式关闭发送压缩 (RFC 7692 允许消息不压缩, RSV1=0) */
+    if(c->deflate && c->deflate_level != SEVENT_WS_DEFLATE_LEVEL_NONE &&
+       (opcode == WS_OPCODE_TEXT || opcode == WS_OPCODE_BINARY)) {
         size_t   cap  = ws_deflate_compress_maxlen(c->deflate, len);
         uint8_t *comp = (uint8_t *)sevent_i_malloc(cap);
         if(!comp)
@@ -1245,6 +1246,7 @@ static void on_handshake_data(void *data) {
             p.server_no_context_takeover = true;
         if(strstr(resp.extensions, "client_no_context_takeover"))
             p.client_no_context_takeover = true;
+        p.compression_level = c->deflate_level;
         ws_deflate_create(&c->deflate, &p);
     }
 
@@ -1376,6 +1378,7 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->connect_timeout_ms = cfg->connect_timeout_ms;
     c->ping_interval_ms   = cfg->ping_interval_ms;
     c->enable_deflate     = cfg->enable_deflate;
+    c->deflate_level      = cfg->deflate_level;
 
     /* 固定大小接收/分片缓冲区.
      * recv_buf 同时用于 HTTP 握手响应读取, 至少 SEVENT_WS_RECV_MIN. */

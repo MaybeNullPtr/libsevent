@@ -13,6 +13,25 @@
 #ifdef SEVENT_WS_DEFLATE
 #include <zlib.h>
 
+/* 转义层: sevent_ws_deflate_level → zlib deflate level.
+ * 枚举值 1-9 与 zlib 字面对应, DEFAULT(0)=默认 6, NONE(10)=不压缩,
+ * 未知值一律安全回退默认 6. */
+static int deflate_level_to_zlib(sevent_ws_deflate_level lvl) {
+    switch(lvl) {
+    case SEVENT_WS_DEFLATE_LEVEL_NONE: return Z_NO_COMPRESSION;       /* 0 */
+    case SEVENT_WS_DEFLATE_LEVEL_1:    return 1;
+    case SEVENT_WS_DEFLATE_LEVEL_2:    return 2;
+    case SEVENT_WS_DEFLATE_LEVEL_3:    return 3;
+    case SEVENT_WS_DEFLATE_LEVEL_4:    return 4;
+    case SEVENT_WS_DEFLATE_LEVEL_5:    return 5;
+    case SEVENT_WS_DEFLATE_LEVEL_6:    return 6;
+    case SEVENT_WS_DEFLATE_LEVEL_7:    return 7;
+    case SEVENT_WS_DEFLATE_LEVEL_8:    return 8;
+    case SEVENT_WS_DEFLATE_LEVEL_9:    return 9;
+    default:                           return Z_DEFAULT_COMPRESSION;  /* DEFAULT(0)/未知 */
+    }
+}
+
 bool ws_deflate_create(ws_deflate **out, const ws_deflate_params *params) {
     if(!out)
         return false;
@@ -21,11 +40,13 @@ bool ws_deflate_create(ws_deflate **out, const ws_deflate_params *params) {
         return false;
 
     int cbw = 15, sbw = 15;
+    int level = Z_DEFAULT_COMPRESSION;
     if(params) {
         cbw                            = params->client_max_window_bits ? params->client_max_window_bits : 15;
         sbw                            = params->server_max_window_bits ? params->server_max_window_bits : 15;
         df->client_no_context_takeover = params->client_no_context_takeover;
         df->server_no_context_takeover = params->server_no_context_takeover;
+        level = deflate_level_to_zlib(params->compression_level);
     }
     df->client_window_bits = (uint8_t)cbw;
     df->server_window_bits = (uint8_t)sbw;
@@ -33,7 +54,7 @@ bool ws_deflate_create(ws_deflate **out, const ws_deflate_params *params) {
     df->deflate.zalloc = Z_NULL;
     df->deflate.zfree  = Z_NULL;
     df->deflate.opaque = Z_NULL;
-    if(deflateInit2(&df->deflate, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -cbw, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+    if(deflateInit2(&df->deflate, level, Z_DEFLATED, -cbw, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
         sevent_i_free(df);
         return false;
     }

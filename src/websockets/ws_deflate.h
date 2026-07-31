@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../../include/sevent_ws.h" /* sevent_ws_deflate_level */
+
 #ifdef SEVENT_WS_DEFLATE
 #include <zlib.h>
 #endif
@@ -26,6 +28,7 @@ typedef struct {
     bool    client_no_context_takeover; /* 默认 false */
     uint8_t server_max_window_bits;     /* 0=默认 15 */
     uint8_t client_max_window_bits;     /* 0=默认 15 */
+    sevent_ws_deflate_level compression_level; /* 本端发送压缩等级, 默认 DEFAULT(6) */
 } ws_deflate_params;
 
 /* ===== 公开结构 =====
