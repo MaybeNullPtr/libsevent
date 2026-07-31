@@ -593,6 +593,11 @@ static int send_message(struct sevent_ws_conn *c, uint8_t opcode, const void *pa
  * ==================================================================== */
 
 static int send_frame_raw(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len, uint8_t flags) {
+    /* RFC 6455 §7.1.6: 数据帧 (TEXT/BINARY/CONT) 仅 OPEN 可发;
+     * 控制帧 (PING/PONG/CLOSE) OPEN/CLOSING 均可发 (关闭握手期间仍可回 PONG). */
+    bool is_ctrl = (opcode == WS_OPCODE_PING || opcode == WS_OPCODE_PONG || opcode == WS_OPCODE_CLOSE);
+    if(c->state == WS_STATE_CLOSING && !is_ctrl)
+        return SEVENT_ERR_INVAL;
     if(c->state != WS_STATE_OPEN && c->state != WS_STATE_CLOSING)
         return SEVENT_ERR_INVAL;
 
@@ -612,8 +617,6 @@ static int send_frame_raw(struct sevent_ws_conn *c, uint8_t opcode, const void *
         memcpy(buf + hdr_len, payload, len);
         ws_frame_apply_mask(buf + hdr_len, len, mask_key);
     }
-
-    bool is_ctrl = (opcode == WS_OPCODE_PING || opcode == WS_OPCODE_PONG || opcode == WS_OPCODE_CLOSE);
 
     /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
     if(is_ctrl && len > 125) {
