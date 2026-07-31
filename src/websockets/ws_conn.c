@@ -804,8 +804,13 @@ static void on_write_ready(void *data) {
         return;
     }
     if(remain == 0) {
-        /* 队列已空, 注销可写回调 (保持可读) */
-        void (*rcb)(void *) = (c->state == WS_STATE_OPEN) ? on_data : NULL;
+        /* 队列已空, 注销可写回调 (保持可读).
+         * HANDSHAKE 阶段 (握手请求部分写续写完成) 读回调是 on_handshake_data. */
+        void (*rcb)(void *) = NULL;
+        if(c->state == WS_STATE_OPEN)
+            rcb = on_data;
+        else if(c->state == WS_STATE_HANDSHAKE)
+            rcb = on_handshake_data;
         ws_update_io(c, rcb);
     }
     /* 否则继续等下一次可写事件 */
@@ -1422,13 +1427,26 @@ static void on_connect_ready(void *data) {
         ws_fatal(c, SEVENT_ERR_NOMEM);
         return;
     }
-    ssize_t w = write(c->fd, req, (size_t)req_len);
-    if(w < 0) {
+    /* 握手请求入写队列: 非阻塞 socket 可能部分写, 复用 ws_flush/on_write_ready
+     * 的续写机制 (请求节点拷贝到堆, 节点引用调用者 buffer 需生命周期一致) */
+    uint8_t *req_buf = (uint8_t *)sevent_i_malloc((size_t)req_len);
+    if(!req_buf) {
+        WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_ERR_NOMEM);
+        return;
+    }
+    memcpy(req_buf, req, (size_t)req_len);
+    if(ws_enqueue(c, req_buf, (size_t)req_len, true) != 0) {
+        WS_UNLOCK(c); /* OOM: ws_enqueue 已 free req_buf */
+        ws_fatal(c, SEVENT_ERR_NOMEM);
+        return;
+    }
+    c->state = WS_STATE_HANDSHAKE;
+    if(ws_flush(c) < 0) {
         WS_UNLOCK(c);
         ws_fatal(c, SEVENT_WS_ERR_CONNECT);
         return;
     }
-    c->state = WS_STATE_HANDSHAKE;
     ws_update_io(c, on_handshake_data);
     WS_UNLOCK(c);
 }
