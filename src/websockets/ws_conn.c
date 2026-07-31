@@ -141,11 +141,11 @@ static bool ws_utf8_validate(const uint8_t *data, size_t len) {
 }
 
 static unsigned int xorshift32(unsigned int *seed) {
-    unsigned int x = *seed;
+    unsigned int x  = *seed;
     x              ^= x << 13;
     x              ^= x >> 17;
     x              ^= x << 5;
-    *seed          = x;
+    *seed           = x;
     return x;
 }
 
@@ -323,6 +323,20 @@ static int ws_enqueue(struct sevent_ws_conn *c, uint8_t *data, size_t len, bool 
     }
     c->write_count++;
     return 0;
+}
+
+/* 清空写队列 (释放所有节点); 用于连接关闭与重定向 (残留节点不得写到新连接) */
+static void ws_queue_clear(struct sevent_ws_conn *c) {
+    ws_write_node *wn = c->write_head;
+    while(wn) {
+        ws_write_node *n = wn->next;
+        sevent_i_free(wn->data);
+        sevent_i_free(wn);
+        wn = n;
+    }
+    c->write_head  = NULL;
+    c->write_tail  = NULL;
+    c->write_count = 0;
 }
 
 /* 尝试写队列中的数据; 返回 0=写完, >0=剩余节点数, <0=致命写错误 */
@@ -694,7 +708,7 @@ static int ws_tcp_connect(const char *host, uint16_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if(fd < 0)
         return -1;
-        /* 最佳尝试 SO_REUSEADDR — 失败不影响建连 */
+    /* 最佳尝试 SO_REUSEADDR — 失败不影响建连 */
 #ifdef SO_REUSEADDR
     {
         int on = 1;
@@ -775,6 +789,9 @@ static bool ws_redirect_reconnect(struct sevent_ws_conn *c) {
     c->frag_len         = 0;
     c->stream_remaining = 0;
     c->stream_fin       = false;
+
+    /* 清写队列: 旧连接残留的握手请求节点 (部分写) 不得写到新连接 */
+    ws_queue_clear(c);
 
     int fd = ws_tcp_connect(c->host, c->port);
     if(fd < 0)
@@ -1098,8 +1115,8 @@ static int process_frames(struct sevent_ws_conn *c) {
                 } else {
                     return SEVENT_WS_ERR_PROTOCOL; /* CONT 无消息进行中 */
                 }
-                c->stream_remaining = hdr.payload_len; /* 帧级剩余, 消息状态保持 */
-                c->stream_fin       = hdr.fin;
+                c->stream_remaining  = hdr.payload_len; /* 帧级剩余, 消息状态保持 */
+                c->stream_fin        = hdr.fin;
                 c->msg.total        += hdr.payload_len; /* 消息总长累积 (压缩时为压缩字节) */
                 c->recv_pos         += (size_t)n;       /* 消费帧头 */
                 stream_consume(c);
@@ -1405,13 +1422,13 @@ static void on_connect_ready(void *data) {
     ws_gen_key(c->sec_ws_key);
     char req[1024];
     int  req_len = ws_build_request(req,
-                                   sizeof(req),
-                                   c->host,
-                                   c->port,
-                                   c->path,
-                                   c->sec_ws_key,
-                                   c->sub_protocol[0] ? c->sub_protocol : NULL,
-                                   c->enable_deflate);
+                                    sizeof(req),
+                                    c->host,
+                                    c->port,
+                                    c->path,
+                                    c->sec_ws_key,
+                                    c->sub_protocol[0] ? c->sub_protocol : NULL,
+                                    c->enable_deflate);
     if(req_len < 0) {
         WS_UNLOCK(c);
         ws_fatal(c, SEVENT_ERR_NOMEM);
@@ -1600,14 +1617,7 @@ void sevent_ws_close(sevent_ws_conn *c) {
         sevent_timer_unregister(c->ev, c->ping_timer);
         c->ping_timer = NULL;
     }
-    ws_write_node *wn = c->write_head;
-    while(wn) {
-        ws_write_node *n = wn->next;
-        sevent_i_free(wn->data);
-        sevent_i_free(wn);
-        wn = n;
-    }
-    c->write_head = NULL;
+    ws_queue_clear(c);
 }
 
 /* deferred free: 只释放连接内存 (recv_buf / frag_buf / c 本身) */
