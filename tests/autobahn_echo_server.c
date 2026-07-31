@@ -124,7 +124,7 @@ static void echo_payload(client_t *cl, const ws_frame_header *hdr, const uint8_t
     if((hdr->opcode == WS_OPCODE_TEXT || hdr->opcode == WS_OPCODE_BINARY) && hdr->fin) {
         /* 向客户端发回 echo (server→client, 无掩码) */
         uint8_t hdr_buf[16];
-        int     hlen = ws_frame_build_header(hdr_buf, 1, hdr->opcode, NULL, hdr->payload_len);
+        int     hlen = ws_frame_build_header(hdr_buf, 1, 0, hdr->opcode, NULL, hdr->payload_len);
         if(hlen <= 0)
             return;
 
@@ -142,7 +142,7 @@ static void echo_payload(client_t *cl, const ws_frame_header *hdr, const uint8_t
        - CLOSE: 回 CLOSE 帧（对方也跟踪）*/
     if(hdr->opcode == WS_OPCODE_PING) {
         uint8_t hdr_buf[16];
-        int     hlen = ws_frame_build_header(hdr_buf, 1, WS_OPCODE_PONG, NULL, hdr->payload_len);
+        int     hlen = ws_frame_build_header(hdr_buf, 1, 0, WS_OPCODE_PONG, NULL, hdr->payload_len);
         if(hlen <= 0)
             return;
         uint8_t *resp = (uint8_t *)malloc((size_t)hlen + (size_t)hdr->payload_len);
@@ -155,7 +155,7 @@ static void echo_payload(client_t *cl, const ws_frame_header *hdr, const uint8_t
     }
     if(hdr->opcode == WS_OPCODE_CLOSE) {
         uint8_t hdr_buf[16];
-        int     hlen = ws_frame_build_header(hdr_buf, 1, WS_OPCODE_CLOSE, NULL, hdr->payload_len);
+        int     hlen = ws_frame_build_header(hdr_buf, 1, 0, WS_OPCODE_CLOSE, NULL, hdr->payload_len);
         if(hlen <= 0)
             return;
         uint8_t *resp = (uint8_t *)malloc((size_t)hlen + (size_t)hdr->payload_len);

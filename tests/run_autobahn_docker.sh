@@ -33,13 +33,13 @@ log "============================================"
 # ---- 1. 编译 ----
 log "[1] 编译..."
 cd "$PROJECT_DIR"
-gcc -std=c99 -Wall -Werror -I include -I src -I src/websockets \
+gcc -std=c99 -Wall -Werror -DSEVENT_WS_DEFLATE -I include -I src -I src/websockets \
     tests/autobahn_echo_server.c \
-    -L build -lsevent_ws -lsevent \
+    -L build -lsevent_ws -lsevent -lz \
     -o "$BUILD_DIR/autobahn_echo_server" -Wl,-rpath,"$BUILD_DIR" 2>&1
-g++ -std=c++17 -Wall -Werror -I include -I src -I src/websockets \
+g++ -std=c++17 -Wall -Werror -DSEVENT_WS_DEFLATE -I include -I src -I src/websockets \
     tests/autobahn_client.cpp \
-    -L build -lsevent_ws -lsevent \
+    -L build -lsevent_ws -lsevent -lz \
     -o "$BUILD_DIR/autobahn_client" -Wl,-rpath,"$BUILD_DIR" 2>&1
 log "    编译完成"
 

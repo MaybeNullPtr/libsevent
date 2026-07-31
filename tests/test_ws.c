@@ -322,7 +322,7 @@ static int build_frame(uint8_t       *buf,
                        const uint8_t  mask_key[4],
                        const uint8_t *payload,
                        uint64_t       payload_len) {
-    int hdr_len = ws_frame_build_header(buf, fin, opcode, mask_key, payload_len);
+    int hdr_len = ws_frame_build_header(buf, fin, 0, opcode, mask_key, payload_len);
     if(hdr_len < 0)
         return -1;
     if(payload && payload_len > 0) {
@@ -433,11 +433,16 @@ TEST(frame_parse_incomplete_mask) {
     ASSERT_EQ(0, ws_frame_parse_header(buf, 4, &hdr));
 }
 
-TEST(frame_parse_rsv_error) {
-    /* RSV1 = 1 (bit 6 of byte 0) */
+TEST(frame_parse_rsv) {
+    /* RSV1 = 1 (bit 6 of byte 0), 不再由底层 parser 拒绝,
+     * 由上层协议 (如 permessage-deflate) 协商后检查. */
     uint8_t         buf[] = {0xC1, 0x00}; /* 0xC1 = 11000001: FIN=1, RSV1=1, TEXT */
     ws_frame_header hdr;
-    ASSERT_EQ(-1, ws_frame_parse_header(buf, 2, &hdr));
+    int             n = ws_frame_parse_header(buf, 2, &hdr);
+    ASSERT_GT(n, 0);
+    ASSERT_EQ(1, hdr.rsv1);
+    ASSERT_EQ(1, hdr.fin);
+    ASSERT_EQ(WS_OPCODE_TEXT, hdr.opcode);
 }
 
 TEST(frame_parse_msb_length_error) {
@@ -466,7 +471,7 @@ TEST(frame_parse_continuation) {
 
 TEST(frame_build_small_unmasked) {
     uint8_t buf[16];
-    int     n = ws_frame_build_header(buf, 1, WS_OPCODE_TEXT, NULL, 5);
+    int     n = ws_frame_build_header(buf, 1, 0, WS_OPCODE_TEXT, NULL, 5);
     ASSERT_EQ(2, n);
     ASSERT_EQ(0x81, buf[0]); /* FIN + TEXT */
     ASSERT_EQ(0x05, buf[1]); /* len=5, mask=0 */
@@ -475,7 +480,7 @@ TEST(frame_build_small_unmasked) {
 TEST(frame_build_small_masked) {
     uint8_t key[4] = {0x01, 0x02, 0x03, 0x04};
     uint8_t buf[16];
-    int     n = ws_frame_build_header(buf, 1, WS_OPCODE_TEXT, key, 5);
+    int     n = ws_frame_build_header(buf, 1, 0, WS_OPCODE_TEXT, key, 5);
     ASSERT_EQ(6, n);
     ASSERT_EQ(0x81, buf[0]);
     ASSERT_EQ(0x85, buf[1]); /* mask=1, len=5 */
@@ -487,7 +492,7 @@ TEST(frame_build_small_masked) {
 
 TEST(frame_build_medium) {
     uint8_t buf[16];
-    int     n = ws_frame_build_header(buf, 1, WS_OPCODE_BINARY, NULL, 200);
+    int     n = ws_frame_build_header(buf, 1, 0, WS_OPCODE_BINARY, NULL, 200);
     ASSERT_EQ(4, n);
     ASSERT_EQ(0x82, buf[0]);
     ASSERT_EQ(0x7E, buf[1]); /* 126 = 16-bit ext */
@@ -497,7 +502,7 @@ TEST(frame_build_medium) {
 
 TEST(frame_build_large) {
     uint8_t buf[16];
-    int     n = ws_frame_build_header(buf, 1, WS_OPCODE_BINARY, NULL, 70000);
+    int     n = ws_frame_build_header(buf, 1, 0, WS_OPCODE_BINARY, NULL, 70000);
     ASSERT_EQ(10, n);
     ASSERT_EQ(0x82, buf[0]);
     ASSERT_EQ(0x7F, buf[1]); /* 127 = 64-bit ext */
@@ -509,7 +514,7 @@ TEST(frame_build_large) {
 
 TEST(frame_build_invalid_opcode) {
     uint8_t buf[16];
-    int     n = ws_frame_build_header(buf, 1, 0x10, NULL, 0); /* opcode > 0x0F */
+    int     n = ws_frame_build_header(buf, 1, 0, 0x10, NULL, 0); /* opcode > 0x0F */
     ASSERT_EQ(-1, n);
 }
 
@@ -573,7 +578,7 @@ TEST(handshake_build_request_basic) {
     char key[WS_KEY_BASE64_LEN];
     ws_gen_key(key);
 
-    int n = ws_build_request(buf, sizeof(buf), "example.com", 80, "/ws", key, NULL);
+    int n = ws_build_request(buf, sizeof(buf), "example.com", 80, "/ws", key, NULL, false);
     ASSERT_GT(n, 0);
     ASSERT_LT((size_t)n, sizeof(buf));
 
@@ -598,7 +603,7 @@ TEST(handshake_build_request_with_protocol) {
     char key[WS_KEY_BASE64_LEN];
     ws_gen_key(key);
 
-    int n = ws_build_request(buf, sizeof(buf), "chat.example.com", 9000, "/chat", key, "myprotocol");
+    int n = ws_build_request(buf, sizeof(buf), "chat.example.com", 9000, "/chat", key, "myprotocol", false);
     ASSERT_GT(n, 0);
 
     ASSERT(strstr(buf, "Sec-WebSocket-Protocol: myprotocol\r\n") != NULL);
@@ -607,7 +612,7 @@ TEST(handshake_build_request_with_protocol) {
 TEST(handshake_build_request_buffer_too_small) {
     char buf[10];
     char key[WS_KEY_BASE64_LEN] = "dGhlIHNhbXBsZSBub25jZQ==";
-    int  n                      = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL);
+    int  n                      = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL, false);
     ASSERT_EQ(-1, n);
 }
 
@@ -791,7 +796,7 @@ TEST(handshake_full_roundtrip) {
     T(frame_parse_incomplete_ext16)                                                                                    \
     T(frame_parse_incomplete_ext64)                                                                                    \
     T(frame_parse_incomplete_mask)                                                                                     \
-    T(frame_parse_rsv_error)                                                                                           \
+    T(frame_parse_rsv)                                                                                           \
     T(frame_parse_msb_length_error)                                                                                    \
     T(frame_parse_continuation)                                                                                        \
     T(frame_build_small_unmasked)                                                                                      \

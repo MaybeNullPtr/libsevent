@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <errno.h>
 #include <time.h>
 
@@ -46,6 +47,11 @@
 /* 最大重定向次数 */
 #define SEVENT_WS_MAX_REDIRECTS 5
 
+/* 发送标志 (RSV 位, 供未来的扩展使用) */
+#define WS_SEND_RSV1 0x01
+#define WS_SEND_RSV2 0x02
+#define WS_SEND_RSV3 0x04
+
 /* UTF-8 校验: 1=启用 (默认), 0=禁用. 纯运行时校验, 大消息下耗时约 1ns/字节.
  * 禁用后不校验 TEXT payload 和 Close reason 的 UTF-8 合法性 (RFC 违规,
  * 但对端通常不受影响). 编译时通过 -DSEVENT_WS_UTF8_CHECK=0 关闭. */
@@ -54,7 +60,12 @@
 #endif
 
 /* 前向声明 */
-static int  send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len);
+static int send_frame_raw(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len, uint8_t flags);
+static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len);
+static int decompress_stream_chunk(
+        struct sevent_ws_conn *c, const uint8_t *data, size_t len, bool is_bin);
+static int  decompress_stream_end(struct sevent_ws_conn *c, bool is_bin);
+static int  decompress_oneshot(struct sevent_ws_conn *c, const uint8_t *in, size_t in_len, bool is_bin);
 static void on_write_ready(void *data);
 static void on_data(void *data);
 static void on_handshake_data(void *data);
@@ -193,6 +204,14 @@ static void ws_send_close_code(struct sevent_ws_conn *c, uint16_t code) {
 static void ws_fatal(struct sevent_ws_conn *c, int err) {
     if(c->destroyed || c->state == WS_STATE_CLOSED)
         return;
+
+    /* 协议错误: 尽力发 Close 帧 (RFC 6455 §7.1.1) */
+    if(err == SEVENT_WS_ERR_PROTOCOL && c->state == WS_STATE_OPEN) {
+        c->state     = WS_STATE_CLOSING;
+        uint8_t cp[] = {0x03, (uint8_t)(SEVENT_WS_CLOSE_PROTOCOL_ERR & 0xFF)};
+        (void)send_frame(c, WS_OPCODE_CLOSE, cp, sizeof(cp));
+    }
+
     c->state = WS_STATE_CLOSED;
     if(c->connect_timer) {
         sevent_timer_unregister(c->ev, c->connect_timer);
@@ -245,19 +264,28 @@ static void stream_consume(struct sevent_ws_conn *c) {
             chunk = (size_t)c->stream_remaining;
         bool last = (chunk == c->stream_remaining) && c->stream_fin;
 
-        if(c->on_message)
-            c->on_message(d, c->recv_buf + c->recv_pos, chunk, is_bin, last, c->stream_total);
-        if(c->destroyed)
-            return;
+        if(c->stream_compressed) {
+            /* 压缩流: streaming 不发 fin, 由 decompress_stream_end 统一发 */
+            if(decompress_stream_chunk(c, c->recv_buf + c->recv_pos, chunk, is_bin) != 0)
+                return;
+        } else {
+            if(c->on_message)
+            if(c->on_message)
+                c->on_message(d, c->recv_buf + c->recv_pos, chunk, is_bin, last, c->stream_total);
+            if(c->destroyed)
+                return;
+        }
 
         c->recv_pos         += chunk;
         c->stream_remaining -= chunk;
     }
     if(c->stream_remaining == 0) {
         c->stream_active = false;
-        /* 流式读取完成了一个 fin=1 的分片 → 分片消息结束 */
-        if(c->stream_fin)
+        if(c->stream_fin) {
+            if(c->stream_compressed)
+                decompress_stream_end(c, is_bin);
             c->frag_pending = false;
+        }
     }
 }
 
@@ -350,18 +378,210 @@ static void ws_update_io(struct sevent_ws_conn *c, void (*read_cb)(void *)) {
 /* 前向声明 */
 static void on_write_ready(void *data);
 
+/* ---- 解压: 协议层直接操作 zlib (分批输出, 见 doc/deflate-decompress-fix.md) ----
+ * 解压输出大小不可预判, 用固定缓冲分批循环 inflate:
+ * 输入一段, 每次解满一批就 on_message 一批 (fin=false),
+ * 消息结束由 decompress_stream_end / decompress_oneshot 发 fin=true.
+ * total 压缩路径一律传 0 (解压前无法预知原始长度). */
+
+/* 单批解压输出缓冲: 固定大小, 堆分配 (嵌入式栈小, 不上栈) */
+#define SEVENT_WS_DECOMP_BATCH 4096
+
+/* 固定缓冲循环 inflate: 返回 0=OK, 协议错误=SEVENT_WS_ERR_PROTOCOL */
+static int decompress_stream_chunk(struct sevent_ws_conn *c,
+                                    const uint8_t *data, size_t len,
+                                    bool is_bin)
+{
+#ifdef SEVENT_WS_DEFLATE
+    if(!c->on_message)
+        return 0;
+    z_stream *z = &c->deflate->inflate;
+    /* 每次调用都是新 chunk: 循环保证输入消费完才返回, 重置输入安全 */
+    z->next_in  = (uint8_t *)data;
+    z->avail_in = (uInt)len;
+
+    uint8_t *batch = (uint8_t *)sevent_i_malloc(SEVENT_WS_DECOMP_BATCH);
+    if(!batch)
+        return SEVENT_ERR_NOMEM;
+    int ret = SEVENT_WS_ERR_PROTOCOL;
+
+    for(;;) {
+        z->next_out  = batch;
+        z->avail_out = (uInt)SEVENT_WS_DECOMP_BATCH;
+        int rc = inflate(z, Z_NO_FLUSH);
+        if(rc == Z_BUF_ERROR && z->avail_in > 0) {
+            /* 有输入却无进展: 异常 */
+            inflateReset(z);
+            goto out;
+        }
+        if(rc != Z_OK && rc != Z_BUF_ERROR) {
+            inflateReset(z);
+            goto out;
+        }
+        size_t used = SEVENT_WS_DECOMP_BATCH - z->avail_out;
+        if(used > 0) {
+            c->on_message(c->user_data, batch, used, is_bin, false, 0);
+            if(c->destroyed) {
+                ret = 0; /* 回调内销毁, 中止 */
+                goto out;
+            }
+        }
+        if(z->avail_in == 0 && z->avail_out > 0)
+            break; /* 输入消费完且输出未满; block 积压由 end 收尾 */
+        /* 输出满 → 换下一批 */
+    }
+    ret = 0;
+out:
+    sevent_i_free(batch);
+    return ret;
+#else
+    return -1;
+#endif
+}
+
+/* 消息收尾: 喂 0x0000FFFF tail, Z_SYNC_FLUSH 吐尽积压, 发 fin */
+static int decompress_stream_end(struct sevent_ws_conn *c, bool is_bin)
+{
+#ifdef SEVENT_WS_DEFLATE
+    if(!c->on_message)
+        return 0;
+    z_stream *z = &c->deflate->inflate;
+    static const uint8_t tail[4] = {0x00, 0x00, 0xFF, 0xFF};
+    z->next_in  = (uint8_t *)tail; /* 只喂一次 */
+    z->avail_in = 4;
+
+    uint8_t *batch = (uint8_t *)sevent_i_malloc(SEVENT_WS_DECOMP_BATCH);
+    if(!batch)
+        return SEVENT_ERR_NOMEM;
+    int ret = SEVENT_WS_ERR_PROTOCOL;
+
+    for(;;) {
+        z->next_out  = batch;
+        z->avail_out = (uInt)SEVENT_WS_DECOMP_BATCH;
+        int rc = inflate(z, Z_SYNC_FLUSH);
+        if(rc == Z_BUF_ERROR && z->avail_in > 0) {
+            inflateReset(z);
+            goto out;
+        }
+        if(rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
+            inflateReset(z);
+            goto out;
+        }
+        size_t used = SEVENT_WS_DECOMP_BATCH - z->avail_out;
+        if(used > 0) {
+            c->on_message(c->user_data, batch, used, is_bin, false, 0);
+            if(c->destroyed) {
+                ret = 0;
+                goto out;
+            }
+        }
+        if(z->avail_out > 0)
+            break; /* 到达 sync 点, 积压清空 */
+    }
+    c->on_message(c->user_data, batch, 0, is_bin, true, 0);
+    if(c->deflate->server_no_context_takeover)
+        inflateReset(z);
+    ret = 0;
+out:
+    sevent_i_free(batch);
+    return ret;
+#else
+    return -1;
+#endif
+}
+
+/* 单帧整条消息解压: 拼 tail 后循环解到 sync 点, 直接发 on_message.
+ * 与压缩分片路径一致, 不做 UTF-8 校验 (解压后码点可能跨批). */
+static int decompress_oneshot(struct sevent_ws_conn *c, const uint8_t *in, size_t in_len,
+                              bool is_bin)
+{
+#ifdef SEVENT_WS_DEFLATE
+    if(!c->on_message)
+        return 0;
+    uint8_t *buf = (uint8_t *)sevent_i_malloc(in_len + 4);
+    if(!buf)
+        return SEVENT_ERR_NOMEM;
+    memcpy(buf, in, in_len);
+    buf[in_len]     = 0x00;
+    buf[in_len + 1] = 0x00;
+    buf[in_len + 2] = 0xFF;
+    buf[in_len + 3] = 0xFF;
+
+    z_stream *z = &c->deflate->inflate;
+    z->next_in  = buf;
+    z->avail_in = (uInt)(in_len + 4);
+
+    uint8_t *batch = (uint8_t *)sevent_i_malloc(SEVENT_WS_DECOMP_BATCH);
+    if(!batch) {
+        sevent_i_free(buf);
+        return SEVENT_ERR_NOMEM;
+    }
+    int ret = SEVENT_WS_ERR_PROTOCOL;
+
+    for(;;) {
+        z->next_out  = batch;
+        z->avail_out = (uInt)SEVENT_WS_DECOMP_BATCH;
+        int rc = inflate(z, Z_SYNC_FLUSH);
+        if(rc == Z_BUF_ERROR && z->avail_in > 0) {
+            inflateReset(z);
+            goto out;
+        }
+        if(rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
+            inflateReset(z);
+            goto out;
+        }
+        size_t used = SEVENT_WS_DECOMP_BATCH - z->avail_out;
+        if(used > 0) {
+            c->on_message(c->user_data, batch, used, is_bin, false, 0);
+            if(c->destroyed) {
+                ret = 0;
+                goto out;
+            }
+        }
+        if(z->avail_out > 0)
+            break;
+    }
+    c->on_message(c->user_data, batch, 0, is_bin, true, 0);
+    ret = 0;
+out:
+    sevent_i_free(batch);
+    sevent_i_free(buf);
+    return ret;
+#else
+    return -1;
+#endif
+}
+
+/* ---- send_message: 含压缩的 TEXT/BINARY 发送 ---- */
+static int send_message(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len) {
+    if(c->deflate && (opcode == WS_OPCODE_TEXT || opcode == WS_OPCODE_BINARY)) {
+        size_t   cap  = ws_deflate_compress_maxlen(c->deflate, len);
+        uint8_t *comp = (uint8_t *)sevent_i_malloc(cap);
+        if(!comp)
+            return SEVENT_ERR_NOMEM;
+        if(!ws_deflate_compress(c->deflate, payload, len, comp, &cap)) {
+            sevent_i_free(comp);
+            return SEVENT_WS_ERR_PROTOCOL;
+        }
+        int r = send_frame_raw(c, opcode, comp, cap, WS_SEND_RSV1);
+        sevent_i_free(comp);
+        return r;
+    }
+    return send_frame(c, opcode, payload, len);
+}
+
 /* ====================================================================
  *  发送帧: 构造 → 入队 → flush
  * ==================================================================== */
 
-static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len) {
+static int send_frame_raw(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len, uint8_t flags) {
     if(c->state != WS_STATE_OPEN && c->state != WS_STATE_CLOSING)
         return SEVENT_ERR_INVAL;
 
     uint8_t mask_key[4];
     gen_mask_key(c, mask_key);
     uint8_t hdr[16];
-    int     hdr_len = ws_frame_build_header(hdr, 1, opcode, mask_key, len);
+    int     hdr_len = ws_frame_build_header(hdr, 1, (flags & WS_SEND_RSV1) ? 1 : 0, opcode, mask_key, len);
     if(hdr_len < 0)
         return SEVENT_ERR_INVAL;
 
@@ -404,6 +624,10 @@ static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payl
     }
 
     return SEVENT_SUCCESS;
+}
+
+static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len) {
+    return send_frame_raw(c, opcode, payload, len, 0);
 }
 
 /* ====================================================================
@@ -569,6 +793,8 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
         return -1; /* 单分片超过缓冲区 */
     /* 放不下时先 flush 当前积压 (fin=0) 腾空间 */
     if(c->frag_len + len > c->recv_cap) {
+        if(c->frag_compressed)
+            return -1; /* 压缩分片禁止溢出冲刷 */
         if(c->on_message && c->frag_len > 0) {
             void *d      = c->user_data;
             bool  is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
@@ -612,7 +838,11 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
         bool last_flag = fin && (c->frag_len == c->recv_cap);
         if(last_flag)
             sent_fin = true;
-        c->on_message(d, c->frag_buf, c->recv_cap, is_bin, last_flag, 0);
+        if(c->frag_compressed) {
+            decompress_stream_chunk(c, c->frag_buf, c->recv_cap, is_bin);
+        } else {
+            c->on_message(d, c->frag_buf, c->recv_cap, is_bin, last_flag, 0);
+        }
         if(c->destroyed)
             return 0;
         c->frag_len -= c->recv_cap;
@@ -620,30 +850,42 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
     }
     /* 余量 < recv_cap, 消息结束: 刷出最后一小块 */
     if(fin && c->frag_len > 0) {
-        /* RFC 6455 §5.6: 分片 TEXT 结束时校验 UTF-8 */
-        if(!is_bin && !ws_utf8_validate(c->frag_buf, c->frag_len)) {
-            ws_send_close_code(c, SEVENT_WS_CLOSE_INVALID_PAYLOAD);
-            return 0;
+        if(c->frag_compressed) {
+            decompress_stream_chunk(c, c->frag_buf, c->frag_len, is_bin);
+            if(c->destroyed) return 0;
+            decompress_stream_end(c, is_bin);
+        } else {
+            /* RFC 6455 §5.6: 分片 TEXT 结束时校验 UTF-8 */
+            if(!is_bin && !ws_utf8_validate(c->frag_buf, c->frag_len)) {
+                ws_send_close_code(c, SEVENT_WS_CLOSE_INVALID_PAYLOAD);
+                return 0;
+            }
+            c->on_message(d, c->frag_buf, c->frag_len, is_bin, true, c->frag_total);
         }
-        c->on_message(d, c->frag_buf, c->frag_len, is_bin, true, c->frag_total);
         if(c->destroyed)
             return 0;
         c->frag_len     = 0;
         c->frag_pending = false;
+        c->frag_compressed = false;
         c->frag_total   = 0;
     } else if(fin && !sent_fin) {
         /* 零负载终止帧或 while 循环未覆盖 fin=1:
          * 数据可能已通过流式读取(stream_consume)送达,
          * 仍需通知上层消息结束。 */
         if(c->on_message && c->frag_pending) {
-            c->on_message(d, c->frag_buf, 0, is_bin, true, c->frag_total);
+            if(c->frag_compressed) {
+                decompress_stream_end(c, is_bin);
+            } else {
+            }
             if(c->destroyed)
                 return 0;
         }
         c->frag_pending = false;
+        c->frag_compressed = false;
         c->frag_total   = 0;
     } else if(fin) {
         c->frag_pending = false;
+        c->frag_compressed = false;
         c->frag_total   = 0;
     }
     return 0;
@@ -770,6 +1012,7 @@ static int process_frames(struct sevent_ws_conn *c) {
                     if(hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY)
                         c->frag_opcode = hdr.opcode;
                 }
+                c->stream_compressed = hdr.rsv1 ? true : false;
                 c->recv_pos += (size_t)n; /* 消费帧头 */
                 stream_consume(c);
             }
@@ -778,6 +1021,32 @@ static int process_frames(struct sevent_ws_conn *c) {
         uint8_t *payload = (uint8_t *)p + n;
         if(hdr.mask)
             ws_frame_apply_mask(payload, hdr.payload_len, hdr.mask_key);
+
+        /* ---- RSV 位验证 (RFC 7692) ---- */
+        if(hdr.rsv2 || hdr.rsv3)
+            return SEVENT_WS_ERR_PROTOCOL;
+        if(hdr.rsv1 && (hdr.opcode & 0x08))
+            return SEVENT_WS_ERR_PROTOCOL;
+        if(hdr.rsv1 && !c->deflate)
+            return SEVENT_WS_ERR_PROTOCOL;
+
+        /* ---- RSV1: 一次性解压 or 分片标记 ---- */
+        if(hdr.rsv1 && hdr.fin && hdr.opcode != WS_OPCODE_CONT) {
+            if(c->frag_pending)
+                return SEVENT_WS_ERR_PROTOCOL;
+            /* 解压后消息已通过 on_message 分批+fin 送达 */
+            int r = decompress_oneshot(c, payload, (size_t)hdr.payload_len,
+                                       (hdr.opcode == WS_OPCODE_BINARY));
+            if(r != 0)
+                return r;
+            if(c->destroyed)
+                return 0;
+            c->recv_pos += frame_size; /* 本帧已消费 */
+            continue;
+        } else if(hdr.rsv1 && !hdr.fin) {
+            if(hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY)
+                c->frag_compressed = true;
+        }
 
         /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
         if((hdr.opcode & 0x08) && hdr.payload_len > 125) {
@@ -810,12 +1079,16 @@ static int process_frames(struct sevent_ws_conn *c) {
             ret = handle_pong(c, &hdr, payload);
             break;
         default:
+            if(payload != (uint8_t *)p + n)
+                sevent_i_free((void *)payload);
             return SEVENT_WS_ERR_PROTOCOL;
         }
         if(ret < 0)
             return -1;
         if(ret > 0)
             return ret;
+        if(payload != (uint8_t *)p + n)
+            sevent_i_free((void *)payload);
         c->recv_pos += frame_size;
     }
     return 0;
@@ -965,6 +1238,16 @@ static void on_handshake_data(void *data) {
             return;
         }
     }
+    /* permessage-deflate 协商 */
+    if(c->enable_deflate && strstr(resp.extensions, "permessage-deflate")) {
+        ws_deflate_params p = {0};
+        if(strstr(resp.extensions, "server_no_context_takeover"))
+            p.server_no_context_takeover = true;
+        if(strstr(resp.extensions, "client_no_context_takeover"))
+            p.client_no_context_takeover = true;
+        ws_deflate_create(&c->deflate, &p);
+    }
+
     c->recv_pos = (size_t)ret; /* 跳过 HTTP 响应, 保留可能的 WS 帧 */
     c->state    = WS_STATE_OPEN;
     ws_update_io(c, on_data);
@@ -1027,8 +1310,14 @@ static void on_connect_ready(void *data) {
     }
     ws_gen_key(c->sec_ws_key);
     char req[1024];
-    int  req_len = ws_build_request(
-            req, sizeof(req), c->host, c->port, c->path, c->sec_ws_key, c->sub_protocol[0] ? c->sub_protocol : NULL);
+    int  req_len = ws_build_request(req,
+                                    sizeof(req),
+                                    c->host,
+                                    c->port,
+                                    c->path,
+                                    c->sec_ws_key,
+                                    c->sub_protocol[0] ? c->sub_protocol : NULL,
+            c->enable_deflate);
     if(req_len < 0) {
         WS_UNLOCK(c);
         ws_fatal(c, SEVENT_ERR_NOMEM);
@@ -1086,6 +1375,7 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->user_data          = cfg->user_data;
     c->connect_timeout_ms = cfg->connect_timeout_ms;
     c->ping_interval_ms   = cfg->ping_interval_ms;
+    c->enable_deflate     = cfg->enable_deflate;
 
     /* 固定大小接收/分片缓冲区.
      * recv_buf 同时用于 HTTP 握手响应读取, 至少 SEVENT_WS_RECV_MIN. */
@@ -1129,7 +1419,7 @@ int sevent_ws_send_text(sevent_ws_conn *c, const void *data, size_t len) {
         return SEVENT_ERR_INVAL;
     /* 空帧 (len=0) 直接放行, send_frame 会构造零长度帧 */
     WS_LOCK(c);
-    int r = send_frame(c, WS_OPCODE_TEXT, data, len);
+    int r = send_message(c, WS_OPCODE_TEXT, data, len);
     WS_UNLOCK(c);
     if(r == SEVENT_WS_ERR_WRITE)
         ws_fatal(c, r);
@@ -1142,7 +1432,7 @@ int sevent_ws_send_binary(sevent_ws_conn *c, const void *data, size_t len) {
     WS_LOCK(c);
     int r;
     if(data || len == 0)
-        r = send_frame(c, WS_OPCODE_BINARY, data, len);
+        r = send_message(c, WS_OPCODE_BINARY, data, len);
     else
         r = SEVENT_ERR_INVAL;
     WS_UNLOCK(c);
@@ -1212,6 +1502,7 @@ void sevent_ws_close(sevent_ws_conn *c) {
     c->write_head = NULL;
 }
 
+/* deferred free: 只释放连接内存 (recv_buf / frag_buf / c 本身) */
 static void ws_cleanup_conn(void *data) {
     struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
 #ifdef SEVENT_WS_THREAD_SAFE
@@ -1226,7 +1517,10 @@ void sevent_ws_destroy(sevent_ws_conn *c) {
     if(!c)
         return;
     sevent_ws_close(c);
-    /* 将 free(c) 推迟到 run_posts 阶段, 保证当前调用栈可安全读 c->destroyed */
+    /* deflate 有独立的内部内存, 立即销毁, 不参与 deferred free */
+    ws_deflate_destroy(c->deflate);
+    c->deflate = NULL;
+    /* 将 c 本身的 free 推迟到 run_posts 阶段, 保证调用栈安全展开 */
     if(c->ev && sevent_is_running(c->ev)) {
         if(sevent_post(c->ev, ws_cleanup_conn, c) != SEVENT_SUCCESS)
             ws_cleanup_conn(c); /* OOM, 立即释放 */

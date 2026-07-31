@@ -29,7 +29,10 @@ extern "C" {
 
 /* ===== 帧头 (解析后的结构化表示) ===== */
 typedef struct {
-    uint8_t  fin;         /* 1=最后帧, 0=还有续帧 */
+    uint8_t  fin;
+    uint8_t  rsv1;
+    uint8_t  rsv2;
+    uint8_t  rsv3;         /* 1=最后帧, 0=还有续帧 */
     uint8_t  opcode;      /* 操作码 */
     uint8_t  mask;        /* 1=有掩码 (client→server 必为 1) */
     uint64_t payload_len; /* payload 长度 */
@@ -58,7 +61,7 @@ void ws_frame_apply_mask(uint8_t *payload, uint64_t len, const uint8_t mask_key[
  * 非 NULL 表示掩码 (client→server).
  * 返回: 写入 buf 的字节数, <0 表示参数错误.
  */
-int ws_frame_build_header(uint8_t *buf, uint8_t fin, uint8_t opcode, const uint8_t mask_key[4], uint64_t payload_len);
+int ws_frame_build_header(uint8_t *buf, uint8_t fin, uint8_t rsv1, uint8_t opcode, const uint8_t mask_key[4], uint64_t payload_len);
 
 #ifdef __cplusplus
 }

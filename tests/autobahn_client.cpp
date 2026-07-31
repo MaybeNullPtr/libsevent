@@ -14,6 +14,9 @@
 #include <vector>
 #include <chrono>
 #include <ctime>
+#include <glob.h>
+#include <algorithm>
+#include <iostream>
 
 static const char *now_str() {
     static char buf[16];
@@ -24,10 +27,12 @@ static const char *now_str() {
 
 static sevent_context                       *g_ctx   = nullptr;
 static sevent_ws_conn                       *g_ws    = nullptr;
+static sevent_timer                         *g_case_timer = nullptr;
 static std::string                           g_host  = "127.0.0.1";
 static int                                   g_port  = 9001;
 static std::string                           g_agent = "libsevent";
 static int                                   g_total = 0, g_cur = 0;
+static int                                   g_msg_count = 0;
 static bool                                  g_run = false, g_done = false;
 static std::chrono::steady_clock::time_point g_case_start;
 static std::vector<uint8_t>                  g_acc;
@@ -37,12 +42,29 @@ static void do_count(void *data);
 static void do_case(void *data);
 static void do_report(void *data);
 
+/* per-case 超时: 超过此时间未完成则断开跳到下一 case */
+#define CASE_TIMEOUT_MS 2000
+
+static void on_case_timeout(void *) {
+    std::fprintf(stderr, "[timeout] case %d: >%dms\n", g_cur, CASE_TIMEOUT_MS);
+    if(g_ws) {
+        g_case_timer = nullptr; /* 定时器已触发, 清零防止 on_close 重复 unregister */
+        sevent_ws_shutdown(g_ws, 1002, "timeout");
+    }
+}
+
 static void on_open(void *) {
     g_case_start = std::chrono::steady_clock::now();
     g_acc.clear();
+    g_msg_count = 0;
+    g_case_timer = sevent_timer_register(g_ctx, CASE_TIMEOUT_MS, on_case_timeout, nullptr);
 }
 
 static void on_close(void *, uint16_t, const char *, size_t) {
+    if(g_case_timer) {
+        sevent_timer_unregister(g_ctx, g_case_timer);
+        g_case_timer = nullptr;
+    }
     if(g_ws) {
         sevent_ws_destroy(g_ws);
         g_ws = nullptr;
@@ -54,7 +76,7 @@ static void on_close(void *, uint16_t, const char *, size_t) {
     if(g_run) {
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_case_start)
                           .count();
-        std::printf("%s case %d/%d done (%ldms)\n", now_str(), g_cur, g_total, ms);
+        std::printf("%s case %d/%d done (%ldms) cb=%d\n", now_str(), g_cur, g_total, ms, g_msg_count);
         g_cur++;
         if(g_cur <= g_total)
             sevent_post(g_ctx, do_case, nullptr);
@@ -77,7 +99,11 @@ static void on_close(void *, uint16_t, const char *, size_t) {
 }
 
 static void on_error(void *, int err) {
-    std::fprintf(stderr, "[error] 0x%x\n", err);
+    std::fprintf(stderr, "[error] case %d: 0x%x\n", g_cur, err);
+    if(g_case_timer) {
+        sevent_timer_unregister(g_ctx, g_case_timer);
+        g_case_timer = nullptr;
+    }
     if(g_ws) {
         sevent_ws_destroy(g_ws);
         g_ws = nullptr;
@@ -111,10 +137,13 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
         return;
     }
     if(g_run) {
+        g_msg_count++;
         if(!fin) {
-            g_acc.insert(g_acc.end(), static_cast<const uint8_t *>(m), static_cast<const uint8_t *>(m) + l);
+            if(l > 0)
+                g_acc.insert(g_acc.end(), static_cast<const uint8_t *>(m), static_cast<const uint8_t *>(m) + l);
         } else {
-            g_acc.insert(g_acc.end(), static_cast<const uint8_t *>(m), static_cast<const uint8_t *>(m) + l);
+            if(l > 0)
+                g_acc.insert(g_acc.end(), static_cast<const uint8_t *>(m), static_cast<const uint8_t *>(m) + l);
             auto t1 = std::chrono::steady_clock::now();
             int  r;
             if(bin)
@@ -123,7 +152,7 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
                 r = sevent_ws_send_text(g_ws, g_acc.data(), g_acc.size());
             auto t2  = std::chrono::steady_clock::now();
             auto snd = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-            std::printf("%s echo %zu bytes r=%d send=%ldms\n", now_str(), g_acc.size(), r, snd);
+            std::printf("%s case %d echo %zu bytes r=%d send=%ldms\n", now_str(), g_cur, g_acc.size(), r, snd);
             g_acc.clear();
         }
     }
@@ -134,7 +163,8 @@ static void connect_path(const std::string &path) {
     std::memset(&cfg, 0, sizeof(cfg));
     cfg.host       = g_host.c_str();
     cfg.port       = static_cast<uint16_t>(g_port);
-    cfg.path       = path.c_str();
+    cfg.path           = path.c_str();
+    cfg.enable_deflate = true;
     cfg.on_open    = on_open;
     cfg.on_message = on_message;
     cfg.on_close   = on_close;

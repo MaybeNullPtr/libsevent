@@ -43,7 +43,9 @@ static void ev_msg(void *d, const void *m, size_t l, bool b, bool fin, uint64_t 
     (void)fin;
     g_last_total = total;
     g_ev         = 2;
-    size_t c     = l < 255 ? l : 255;
+    if(l == 0)
+        return; /* 压缩消息的 fin 通知 (0 字节), 不覆盖数据 */
+    size_t c = l < 255 ? l : 255;
     memcpy(g_msg, m, c);
     g_msg[c] = 0;
 }
@@ -217,7 +219,7 @@ static int shake(int sfd) {
 /* wsend: 服务端发 WS 帧 (无掩码) */
 static void wsend(int fd, uint8_t op, const void *p, uint64_t l) {
     uint8_t b[4096];
-    int     h = ws_frame_build_header(b, 1, op, NULL, l);
+    int     h = ws_frame_build_header(b, 1, 0, op, NULL, l);
     if(p && l)
         memcpy(b + h, p, (size_t)l);
     WS_WRITE(fd, b, (size_t)(h + (int)l));
@@ -278,7 +280,7 @@ static int t_lifecycle(void) {
     if(g_ev != 2 || strcmp(g_msg, "Hello") || g_last_total != 5)
         return 1;
     uint8_t cp[6];
-    int     hl = ws_frame_build_header(cp, 1, WS_OPCODE_CLOSE, NULL, 2);
+    int     hl = ws_frame_build_header(cp, 1, 0, WS_OPCODE_CLOSE, NULL, 2);
     cp[hl]     = 0x03;
     cp[hl + 1] = (uint8_t)0xE8;
     WS_WRITE(sfd, cp, (size_t)(hl + 2));
@@ -573,7 +575,7 @@ static int t_client_close(void) {
     if(code != 1000)
         return 1;
     uint8_t cp[8];
-    int     hl = ws_frame_build_header(cp, 1, WS_OPCODE_CLOSE, NULL, 2);
+    int     hl = ws_frame_build_header(cp, 1, 0, WS_OPCODE_CLOSE, NULL, 2);
     cp[hl]     = pay[0];
     cp[hl + 1] = pay[1];
     WS_WRITE(sfd, cp, (size_t)(hl + 2));
@@ -625,13 +627,13 @@ static int t_fragmentation(void) {
     /* 服务端发 2 组分片: Text "Hel" (FIN=0) + "lo " (FIN=0) + "World" (FIN=1) */
     uint8_t b[128];
     int     hl;
-    hl = ws_frame_build_header(b, 0, WS_OPCODE_TEXT, NULL, 3);
+    hl = ws_frame_build_header(b, 0, 0, WS_OPCODE_TEXT, NULL, 3);
     memcpy(b + hl, "Hel", 3);
     WS_WRITE(sfd, b, (size_t)(hl + 3));
-    hl = ws_frame_build_header(b, 0, WS_OPCODE_CONT, NULL, 3);
+    hl = ws_frame_build_header(b, 0, 0, WS_OPCODE_CONT, NULL, 3);
     memcpy(b + hl, "lo ", 3);
     WS_WRITE(sfd, b, (size_t)(hl + 3));
-    hl = ws_frame_build_header(b, 1, WS_OPCODE_CONT, NULL, 5);
+    hl = ws_frame_build_header(b, 1, 0, WS_OPCODE_CONT, NULL, 5);
     memcpy(b + hl, "World", 5);
     WS_WRITE(sfd, b, (size_t)(hl + 5));
 
@@ -689,11 +691,11 @@ static int t_frag_large(void) {
     char    blk[3000];
     memset(blk, 'A', 3000);
     for(int i = 0; i < 3; i++) {
-        hl = ws_frame_build_header(buf, 0, i ? WS_OPCODE_CONT : WS_OPCODE_TEXT, NULL, 3000);
+        hl = ws_frame_build_header(buf, 0, 0, i ? WS_OPCODE_CONT : WS_OPCODE_TEXT, NULL, 3000);
         memcpy(buf + hl, blk, 3000);
         write_all(sfd, buf, (size_t)(hl + 3000));
     }
-    hl = ws_frame_build_header(buf, 1, WS_OPCODE_CONT, NULL, 3000);
+    hl = ws_frame_build_header(buf, 1, 0, WS_OPCODE_CONT, NULL, 3000);
     memcpy(buf + hl, blk, 3000);
     write_all(sfd, buf, (size_t)(hl + 3000));
 
@@ -747,11 +749,11 @@ static int t_frag_many(void) {
     uint8_t buf[16];
     int     hl;
     for(int i = 0; i < 49; i++) {
-        hl      = ws_frame_build_header(buf, 0, i ? WS_OPCODE_CONT : WS_OPCODE_TEXT, NULL, 1);
+        hl      = ws_frame_build_header(buf, 0, 0, i ? WS_OPCODE_CONT : WS_OPCODE_TEXT, NULL, 1);
         buf[hl] = (uint8_t)('a' + (i % 26));
         write_all(sfd, buf, (size_t)(hl + 1));
     }
-    hl      = ws_frame_build_header(buf, 1, WS_OPCODE_CONT, NULL, 1);
+    hl      = ws_frame_build_header(buf, 1, 0, WS_OPCODE_CONT, NULL, 1);
     buf[hl] = '!';
     write_all(sfd, buf, (size_t)(hl + 1));
 
@@ -804,16 +806,16 @@ static int t_frag_interleave(void) {
 
     uint8_t b[128];
     int     hl;
-    hl = ws_frame_build_header(b, 0, WS_OPCODE_TEXT, NULL, 5);
+    hl = ws_frame_build_header(b, 0, 0, WS_OPCODE_TEXT, NULL, 5);
     memcpy(b + hl, "Hello", 5);
     write_all(sfd, b, (size_t)(hl + 5));
-    hl = ws_frame_build_header(b, 1, WS_OPCODE_PING, NULL, 4);
+    hl = ws_frame_build_header(b, 1, 0, WS_OPCODE_PING, NULL, 4);
     memcpy(b + hl, "ping", 4);
     write_all(sfd, b, (size_t)(hl + 4));
-    hl = ws_frame_build_header(b, 0, WS_OPCODE_CONT, NULL, 3);
+    hl = ws_frame_build_header(b, 0, 0, WS_OPCODE_CONT, NULL, 3);
     memcpy(b + hl, " wo", 3);
     write_all(sfd, b, (size_t)(hl + 3));
-    hl = ws_frame_build_header(b, 1, WS_OPCODE_CONT, NULL, 4);
+    hl = ws_frame_build_header(b, 1, 0, WS_OPCODE_CONT, NULL, 4);
     memcpy(b + hl, "rld\n", 4);
     write_all(sfd, b, (size_t)(hl + 4));
 
@@ -861,7 +863,7 @@ static int t_frag_proto_error(void) {
         return 1;
 
     uint8_t b[16];
-    int     hl = ws_frame_build_header(b, 1, WS_OPCODE_CONT, NULL, 3);
+    int     hl = ws_frame_build_header(b, 1, 0, WS_OPCODE_CONT, NULL, 3);
     memcpy(b + hl, "abc", 3);
     write_all(sfd, b, (size_t)(hl + 3));
 
@@ -938,7 +940,7 @@ static int t_sticky_packet(void) {
                                 "Sec-WebSocket-Accept: %s\r\n\r\n",
                             ac);
     uint8_t wsf[16];
-    int     hl = ws_frame_build_header(wsf, 1, WS_OPCODE_TEXT, NULL, 5);
+    int     hl = ws_frame_build_header(wsf, 1, 0, WS_OPCODE_TEXT, NULL, 5);
     memcpy(wsf + hl, "Stick", 5);
     memcpy(resp + resp_len, wsf, (size_t)(hl + 5)); /* HTTP + WS 拼在一起 */
     write_all(sfd, resp, (size_t)(resp_len + hl + 5));
@@ -1080,10 +1082,10 @@ static int t_sticky_multi_frame(void) {
     /* 一次写入 2 帧: "Hello" + "WS" */
     uint8_t b[64];
     int     off = 0, hl;
-    hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 5);
+    hl          = ws_frame_build_header(b + off, 1, 0, WS_OPCODE_TEXT, NULL, 5);
     memcpy(b + off + hl, "Hello", 5);
     off += hl + 5;
-    hl  = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 2);
+    hl  = ws_frame_build_header(b + off, 1, 0, WS_OPCODE_TEXT, NULL, 2);
     memcpy(b + off + hl, "WS", 2);
     off += hl + 2;
     write_all(sfd, b, off);
@@ -1139,10 +1141,10 @@ static int t_sticky_stream_tail(void) {
     int     off = 0, hl;
     char    big[5000];
     memset(big, 'X', 5000);
-    hl = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 5000);
+    hl = ws_frame_build_header(b + off, 1, 0, WS_OPCODE_TEXT, NULL, 5000);
     memcpy(b + off + hl, big, 5000);
     off += hl + 5000;
-    hl  = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 4);
+    hl  = ws_frame_build_header(b + off, 1, 0, WS_OPCODE_TEXT, NULL, 4);
     memcpy(b + off + hl, "Tail", 4);
     off += hl + 4;
     write_all(sfd, b, off);
@@ -1198,7 +1200,7 @@ static int t_stream_total(void) {
     uint8_t b[8192];
     char    big[5000];
     memset(big, 'X', 5000);
-    int hl = ws_frame_build_header(b, 1, WS_OPCODE_TEXT, NULL, 5000);
+    int hl = ws_frame_build_header(b, 1, 0, WS_OPCODE_TEXT, NULL, 5000);
     memcpy(b + hl, big, 5000);
     write_all(sfd, b, (size_t)(hl + 5000));
     /* 驱动 — 流式分块, 每块 total 应为 5000 */
@@ -1247,7 +1249,7 @@ static int t_split_frame(void) {
         return 1;
     /* 只发帧头 + 部分 payload (2/5 字节) */
     uint8_t b[64];
-    int     hl = ws_frame_build_header(b, 1, WS_OPCODE_TEXT, NULL, 5);
+    int     hl = ws_frame_build_header(b, 1, 0, WS_OPCODE_TEXT, NULL, 5);
     memcpy(b + hl, "He", 2);
     write_all(sfd, b, (size_t)(hl + 2));
     /* 驱动 — 数据不足, process_frames 应 break 等待 */
@@ -1312,10 +1314,10 @@ static int t_sticky_partial(void) {
     /* 完整帧 "Full" + 不完整帧 "Partial!" 只发帧头+2 payload */
     uint8_t b[128];
     int     off = 0, hl;
-    hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 4);
+    hl          = ws_frame_build_header(b + off, 1, 0, WS_OPCODE_TEXT, NULL, 4);
     memcpy(b + off + hl, "Full", 4);
     off += hl + 4;
-    hl  = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 8);
+    hl  = ws_frame_build_header(b + off, 1, 0, WS_OPCODE_TEXT, NULL, 8);
     memcpy(b + off + hl, "Pa", 2);
     off += hl + 2;
     write_all(sfd, b, off);
@@ -1382,7 +1384,7 @@ static int t_frag_split_read(void) {
         return 1;
     /* 分片 1: "Hel" (FIN=0) */
     uint8_t b[64];
-    int     hl = ws_frame_build_header(b, 0, WS_OPCODE_TEXT, NULL, 3);
+    int     hl = ws_frame_build_header(b, 0, 0, WS_OPCODE_TEXT, NULL, 3);
     memcpy(b + hl, "Hel", 3);
     write_all(sfd, b, (size_t)(hl + 3));
     /* 等它被处理 (frag_pending=1 但还没完成) */
@@ -1397,10 +1399,10 @@ static int t_frag_split_read(void) {
             sevent_timer_unregister(ctx, _t2);
     }
     /* 分片 2 + 3: "lo " (FIN=0) + "World" (FIN=1) */
-    hl = ws_frame_build_header(b, 0, WS_OPCODE_CONT, NULL, 3);
+    hl = ws_frame_build_header(b, 0, 0, WS_OPCODE_CONT, NULL, 3);
     memcpy(b + hl, "lo ", 3);
     write_all(sfd, b, (size_t)(hl + 3));
-    hl = ws_frame_build_header(b, 1, WS_OPCODE_CONT, NULL, 5);
+    hl = ws_frame_build_header(b, 1, 0, WS_OPCODE_CONT, NULL, 5);
     memcpy(b + hl, "World", 5);
     write_all(sfd, b, (size_t)(hl + 5));
     sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
@@ -1572,7 +1574,7 @@ static int t_cross_thread_close(void) {
 
     /* 回 Close 帧 */
     uint8_t cp[4];
-    int     hl = ws_frame_build_header(cp, 1, WS_OPCODE_CLOSE, NULL, 2);
+    int     hl = ws_frame_build_header(cp, 1, 0, WS_OPCODE_CLOSE, NULL, 2);
     cp[hl]     = pay[0];
     cp[hl + 1] = pay[1];
     WS_WRITE(sfd, cp, (size_t)(hl + 2));
@@ -1628,7 +1630,7 @@ static int t_recv_invalid_control_payload(void) {
     uint8_t ping_pay[200];
     memset(ping_pay, 'p', sizeof(ping_pay));
     uint8_t hdr[16];
-    int     hl = ws_frame_build_header(hdr, 0, WS_OPCODE_PING, NULL, sizeof(ping_pay));
+    int     hl = ws_frame_build_header(hdr, 0, 0, WS_OPCODE_PING, NULL, sizeof(ping_pay));
     if(hl < 0)
         return 1;
     uint8_t *raw = malloc((size_t)hl + sizeof(ping_pay));
@@ -1684,7 +1686,7 @@ static int t_recv_invalid_close_code(void) {
     /* 构造 CLOSE 帧 payload = 非法码 999 */
     uint8_t cp[2] = {0x03, 0xE7}; /* 999 */
     uint8_t hdr[16];
-    int     hl = ws_frame_build_header(hdr, 0, WS_OPCODE_CLOSE, NULL, 2);
+    int     hl = ws_frame_build_header(hdr, 0, 0, WS_OPCODE_CLOSE, NULL, 2);
     /* fin=0 不表示分包, 只测非法 close code */
     if(hl < 0)
         return 1;
@@ -1898,6 +1900,476 @@ static int t_connect_timeout_disabled(void) {
     return 0;
 }
 
+/* ===== permessage-deflate 测试 ===== */
+#ifdef SEVENT_WS_DEFLATE
+
+/* shake_deflate: 握手回复 + extensions */
+static int shake_deflate(int sfd) {
+    char    b[4096];
+    ssize_t n = read(sfd, b, sizeof(b) - 1);
+    if(n <= 0)
+        return -1;
+    b[n]    = 0;
+    char *k = strstr(b, "Sec-WebSocket-Key:");
+    if(!k)
+        return -1;
+    k += 19;
+    while(*k == ' ')
+        k++;
+    char  ke[256];
+    char *e = strstr(k, "\r\n");
+    if(!e)
+        return -1;
+    size_t kl = (size_t)(e - k);
+    if(kl > 255)
+        kl = 255;
+    memcpy(ke, k, kl);
+    ke[kl] = 0;
+    char cat[384];
+    snprintf(cat, sizeof(cat), "%s%s", ke, WS_GUID);
+    uint8_t dg[20];
+    ws_sha1(cat, strlen(cat), dg);
+    char ac[64];
+    ws_base64_encode(dg, 20, ac, sizeof(ac));
+    char resp[512];
+    int  rn = snprintf(resp,
+                       sizeof(resp),
+                       "HTTP/1.1 101 Switching Protocols\r\n"
+                        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                        "Sec-WebSocket-Accept: %s\r\n"
+                        "Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n",
+                       ac);
+    WS_WRITE(sfd, resp, (size_t)rn);
+    return 0;
+}
+
+/* wsend_compressed: 服务端发压缩 WS 帧 (rsv1=1) */
+static void wsend_compressed(int fd, uint8_t op, const void *p, uint64_t l) {
+    ws_deflate             *df     = NULL;
+    ws_deflate_params       params = {0};
+    if(!ws_deflate_create(&df, &params) || !df)
+        return;
+    size_t cap = ws_deflate_compress_maxlen(df, l);
+    uint8_t *comp = (uint8_t *)malloc(cap);
+    if(comp && ws_deflate_compress(df, p, l, comp, &cap)) {
+        uint8_t b[4096];
+        int     h = ws_frame_build_header(b, 1, 1, op, NULL, cap);
+        memcpy(b + h, comp, (size_t)cap);
+        WS_WRITE(fd, b, (size_t)(h + (int)cap));
+    }
+    free(comp);
+    ws_deflate_destroy(df);
+}
+
+static int t_deflate_create(void) {
+    /* 验证 enable_deflate=true 时握手协商创建了 deflate */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host           = "127.0.0.1";
+    cfg.path           = "/";
+    cfg.enable_deflate = true;
+    cfg.on_open        = ev_open;
+    g_ev               = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+    if(!ws->deflate)
+        return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_deflate_no_create(void) {
+    /* enable_deflate=false 时不应创建 deflate */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host    = "127.0.0.1";
+    cfg.path    = "/";
+    cfg.on_open = ev_open;
+    g_ev        = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    /* 用 shake_deflate 确保服务端通告了 deflate, 但客户端不应协商 */
+    if(shake_deflate(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+    if(ws->deflate)
+        return 1; /* enable_deflate=false 不应创建 */
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_deflate_recv(void) {
+    /* 服务端发压缩 TEXT → 客户端解压后 on_message */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host           = "127.0.0.1";
+    cfg.path           = "/";
+    cfg.enable_deflate = true;
+    cfg.on_open        = ev_open;
+    cfg.on_message     = ev_msg;
+    g_ev               = 0;
+    g_msg[0]           = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate(sfd) < 0) {
+        return 1;
+    }
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1) {
+        return 1;
+    }
+    if(!ws->deflate) {
+        return 1;
+    }
+    wsend_compressed(sfd, WS_OPCODE_TEXT, "HelloDeflate", 12);
+    g_ev = 1;
+    for(int i = 0; i < 100; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 2)
+            break;
+    }
+    if(g_ev != 2)
+        return 1;
+    if(strcmp(g_msg, "HelloDeflate") != 0)
+        return 1;
+    /* 压缩路径 total 一律传 0 (解压前无法预知原始长度) */
+    if(g_last_total != 0) {
+        return 1;
+    }
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_deflate_recv_large(void) {
+    /* 验证大负载压缩解压正确 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host           = "127.0.0.1";
+    cfg.path           = "/";
+    cfg.enable_deflate = true;
+    cfg.on_open        = ev_open;
+    cfg.on_message     = ev_msg;
+    g_ev               = 0;
+    g_msg[0]           = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+
+    /* 发送压缩的大负载 (> recv_cap 触发流式) */
+    char big[5000];
+    memset(big, 'A', 5000);
+    wsend_compressed(sfd, WS_OPCODE_TEXT, big, 5000);
+    g_ev = 1;
+    for(int i = 0; i < 500; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 2)
+            break;
+    }
+    if(g_ev != 2)
+        return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_deflate_send(void) {
+    /* 客户端发 TEXT → send_message 压缩, 服务端收到 RSV1=1 + 压缩数据 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host           = "127.0.0.1";
+    cfg.path           = "/";
+    cfg.enable_deflate = true;
+    cfg.on_open        = ev_open;
+    g_ev               = 0;
+    g_msg[0]           = 0;
+    cfg.on_message     = ev_msg;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+    if(!ws->deflate)
+        return 1;
+
+    /* 客户端发送 TEXT, send_message 压缩 */
+    if(sevent_ws_send_text(ws, "SendCompress", 12) != 0)
+        return 1;
+    /* 服务端直接读原始帧 */
+    ws_frame_header h;
+    uint8_t         pay[256];
+    int             pl = 0;
+    for(int i = 0; i < 50; i++) {
+        pl = wread(sfd, &h, pay, sizeof(pay));
+        if(pl >= 0)
+            break;
+        sevent_run_once(ctx);
+    }
+    if(pl < 1)
+        return 1;
+    if(h.opcode != WS_OPCODE_TEXT || !h.rsv1)
+        return 1;
+    if(pl == 12 && memcmp(pay, "SendCompress", 12) == 0)
+        return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_deflate_send_bin(void) {
+    /* 客户端发 BINARY → send_message 压缩 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host           = "127.0.0.1";
+    cfg.path           = "/";
+    cfg.enable_deflate = true;
+    cfg.on_open        = ev_open;
+    g_ev               = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+
+    uint8_t bin[] = {0x00, 0x01, 0xFF, 0xFE};
+    if(sevent_ws_send_binary(ws, bin, 4) != 0)
+        return 1;
+    ws_frame_header h;
+    uint8_t         pay[256];
+    int             pl = 0;
+    for(int i = 0; i < 50; i++) {
+        pl = wread(sfd, &h, pay, sizeof(pay));
+        if(pl >= 0)
+            break;
+        sevent_run_once(ctx);
+    }
+    if(pl < 1)
+        return 1;
+    if(h.opcode != WS_OPCODE_BINARY || !h.rsv1)
+        return 1;
+    if(pl == 4 && memcmp(pay, bin, 4) == 0)
+        return 1; /* 不应是明文 */
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_deflate_frag(void) {
+    /* 压缩分片: rsv1=1 TEXT fin=0 + CONT fin=1 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host           = "127.0.0.1";
+    cfg.path           = "/";
+    cfg.enable_deflate = true;
+    cfg.on_open        = ev_open;
+    cfg.on_message     = ev_msg_frag;
+    g_ev               = 0;
+    g_msg[0]           = 0;
+    g_frag_len         = 0;
+    g_frag_total       = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+
+    /* 服务端压缩 "HelloWorld" */
+    ws_deflate       *df     = NULL;
+    ws_deflate_params params = {0};
+    if(!ws_deflate_create(&df, &params) || !df)
+        return 1;
+    size_t   cap = ws_deflate_compress_maxlen(df, 10);
+    uint8_t *comp = (uint8_t *)malloc(cap);
+    int      ok  = 0;
+    if(comp && ws_deflate_compress(df, (const uint8_t *)"HelloWorld", 10, comp, &cap)) {
+        uint8_t b[128];
+        int     hl;
+        /* 分片 1: rsv1=1, TEXT, fin=0 */
+        size_t half = cap / 2;
+        if(half == 0)
+            half = 1;
+        hl = ws_frame_build_header(b, 0, 1, WS_OPCODE_TEXT, NULL, half);
+        memcpy(b + hl, comp, half);
+        WS_WRITE(sfd, b, (size_t)(hl + (int)half));
+        /* 分片 2: CONT, fin=1 */
+        hl = ws_frame_build_header(b, 1, 0, WS_OPCODE_CONT, NULL, cap - half);
+        memcpy(b + hl, comp + half, (size_t)(cap - half));
+        WS_WRITE(sfd, b, (size_t)(hl + (int)(cap - half)));
+
+        g_ev = 1;
+        for(int i = 0; i < 200; i++) {
+            sevent_run_once(ctx);
+            if(g_ev == 2)
+                break;
+        }
+        if(g_ev == 2 && strcmp(g_msg, "HelloWorld") == 0 && g_frag_total == 10)
+            ok = 1;
+    }
+    free(comp);
+    ws_deflate_destroy(df);
+    if(!ok)
+        return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_deflate_rsv_reject(void) {
+    /* RSV2/RSV3 置位 → 协议错误 → on_error */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host     = "127.0.0.1";
+    cfg.path     = "/";
+    cfg.on_open  = ev_open;
+    cfg.on_error = ev_error;
+    g_ev         = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+
+    /* 构造 TEXT 帧但 rsv2=1 */
+    uint8_t b[16];
+    int     hl = ws_frame_build_header(b, 1, 0, WS_OPCODE_TEXT, NULL, 3);
+    b[0] |= 0x20; /* 设 RSV2 位 */
+    memcpy(b + hl, "abc", 3);
+    WS_WRITE(sfd, b, (size_t)(hl + 3));
+    g_ev              = 0;
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    for(int i = 0; i < 100; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 3)
+            break;
+    }
+    if(_tm)
+        sevent_timer_unregister(ctx, _tm);
+    int ok = (g_ev == 3);
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return ok ? 0 : 1;
+}
+
+#else /* !SEVENT_WS_DEFLATE */
+static int t_deflate_create(void) { return 0; }
+static int t_deflate_no_create(void) { return 0; }
+static int t_deflate_recv(void) { return 0; }
+static int t_deflate_recv_large(void) { return 0; }
+static int t_deflate_send(void) { return 0; }
+static int t_deflate_send_bin(void) { return 0; }
+static int t_deflate_frag(void) { return 0; }
+static int t_deflate_rsv_reject(void) { return 0; }
+#endif
+
 /* ===== close 在 on_message 中调用的测试 ===== */
 static sevent_ws_conn *g_close_ws;
 static int             g_close_msg_count;
@@ -1947,13 +2419,13 @@ static int t_close_in_on_message(void) {
     /* 一次写入 3 帧: "A", "B", "C" — 第 1 帧回调中调 close */
     uint8_t b[128];
     int     off = 0, hl;
-    hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 1);
+    hl          = ws_frame_build_header(b + off, 1, 0, WS_OPCODE_TEXT, NULL, 1);
     b[off + hl] = 'A';
     off         += hl + 1;
-    hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 1);
+    hl          = ws_frame_build_header(b + off, 1, 0, WS_OPCODE_TEXT, NULL, 1);
     b[off + hl] = 'B';
     off         += hl + 1;
-    hl          = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 1);
+    hl          = ws_frame_build_header(b + off, 1, 0, WS_OPCODE_TEXT, NULL, 1);
     b[off + hl] = 'C';
     off         += hl + 1;
     write_all(sfd, b, off);
@@ -2095,11 +2567,11 @@ static int t_eof_stream_trailing_close(void) {
     int     off = 0, hl;
     char    big[5000];
     memset(big, 'X', 5000);
-    hl = ws_frame_build_header(b + off, 1, WS_OPCODE_TEXT, NULL, 5000);
+    hl = ws_frame_build_header(b + off, 1, 0, WS_OPCODE_TEXT, NULL, 5000);
     memcpy(b + off + hl, big, 5000);
     off += hl + 5000;
     uint8_t cp[8];
-    hl         = ws_frame_build_header(cp, 1, WS_OPCODE_CLOSE, NULL, 2);
+    hl         = ws_frame_build_header(cp, 1, 0, WS_OPCODE_CLOSE, NULL, 2);
     cp[hl]     = (uint8_t)(1000 >> 8);
     cp[hl + 1] = (uint8_t)(1000);
     memcpy(b + off, cp, (size_t)(hl + 2));
@@ -2161,6 +2633,14 @@ int main(void) {
                  {"close_in_on_message", t_close_in_on_message},
                  {"pipelined_proto_error", t_pipelined_proto_error},
                  {"eof_stream_trailing_close", t_eof_stream_trailing_close},
+                 {"deflate_create", t_deflate_create},
+                 {"deflate_no_create", t_deflate_no_create},
+                 {"deflate_recv", t_deflate_recv},
+                 {"deflate_recv_large", t_deflate_recv_large},
+                 {"deflate_send", t_deflate_send},
+                 {"deflate_send_bin", t_deflate_send_bin},
+                 {"deflate_frag", t_deflate_frag},
+                 {"deflate_rsv_reject", t_deflate_rsv_reject},
                  {NULL, NULL}};
     printf("ws_conn tests\n");
     printf("=============\n");

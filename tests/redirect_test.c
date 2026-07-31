@@ -222,7 +222,7 @@ static void on_echo_read(void *data) {
             ws_frame_apply_mask(pld, hdr.payload_len, hdr.mask_key);
         if(hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY) {
             uint8_t  rh[16];
-            int      hh  = ws_frame_build_header(rh, 1, hdr.opcode, NULL, hdr.payload_len);
+            int      hh  = ws_frame_build_header(rh, 1, 0, hdr.opcode, NULL, hdr.payload_len);
             uint8_t *out = (uint8_t *)malloc((size_t)hh + (size_t)hdr.payload_len);
             memcpy(out, rh, (size_t)hh);
             memcpy(out + hh, pld, (size_t)hdr.payload_len);

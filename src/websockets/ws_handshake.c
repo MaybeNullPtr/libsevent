@@ -43,11 +43,11 @@ static int read_random(void *buf, size_t len) {
 
 /* ---- 辅助: fallback PRNG ---- */
 static unsigned int xorshift32(unsigned int *seed) {
-    unsigned int x = *seed;
+    unsigned int x  = *seed;
     x              ^= x << 13;
     x              ^= x >> 17;
     x              ^= x << 5;
-    *seed          = x;
+    *seed           = x;
     return x;
 }
 
@@ -69,7 +69,9 @@ int ws_build_request(char       *buf,
                      uint16_t    port,
                      const char *path,
                      const char *key,
-                     const char *sub_protocol) {
+                     const char *sub_protocol,
+                     bool        enable_deflate) {
+    (void)enable_deflate;
     /* 固定头部 (不含子协议行和最后的空行) */
     int n = snprintf(buf,
                      cap,
@@ -93,6 +95,17 @@ int ws_build_request(char       *buf,
             return -1;
         n += m;
     }
+
+#ifdef SEVENT_WS_DEFLATE
+    /* permessage-deflate 压缩扩展协商 */
+    if(enable_deflate) {
+        int m = snprintf(buf + n, cap - (size_t)n,
+                         "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n");
+        if(m < 0 || (size_t)m >= cap - (size_t)n)
+            return -1;
+        n += m;
+    }
+#endif
 
     /* 末尾空行 */
     if((size_t)n + 2 > cap)
@@ -118,6 +131,7 @@ int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *res
     resp->accept[0]   = '\0';
     resp->protocol[0] = '\0';
     resp->location[0] = '\0';
+    resp->extensions[0] = '\0';
 
     /* ---- 查找 HTTP 响应结尾 (\r\n\r\n) ---- */
     const uint8_t *end = NULL;
@@ -206,6 +220,12 @@ int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *res
                     copy = sizeof(resp->location) - 1;
                 memcpy(resp->location, val, copy);
                 resp->location[copy] = '\0';
+            } else if(ci_eq((const char *)p, name_len, "sec-websocket-extensions")) {
+                size_t copy = val_len;
+                if(copy >= sizeof(resp->extensions))
+                    copy = sizeof(resp->extensions) - 1;
+                memcpy(resp->extensions, val, copy);
+                resp->extensions[copy] = '\0';
             }
         }
 

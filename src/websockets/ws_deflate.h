@@ -12,6 +12,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef SEVENT_WS_DEFLATE
+#include <zlib.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,8 +28,21 @@ typedef struct {
     uint8_t client_max_window_bits;     /* 0=默认 15 */
 } ws_deflate_params;
 
-/* ===== 不透明句柄 ===== */
-typedef struct ws_deflate ws_deflate;
+/* ===== 公开结构 =====
+ * 压缩侧 (deflate) 由 ws_deflate 封装管理;
+ * 解压侧 (inflate) 由协议层 (ws_conn.c) 直接操作:
+ * 解压输出大小不可预判, 协议层用固定缓冲分批循环 inflate,
+ * 无法封装成"一次调用"的独立层. */
+typedef struct ws_deflate {
+#ifdef SEVENT_WS_DEFLATE
+    z_stream deflate;
+    z_stream inflate;
+#endif
+    bool     server_no_context_takeover;
+    bool     client_no_context_takeover;
+    uint8_t  server_window_bits;
+    uint8_t  client_window_bits;
+} ws_deflate;
 
 /* ===== API ===== */
 
@@ -40,9 +57,6 @@ size_t ws_deflate_compress_maxlen(ws_deflate *df, size_t in_len);
  * 确保 out_cap >= ws_deflate_compress_maxlen(df, in_len). */
 bool ws_deflate_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap);
 
-/* 解压一条消息. out_cap 不足时返回 false. */
-bool ws_deflate_decompress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap);
-
 /* ===== 流式压缩 ===== */
 
 /* 重置压缩流，准备压缩新消息. */
@@ -56,17 +70,9 @@ bool ws_deflate_compress_stream(ws_deflate *df, const uint8_t *in, size_t in_len
  * out_cap 不足时返回 false，调用方应增大缓冲重试. */
 bool ws_deflate_compress_end(ws_deflate *df, uint8_t *out, size_t *out_cap);
 
-/* ===== 流式解压 ===== */
-
-/* 重置解压流，准备解压新消息. */
-void ws_deflate_decompress_reset(ws_deflate *df);
-
-/* 解压一段数据，同一消息可多次调用. */
-bool ws_deflate_decompress_stream(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap);
-
-/* 结束解压，拼接 0x0000FFFF 尾部后 inflate 收尾.
- * 调用方在最后一段数据传入后调此函数. */
-bool ws_deflate_decompress_end(ws_deflate *df, uint8_t *out, size_t *out_cap);
+/* ===== 解压 =====
+ * 解压侧不提供封装: 协议层直接操作 df->inflate (z_stream),
+ * 用固定缓冲分批循环调用 inflate. 见 struct ws_deflate 注释. */
 
 #ifdef __cplusplus
 }

@@ -78,7 +78,8 @@ typedef struct sevent_ws_config {
     const char *sub_protocol;       /* 子协议, NULL=不协商 */
     int         ping_interval_ms;   /* 心跳间隔(ms), 0=不启用 */
     int         connect_timeout_ms; /* 连接超时(ms), 0=默认10s, -1=不超时 */
-    size_t      recv_buf_size;      /* 接收缓冲区初始大小, 0=默认 4096 */
+    size_t      recv_buf_size;
+    bool        enable_deflate;      /* 接收缓冲区初始大小, 0=默认 4096 */
 
     /* ---- 用户回调 ---- */
     sevent_ws_on_open_fn          on_open;

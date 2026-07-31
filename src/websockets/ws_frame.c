@@ -26,11 +26,11 @@ int ws_frame_parse_header(const uint8_t *buf, size_t len, ws_frame_header *hdr) 
 
     /* ---- 解析 Byte 0 ---- */
     uint8_t b0 = buf[0];
-    /* RSV 位必须为 0 (RFC 6455 §5.2: "MUST be 0 unless negotiated") */
-    if(b0 & RSV_MASK)
-        return -1;
-
+    /* RSV 位由上层协议 (如 permessage-deflate) 协商后检查, 此处仅记录 */
     hdr->fin    = (b0 & FIN_BIT) ? 1 : 0;
+    hdr->rsv1   = (b0 & 0x40) ? 1 : 0;
+    hdr->rsv2   = (b0 & 0x20) ? 1 : 0;
+    hdr->rsv3   = (b0 & 0x10) ? 1 : 0;
     hdr->opcode = b0 & OPCODE_MASK;
 
     /* ---- 解析 Byte 1 ---- */
@@ -45,7 +45,7 @@ int ws_frame_parse_header(const uint8_t *buf, size_t len, ws_frame_header *hdr) 
     } else if(len7 == LEN16_CODE) {
         if(len < 4)
             return 0; /* 需要 2+2=4 字节 */
-        hdr->payload_len = ((uint64_t)buf[2] << 8) | (uint64_t)buf[3];
+        hdr->payload_len  = ((uint64_t)buf[2] << 8) | (uint64_t)buf[3];
         offset           += 2;
     } else { /* len7 == 127 */
         if(len < 10)
@@ -64,10 +64,10 @@ int ws_frame_parse_header(const uint8_t *buf, size_t len, ws_frame_header *hdr) 
     if(hdr->mask) {
         if(len < offset + 4)
             return 0;
-        hdr->mask_key[0] = buf[offset];
-        hdr->mask_key[1] = buf[offset + 1];
-        hdr->mask_key[2] = buf[offset + 2];
-        hdr->mask_key[3] = buf[offset + 3];
+        hdr->mask_key[0]  = buf[offset];
+        hdr->mask_key[1]  = buf[offset + 1];
+        hdr->mask_key[2]  = buf[offset + 2];
+        hdr->mask_key[3]  = buf[offset + 3];
         offset           += 4;
     }
 
@@ -80,15 +80,18 @@ void ws_frame_apply_mask(uint8_t *payload, uint64_t len, const uint8_t mask_key[
     }
 }
 
-int ws_frame_build_header(uint8_t *buf, uint8_t fin, uint8_t opcode, const uint8_t mask_key[4], uint64_t payload_len) {
+int ws_frame_build_header(
+        uint8_t *buf, uint8_t fin, uint8_t rsv1, uint8_t opcode, const uint8_t mask_key[4], uint64_t payload_len) {
     /* 参数校验 */
+    if(rsv1 & ~1)
+        return -1;
     if(opcode > 0x0F)
         return -1;
 
     size_t offset = 0;
 
     /* Byte 0: FIN + RSV(0) + opcode */
-    buf[offset++] = (uint8_t)((fin ? FIN_BIT : 0) | (opcode & OPCODE_MASK));
+    buf[offset++] = (uint8_t)((fin ? FIN_BIT : 0) | (rsv1 ? 0x40 : 0) | (opcode & OPCODE_MASK));
 
     /* Byte 1: MASK + payload length (7-bit 或扩展) */
     if(payload_len < LEN16_CODE) {

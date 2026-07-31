@@ -159,7 +159,7 @@ static int build_101(const uint8_t *req, size_t req_len, char *resp, size_t resp
 
 static int srv_frame(int fd, int fin, int opcode, const uint8_t *pld, uint64_t len) {
     uint8_t hdr[16];
-    int     hlen = ws_frame_build_header(hdr, (uint8_t)fin, (uint8_t)opcode, NULL, len);
+    int     hlen = ws_frame_build_header(hdr, (uint8_t)fin, 0, (uint8_t)opcode, NULL, len);
     if(hlen <= 0)
         return -1;
     uint8_t *buf = (uint8_t *)malloc((size_t)hlen + (size_t)len);

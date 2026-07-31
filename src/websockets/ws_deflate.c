@@ -7,19 +7,11 @@
 #include "ws_deflate.h"
 #include "sevent_i.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #ifdef SEVENT_WS_DEFLATE
 #include <zlib.h>
-
-struct ws_deflate {
-    z_stream deflate;
-    z_stream inflate;
-    bool     server_no_context_takeover;
-    bool     client_no_context_takeover;
-    uint8_t  server_window_bits;
-    uint8_t  client_window_bits;
-};
 
 bool ws_deflate_create(ws_deflate **out, const ws_deflate_params *params) {
     if(!out)
@@ -103,43 +95,6 @@ bool ws_deflate_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8
     return true;
 }
 
-bool ws_deflate_decompress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap) {
-    if(!df || !in || !out || !out_cap)
-        return false;
-    if(in_len > UINT_MAX || *out_cap > UINT_MAX)
-        return false;
-
-    /* 拼接尾部 0x00 0x00 0xff 0xff (RFC 7692 §6) 后一次性解压 */
-    uint8_t *buf = (uint8_t *)sevent_i_malloc(in_len + 4);
-    if(!buf)
-        return false;
-    memcpy(buf, in, in_len);
-    buf[in_len]     = 0x00;
-    buf[in_len + 1] = 0x00;
-    buf[in_len + 2] = 0xFF;
-    buf[in_len + 3] = 0xFF;
-
-    df->inflate.next_in   = buf;
-    df->inflate.avail_in  = (uInt)(in_len + 4);
-    df->inflate.next_out  = out;
-    df->inflate.avail_out = (uInt)*out_cap;
-
-    int rc = inflate(&df->inflate, Z_SYNC_FLUSH);
-    sevent_i_free(buf);
-
-    if(rc != Z_OK && rc != Z_STREAM_END) {
-        inflateReset(&df->inflate);
-        return false;
-    }
-
-    size_t used = *out_cap - df->inflate.avail_out;
-    *out_cap    = used;
-
-    if(df->server_no_context_takeover)
-        inflateReset(&df->inflate);
-    return true;
-}
-
 /* ===== 流式压缩 ===== */
 
 void ws_deflate_compress_reset(ws_deflate *df) {
@@ -197,65 +152,7 @@ bool ws_deflate_compress_end(ws_deflate *df, uint8_t *out, size_t *out_cap) {
     return true;
 }
 
-/* ===== 流式解压 ===== */
-
-void ws_deflate_decompress_reset(ws_deflate *df) {
-    if(df)
-        inflateReset(&df->inflate);
-}
-
-bool ws_deflate_decompress_stream(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap) {
-    if(!df || !in || !out || !out_cap)
-        return false;
-    if(in_len > UINT_MAX || *out_cap > UINT_MAX)
-        return false;
-
-    df->inflate.next_in   = (uint8_t *)in;
-    df->inflate.avail_in  = (uInt)in_len;
-    df->inflate.next_out  = out;
-    df->inflate.avail_out = (uInt)*out_cap;
-
-    int rc = inflate(&df->inflate, Z_NO_FLUSH);
-    if(rc != Z_OK && rc != Z_BUF_ERROR) {
-        inflateReset(&df->inflate);
-        return false;
-    }
-
-    *out_cap = *out_cap - df->inflate.avail_out;
-    return true;
-}
-
-bool ws_deflate_decompress_end(ws_deflate *df, uint8_t *out, size_t *out_cap) {
-    if(!df || !out || !out_cap)
-        return false;
-    if(*out_cap > UINT_MAX)
-        return false;
-
-    /* 拼接尾部 0x0000FFFF */
-    uint8_t tail[4] = {0x00, 0x00, 0xFF, 0xFF};
-    df->inflate.next_in   = tail;
-    df->inflate.avail_in  = 4;
-    df->inflate.next_out  = out;
-    df->inflate.avail_out = (uInt)*out_cap;
-
-    int rc = inflate(&df->inflate, Z_SYNC_FLUSH);
-    if(rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
-        inflateReset(&df->inflate);
-        return false;
-    }
-
-    *out_cap = *out_cap - df->inflate.avail_out;
-
-    if(df->server_no_context_takeover)
-        inflateReset(&df->inflate);
-    return true;
-}
-
 #else /* !SEVENT_WS_DEFLATE */
-
-struct ws_deflate {
-    int _placeholder;
-};
 
 bool ws_deflate_create(ws_deflate **out, const ws_deflate_params *params) {
     (void)params;
@@ -281,15 +178,6 @@ bool ws_deflate_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8
     return false;
 }
 
-bool ws_deflate_decompress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap) {
-    (void)df;
-    (void)in;
-    (void)in_len;
-    (void)out;
-    (void)out_cap;
-    return false;
-}
-
 /* stub: 流式操作 */
 
 void ws_deflate_compress_reset(ws_deflate *df) { (void)df; }
@@ -300,18 +188,6 @@ bool ws_deflate_compress_stream(ws_deflate *df, const uint8_t *in, size_t in_len
 }
 
 bool ws_deflate_compress_end(ws_deflate *df, uint8_t *out, size_t *out_cap) {
-    (void)df; (void)out; (void)out_cap;
-    return false;
-}
-
-void ws_deflate_decompress_reset(ws_deflate *df) { (void)df; }
-
-bool ws_deflate_decompress_stream(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap) {
-    (void)df; (void)in; (void)in_len; (void)out; (void)out_cap;
-    return false;
-}
-
-bool ws_deflate_decompress_end(ws_deflate *df, uint8_t *out, size_t *out_cap) {
     (void)df; (void)out; (void)out_cap;
     return false;
 }

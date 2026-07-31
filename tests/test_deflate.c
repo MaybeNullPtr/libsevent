@@ -3,6 +3,11 @@
  *
  *  不依赖事件循环, 只测试 ws_deflate 压缩/解压正确性.
  *  SEVENT_WS_DEFLATE=ON 时才编译有效代码, OFF 时仅验证桩函数.
+ *
+ *  解压侧说明: ws_deflate 不再提供解压封装 (解压在协议层 ws_conn.c
+ *  直接操作 df->inflate, 见 doc/deflate-decompress-fix.md).
+ *  本测试用 test_decompress() 复现协议层的分批循环, 仅用于验证
+ *  压缩侧正确性 (压缩 → 解压 → 比对原文).
  *  ================================================================ */
 
 #include <stdio.h>
@@ -10,6 +15,10 @@
 #include <stdlib.h>
 
 #include "../src/websockets/ws_deflate.h"
+
+#ifdef SEVENT_WS_DEFLATE
+#include <zlib.h>
+#endif
 
 static int g_pass;
 static int g_total;
@@ -31,6 +40,51 @@ static int g_total;
     do {                                                                                                               \
         printf("FAIL: %s\n", msg);                                                                                     \
     } while(0)
+
+/* ====================================================================
+ *  解压 helper: 复现协议层的分批循环 (Z_SYNC_FLUSH + 拼 tail)
+ *  返回解压长度; 0 表示错误或输出不足.
+ * ==================================================================== */
+#ifdef SEVENT_WS_DEFLATE
+static size_t test_decompress(ws_deflate *df, const uint8_t *in, size_t in_len,
+                              uint8_t *out, size_t out_cap) {
+    uint8_t *buf = (uint8_t *)malloc(in_len + 4);
+    if(!buf)
+        return 0;
+    memcpy(buf, in, in_len);
+    buf[in_len]     = 0x00;
+    buf[in_len + 1] = 0x00;
+    buf[in_len + 2] = 0xFF;
+    buf[in_len + 3] = 0xFF;
+
+    z_stream *z = &df->inflate;
+    z->next_in  = buf;
+    z->avail_in = (uInt)(in_len + 4);
+
+    size_t used = 0;
+    for(;;) {
+        if(used >= out_cap) {
+            free(buf);
+            return 0; /* 输出不足 */
+        }
+        z->next_out  = out + used;
+        z->avail_out = (uInt)(out_cap - used);
+        int rc = inflate(z, Z_SYNC_FLUSH);
+        if(rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
+            inflateReset(z);
+            free(buf);
+            return 0;
+        }
+        used = out_cap - z->avail_out;
+        if(z->avail_out > 0)
+            break; /* 到达 sync 点 */
+    }
+    free(buf);
+    if(df->server_no_context_takeover)
+        inflateReset(z);
+    return used;
+}
+#endif
 
 /* ====================================================================
  *  测试: 压缩 → 解压, 验证原文一致
@@ -98,15 +152,7 @@ static void test_roundtrip(void) {
             continue;
         }
 
-        size_t decomp_len = decomp_cap;
-        if(!ws_deflate_decompress(df, comp, comp_len, decomp, &decomp_len)) {
-            FAIL("decompress");
-            free(decomp);
-            free(comp);
-            ws_deflate_destroy(df);
-            continue;
-        }
-
+        size_t decomp_len = test_decompress(df, comp, comp_len, decomp, decomp_cap);
         if(decomp_len != in_len || memcmp(decomp, texts[i], in_len) != 0) {
             FAIL("mismatch");
             free(decomp);
@@ -189,15 +235,7 @@ static void test_compressible(void) {
         return;
     }
 
-    size_t decomp_len = decomp_cap;
-    if(!ws_deflate_decompress(df, comp, comp_len, decomp, &decomp_len)) {
-        FAIL("decompress");
-        free(decomp);
-        free(comp);
-        ws_deflate_destroy(df);
-        return;
-    }
-
+    size_t decomp_len = test_decompress(df, comp, comp_len, decomp, decomp_cap);
     if(decomp_len != sizeof(buf) || memcmp(decomp, buf, sizeof(buf)) != 0) {
         FAIL("mismatch");
         free(decomp);
@@ -248,20 +286,6 @@ static void test_errors(void) {
     }
 #endif
     PASS();
-
-    TEST("decompress with NULL df");
-#ifdef SEVENT_WS_DEFLATE
-    if(ws_deflate_decompress(NULL, (const uint8_t *)"x", 1, (uint8_t *)&dummy, &dummy)) {
-        FAIL("should return false");
-        return;
-    }
-#else
-    if(ws_deflate_decompress(NULL, (const uint8_t *)"x", 1, (uint8_t *)&dummy, &dummy)) {
-        FAIL("stub should return false");
-        return;
-    }
-#endif
-    PASS();
 }
 
 /* ====================================================================
@@ -293,13 +317,7 @@ static void test_params(void) {
         return;
     }
     uint8_t dec[128];
-    size_t  dl = sizeof(dec);
-    if(!ws_deflate_decompress(df, comp, cl, dec, &dl)) {
-        FAIL("decompress");
-        free(comp);
-        ws_deflate_destroy(df);
-        return;
-    }
+    size_t  dl = test_decompress(df, comp, cl, dec, sizeof(dec));
     if(dl != sizeof(buf) || memcmp(dec, buf, sizeof(buf)) != 0) {
         FAIL("mismatch");
         free(comp);
@@ -334,13 +352,7 @@ static void test_params(void) {
             return;
         }
         uint8_t dec2[64];
-        size_t  dl2 = sizeof(dec2);
-        if(!ws_deflate_decompress(df, comp, cl2, dec2, &dl2)) {
-            FAIL("decompress (2nd)");
-            free(comp);
-            ws_deflate_destroy(df);
-            return;
-        }
+        size_t  dl2 = test_decompress(df, comp, cl2, dec2, sizeof(dec2));
         if(dl2 != sizeof(buf2) || memcmp(dec2, buf2, sizeof(buf2)) != 0) {
             FAIL("mismatch (2nd)");
             free(comp);
@@ -359,7 +371,7 @@ static void test_params(void) {
 }
 
 /* ====================================================================
- *  测试: 流式压缩/解压
+ *  测试: 流式压缩
  * ==================================================================== */
 
 /* 将 (in,in_len) 分 nchunks 段, 每段依次压缩 → 合著 total_comp。返回 comp 长度。 */
@@ -389,32 +401,6 @@ static size_t stream_compress(ws_deflate *df, const uint8_t *in, size_t in_len,
     return total;
 }
 
-/* 将压缩数据 comp/comp_len 输入 inflate, 分 nchunks 段逐步解压。返回解压总长度。 */
-static size_t stream_decompress(ws_deflate *df, const uint8_t *comp, size_t comp_len,
-                                 uint8_t *out, size_t out_cap, int nchunks) {
-    size_t chunk = comp_len / (size_t)nchunks;
-    size_t pos   = 0;
-    size_t total = 0;
-
-    while(pos < comp_len) {
-        size_t sz = (pos + chunk < comp_len) ? chunk : (comp_len - pos);
-        size_t out_sz = out_cap - total;
-        if(out_sz == 0)
-            return 0;
-        if(!ws_deflate_decompress_stream(df, comp + pos, sz, out + total, &out_sz))
-            return 0;
-        total += out_sz;
-        pos   += sz;
-    }
-
-    size_t end_sz = out_cap - total;
-    if(end_sz == 0)
-        return 0;
-    ws_deflate_decompress_end(df, out + total, &end_sz);
-    total += end_sz;
-    return total;
-}
-
 static void test_stream_roundtrip(void) {
 #ifdef SEVENT_WS_DEFLATE
     TEST("stream roundtrip 8KB x4 chunks");
@@ -439,7 +425,7 @@ static void test_stream_roundtrip(void) {
     uint8_t *dec = (uint8_t *)malloc(sizeof(src) + 64);
     if(!dec) { FAIL("malloc dec"); free(comp); ws_deflate_destroy(df); return; }
 
-    size_t dl = stream_decompress(df, comp, cl, dec, sizeof(src) + 64, 4);
+    size_t dl = test_decompress(df, comp, cl, dec, sizeof(src) + 64);
     if(dl != sizeof(src) || memcmp(dec, src, sizeof(src)) != 0) {
         FAIL("mismatch");
     } else {
@@ -486,22 +472,10 @@ static void test_stream_chunked(void) {
         { FAIL("compress_end"); free(comp); ws_deflate_destroy(df); return; }
     cpos += esz;
 
-    /* 逐字节解压 */
+    /* 解压验证 */
     uint8_t dec[256];
-    ws_deflate_decompress_reset(df);
-    size_t dpos = 0;
-    for(size_t i = 0; i < cpos; i++) {
-        size_t sz = sizeof(dec) - dpos;
-        if(sz == 0) { FAIL("dec full"); free(comp); ws_deflate_destroy(df); return; }
-        if(!ws_deflate_decompress_stream(df, comp + i, 1, dec + dpos, &sz))
-            { FAIL("decompress_stream"); free(comp); ws_deflate_destroy(df); return; }
-        dpos += sz;
-    }
-    size_t desz = sizeof(dec) - dpos;
-    ws_deflate_decompress_end(df, dec + dpos, &desz);
-    dpos += desz;
-
-    if(dpos != len || memcmp(dec, msg, len) != 0) {
+    size_t  dl = test_decompress(df, comp, cpos, dec, sizeof(dec));
+    if(dl != len || memcmp(dec, msg, len) != 0) {
         FAIL("mismatch");
     } else {
         PASS();
@@ -540,7 +514,7 @@ static void test_stream_compression(void) {
     }
 
     uint8_t dec[1024 + 64];
-    size_t  dl = stream_decompress(df, comp, cl, dec, sizeof(dec), 4);
+    size_t  dl = test_decompress(df, comp, cl, dec, sizeof(dec));
     if(dl != sizeof(buf) || memcmp(dec, buf, sizeof(buf)) != 0) {
         FAIL("mismatch");
     } else {
@@ -575,7 +549,7 @@ static void test_stream_params(void) {
     if(cl == 0) { FAIL("compress"); free(comp); ws_deflate_destroy(df); return; }
 
     uint8_t dec[128];
-    size_t  dl = stream_decompress(df, comp, cl, dec, sizeof(dec), 2);
+    size_t  dl = test_decompress(df, comp, cl, dec, sizeof(dec));
     if(dl != sizeof(buf) || memcmp(dec, buf, sizeof(buf)) != 0) {
         FAIL("mismatch");
         free(comp);
@@ -587,12 +561,12 @@ static void test_stream_params(void) {
     char buf2[32];
     memset(buf2, 'C', sizeof(buf2));
     ws_deflate_compress_reset(df);
-    ws_deflate_decompress_reset(df);
+    inflateReset(&df->inflate);
 
     cl = stream_compress(df, (const uint8_t *)buf2, sizeof(buf2), comp, cmax, 2);
     if(cl == 0) { FAIL("compress (2nd)"); free(comp); ws_deflate_destroy(df); return; }
 
-    dl = stream_decompress(df, comp, cl, dec, sizeof(dec), 2);
+    dl = test_decompress(df, comp, cl, dec, sizeof(dec));
     if(dl != sizeof(buf2) || memcmp(dec, buf2, sizeof(buf2)) != 0) {
         FAIL("mismatch (2nd)");
     } else {

@@ -11,6 +11,7 @@
 #define SEVENT_WS_HANDSHAKE_H
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -29,7 +30,8 @@ typedef struct {
     int  status_code;                  /* 应 = 101 */
     char accept[WS_ACCEPT_BASE64_LEN]; /* Sec-WebSocket-Accept 原始值 */
     char protocol[64];                 /* Sec-WebSocket-Protocol 协商结果 */
-    char location[256];                /* Location 头 (重定向用) */
+    char location[256];
+    char extensions[256];                /* Location 头 (重定向用) */
 } ws_handshake_response;
 
 /* ===== 生成随机 Sec-WebSocket-Key =====
@@ -51,7 +53,8 @@ int ws_build_request(char       *buf,
                      uint16_t    port,
                      const char *path,
                      const char *key,
-                     const char *sub_protocol);
+                     const char *sub_protocol,
+                     bool        enable_deflate);
 
 /* ===== 解析 HTTP 升级响应 =====
  *

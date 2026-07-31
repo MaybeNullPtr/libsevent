@@ -11,6 +11,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ws_deflate.h"
+
 /* 无效 socket 标记 */
 #define SEVENT_INVALID_SOCKET (-1)
 
@@ -66,6 +68,11 @@ struct sevent_ws_conn {
     sevent_timer *connect_timer;
     sevent_timer *ping_timer;
 
+    /* ---- 压缩 (permessage-deflate) ---- */
+    bool          enable_deflate;
+    bool          frag_compressed;
+    ws_deflate    *deflate;
+
     /* ---- 用户回调 ---- */
     void                         *user_data;
     sevent_ws_on_open_fn          on_open;
@@ -88,7 +95,8 @@ struct sevent_ws_conn {
     bool     stream_active;
     uint8_t  stream_opcode;
     uint64_t stream_remaining;
-    uint64_t stream_total; /* 原始帧 payload 总长, 传给 on_message */
+    uint64_t stream_total;
+    bool     stream_compressed; /* 原始帧 payload 总长, 传给 on_message */
     bool     stream_fin;   /* 原始帧 FIN 位 */
 
     /* ---- 分片累积 (RFC 6455 §5.4, frag_buf 大小 = recv_cap) ---- */
