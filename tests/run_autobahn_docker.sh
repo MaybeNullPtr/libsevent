@@ -19,7 +19,7 @@ MODE="${MODE:-fuzzingserver}"
 CASES="${CASES:-[\"*\"]}"
 PORT=9001
 ECHO_PORT=9002
-TIMEOUT=500
+TIMEOUT="${TIMEOUT:-500}"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
@@ -33,6 +33,7 @@ log "============================================"
 # ---- 1. 编译 ----
 log "[1] 编译..."
 cd "$PROJECT_DIR"
+"$PROJECT_DIR/build.sh" 2>&1 | tail -2
 gcc -std=c99 -Wall -Werror -DSEVENT_WS_DEFLATE -I include -I src -I src/websockets \
     tests/autobahn_echo_server.c \
     -L build -lsevent_ws -lsevent -lz \

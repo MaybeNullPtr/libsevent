@@ -283,7 +283,8 @@ static void stream_consume(struct sevent_ws_conn *c) {
         if(c->stream_fin) {
             if(c->stream_compressed)
                 decompress_stream_end(c, is_bin);
-            c->frag_pending = false;
+            c->frag_pending    = false;
+            c->frag_compressed = false;
         }
     }
 }
@@ -794,9 +795,15 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
         return -1; /* 单分片超过缓冲区 */
     /* 放不下时先 flush 当前积压 (fin=0) 腾空间 */
     if(c->frag_len + len > c->recv_cap) {
-        if(c->frag_compressed)
-            return -1; /* 压缩分片禁止溢出冲刷 */
-        if(c->on_message && c->frag_len > 0) {
+        if(c->frag_compressed) {
+            /* 压缩分片: 整块 frag_buf 喂给流式解压 (解压流式化后无消息边界问题) */
+            if(c->on_message && c->frag_len > 0) {
+                bool is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
+                decompress_stream_chunk(c, c->frag_buf, c->frag_len, is_bin);
+                if(c->destroyed)
+                    return 0;
+            }
+        } else if(c->on_message && c->frag_len > 0) {
             void *d      = c->user_data;
             bool  is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
             c->on_message(d, c->frag_buf, c->frag_len, is_bin, false, 0);
@@ -826,15 +833,17 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
 
     /* 刷出完整 recv_cap 块。
      *
-     *  条件 (fin || frag_len > recv_cap):
+     *  条件 (fin || frag_len > recv_cap || frag_compressed):
      *    - fin=1 → 消息结束了，必须把数据全刷出去
      *    - frag_len > recv_cap → 缓冲区积压超过一块，必须刷（否则放不下）
-     *    - fin=0 && frag_len == recv_cap → 精确填满但不是最后一块，
-     *      不刷，留在缓冲区里等下一帧。避免服务器用单独的 0 字节终止帧
+     *    - fin=0 && frag_len == recv_cap → 非压缩精确填满时不刷，
+     *      留在缓冲区里等下一帧。避免服务器用单独的 0 字节终止帧
      *      发 fin=1 时，这里已经把数据用 fin=0 刷出去了。
+     *    - frag_compressed → 压缩分片整块喂流式解压，无上述边界问题，
+     *      frag_len == recv_cap 即刷（否则下一片会溢出）。
      */
     bool sent_fin = false;
-    while(c->frag_len >= c->recv_cap && (fin || c->frag_len > c->recv_cap)) {
+    while(c->frag_len >= c->recv_cap && (fin || c->frag_len > c->recv_cap || c->frag_compressed)) {
         /* 这次刷完 frag_buf 就空了 → 如果 fin=1 这就是最后一块 */
         bool last_flag = fin && (c->frag_len == c->recv_cap);
         if(last_flag)
@@ -1001,7 +1010,9 @@ static int process_frames(struct sevent_ws_conn *c) {
             /* 单帧 > recv_cap 时进入流式读取, 不再等整帧收齐 */
             if(frame_size > c->recv_cap) {
                 c->stream_active    = true;
-                c->stream_opcode    = hdr.opcode;
+                /* 消息级: 首帧 opcode 决定 binary/text, CONT 帧 (opcode=0) 不覆盖 */
+                if(hdr.opcode != WS_OPCODE_CONT)
+                    c->stream_opcode = hdr.opcode;
                 c->stream_remaining = hdr.payload_len;
                 c->stream_total     = hdr.payload_len;
                 c->stream_fin       = hdr.fin;
@@ -1010,10 +1021,14 @@ static int process_frames(struct sevent_ws_conn *c) {
                 if(!hdr.fin && hdr.opcode != WS_OPCODE_CLOSE && hdr.opcode != WS_OPCODE_PING &&
                    hdr.opcode != WS_OPCODE_PONG) {
                     c->frag_pending = true;
-                    if(hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY)
+                    if(hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY) {
                         c->frag_opcode = hdr.opcode;
+                        if(hdr.rsv1)
+                            c->frag_compressed = true; /* 消息级压缩状态, CONT 帧沿用 */
+                    }
                 }
-                c->stream_compressed = hdr.rsv1 ? true : false;
+                /* 压缩是消息级属性: 首帧 rsv1 标记, 后续 CONT 帧 rsv1=0 但消息仍压缩 */
+                c->stream_compressed = hdr.rsv1 || c->frag_compressed;
                 c->recv_pos += (size_t)n; /* 消费帧头 */
                 stream_consume(c);
             }
