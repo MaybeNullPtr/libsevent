@@ -42,6 +42,26 @@ typedef struct ws_write_node {
     bool                  is_ctrl; /* 控制帧, 优先发送 */
 } ws_write_node;
 
+/* ---- 消息接收状态机 (RFC 6455 §5.4 分片 + 大帧流式) ----
+ * 消息级状态跨帧保持, 状态转换:
+ *   MSG_NONE   --首帧 TEXT/BINARY (fin=0)--> MSG_FRAG (小帧) / MSG_STREAM (大帧)
+ *   MSG_FRAG / MSG_STREAM --CONT 帧--> 保持
+ *   MSG_FRAG / MSG_STREAM --fin 帧--> MSG_NONE (msg_end 统一收尾)
+ * opcode/compressed 由首帧决定, CONT 帧不覆盖. */
+enum ws_msg_mode {
+    WS_MSG_NONE,   /* 无消息进行中 */
+    WS_MSG_FRAG,   /* 分片累积路径 (frag_append/frag_flush) */
+    WS_MSG_STREAM, /* 大帧流式路径 (stream_consume) */
+};
+
+struct ws_msg_state {
+    enum ws_msg_mode mode;   /* 当前接收路径 */
+    uint8_t  opcode;         /* 消息级 opcode (首帧 TEXT/BINARY) */
+    bool     compressed;     /* 消息级压缩 (首帧 rsv1, CONT 帧沿用) */
+    uint64_t total;          /* 消息总字节, fin 回调传给 on_message */
+    bool     fin_sent;       /* fin 回调已发 → msg_end 保证"恰好一次" */
+};
+
 /* 内部连接结构 */
 struct sevent_ws_conn {
     sevent_context *ev;
@@ -70,7 +90,6 @@ struct sevent_ws_conn {
 
     /* ---- 压缩 (permessage-deflate) ---- */
     bool                    enable_deflate;
-    bool                    frag_compressed;
     sevent_ws_deflate_level deflate_level; /* 发送压缩等级 */
     ws_deflate              *deflate;
 
@@ -92,20 +111,16 @@ struct sevent_ws_conn {
     size_t   recv_len; /* 有效数据长度 */
     size_t   recv_pos; /* 已消费偏移 */
 
-    /* ---- 大帧流式读取 (单帧 > recv_cap 时分块) ---- */
-    bool     stream_active;
-    uint8_t  stream_opcode;
-    uint64_t stream_remaining;
-    uint64_t stream_total;
-    bool     stream_compressed; /* 原始帧 payload 总长, 传给 on_message */
-    bool     stream_fin;   /* 原始帧 FIN 位 */
+    /* ---- 消息接收状态机 (定义见文件顶部) ---- */
+    struct ws_msg_state msg;
+
+    /* ---- 大帧流式读取 (帧级状态, 单帧 > recv_cap 时分块) ---- */
+    uint64_t stream_remaining; /* 当前流式帧剩余未消费字节 */
+    bool     stream_fin;       /* 当前流式帧 FIN 位 */
 
     /* ---- 分片累积 (RFC 6455 §5.4, frag_buf 大小 = recv_cap) ---- */
-    bool     frag_pending; /* 正在接收分片序列 */
-    uint8_t  frag_opcode;  /* 原始 opcode (TEXT/BINARY) */
     uint8_t *frag_buf;
     size_t   frag_len;
-    uint64_t frag_total; /* 分片累积总字节, 传给 on_message */
 
     /* ---- 写队列 (Round 5 启用) ---- */
     ws_write_node *write_head;

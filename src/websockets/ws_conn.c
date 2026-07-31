@@ -62,6 +62,8 @@
 /* 前向声明 */
 static int send_frame_raw(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len, uint8_t flags);
 static int send_frame(struct sevent_ws_conn *c, uint8_t opcode, const void *payload, size_t len);
+static void msg_end(struct sevent_ws_conn *c, bool is_bin); /* 消息结束统一收尾 (定义见接收段) */
+
 static int decompress_stream_chunk(
         struct sevent_ws_conn *c, const uint8_t *data, size_t len, bool is_bin);
 static int  decompress_stream_end(struct sevent_ws_conn *c, bool is_bin);
@@ -250,10 +252,10 @@ static int recv_read(struct sevent_ws_conn *c) {
     return (int)n;
 }
 
-/* 大帧流式读取: 从 recv_buf 分块回调 payload */
+/* 大帧流式读取: 从 recv_buf 分块回调 payload (MSG_STREAM 路径) */
 static void stream_consume(struct sevent_ws_conn *c) {
     void *d      = c->user_data;
-    bool  is_bin = (c->stream_opcode == WS_OPCODE_BINARY);
+    bool  is_bin = (c->msg.opcode == WS_OPCODE_BINARY);
 
     while(c->recv_pos < c->recv_len && c->stream_remaining > 0) {
         if(c->destroyed)
@@ -264,13 +266,18 @@ static void stream_consume(struct sevent_ws_conn *c) {
             chunk = (size_t)c->stream_remaining;
         bool last = (chunk == c->stream_remaining) && c->stream_fin;
 
-        if(c->stream_compressed) {
-            /* 压缩流: streaming 不发 fin, 由 decompress_stream_end 统一发 */
+        if(c->msg.compressed) {
+            /* 压缩流: 不在此发 fin, 由 decompress_stream_end 统一发 */
             if(decompress_stream_chunk(c, c->recv_buf + c->recv_pos, chunk, is_bin) != 0)
                 return;
         } else {
-            if(c->on_message)
-                c->on_message(d, c->recv_buf + c->recv_pos, chunk, is_bin, last, c->stream_total);
+            if(c->on_message) {
+                /* total 仅在 fin 回调时携带消息总长, 非 fin 回调传 0 */
+                c->on_message(d, c->recv_buf + c->recv_pos, chunk, is_bin, last,
+                              last ? c->msg.total : 0);
+                if(last)
+                    c->msg.fin_sent = true; /* fin 回调已发, msg_end 不补发 */
+            }
             if(c->destroyed)
                 return;
         }
@@ -279,13 +286,12 @@ static void stream_consume(struct sevent_ws_conn *c) {
         c->stream_remaining -= chunk;
     }
     if(c->stream_remaining == 0) {
-        c->stream_active = false;
         if(c->stream_fin) {
-            if(c->stream_compressed)
-                decompress_stream_end(c, is_bin);
-            c->frag_pending    = false;
-            c->frag_compressed = false;
+            /* [状态机] MSG_STREAM --fin 帧--> MSG_NONE: 统一收尾
+             * (压缩补 tail + fin 回调由 msg_end/decompress_stream_end 负责) */
+            msg_end(c, is_bin);
         }
+        /* fin=0: 当前流式帧消费完, 保持 MSG_STREAM 等下一帧 */
     }
 }
 
@@ -379,9 +385,12 @@ static void ws_update_io(struct sevent_ws_conn *c, void (*read_cb)(void *)) {
 static void on_write_ready(void *data);
 
 /* ---- 解压: 协议层直接操作 zlib (分批输出, 见 doc/deflate-decompress-fix.md) ----
+ * RFC 7692 §7.2.1/§7.2.2: 发送端压缩消息后剥掉尾部 00 00 FF FF 再发送,
+ * 接收端解压前必须把 4 字节 00 00 FF FF 补回消息尾部.
  * 解压输出大小不可预判, 用固定缓冲分批循环 inflate:
  * 输入一段, 每次解满一批就 on_message 一批 (fin=false),
- * 消息结束由 decompress_stream_end / decompress_oneshot 发 fin=true.
+ * 压缩消息结束由 msg_end → decompress_stream_end 统一收尾 (补 tail + fin),
+ * 单帧压缩 (oneshot) 路径自行发 fin=true.
  * total 压缩路径一律传 0 (解压前无法预知原始长度). */
 
 /* 单批解压输出缓冲: 固定大小, 堆分配 (嵌入式栈小, 不上栈) */
@@ -439,7 +448,8 @@ out:
 #endif
 }
 
-/* 消息收尾: 喂 0x0000FFFF tail, Z_SYNC_FLUSH 吐尽积压, 发 fin */
+/* 消息收尾: 补喂发送端剥掉的 0x0000FFFF (RFC 7692 §7.2.2, autobahn
+ * endDecompressMessage 同款), Z_SYNC_FLUSH 吐尽积压, 发 fin */
 static int decompress_stream_end(struct sevent_ws_conn *c, bool is_bin)
 {
 #ifdef SEVENT_WS_DEFLATE
@@ -460,6 +470,7 @@ static int decompress_stream_end(struct sevent_ws_conn *c, bool is_bin)
         z->avail_out = (uInt)SEVENT_WS_DECOMP_BATCH;
         int rc = inflate(z, Z_SYNC_FLUSH);
         if(rc == Z_BUF_ERROR && z->avail_in > 0) {
+            /* 有输入却无进展: 异常 */
             inflateReset(z);
             goto out;
         }
@@ -478,7 +489,12 @@ static int decompress_stream_end(struct sevent_ws_conn *c, bool is_bin)
         if(z->avail_out > 0)
             break; /* 到达 sync 点, 积压清空 */
     }
-    c->on_message(c->user_data, batch, 0, is_bin, true, 0);
+    /* fin 回调恰好一次: 数据已由 frag_flush/stream_consume 的 last_flag 以 fin 回调
+     * 送出时 (fin_sent 已置), 这里只补 tail 不再重复发 (消息结束收尾见 msg_end) */
+    if(!c->msg.fin_sent) {
+        c->msg.fin_sent = true;
+        c->on_message(c->user_data, batch, 0, is_bin, true, 0);
+    }
     if(c->deflate->server_no_context_takeover)
         inflateReset(z);
     ret = 0;
@@ -756,6 +772,15 @@ static bool ws_redirect_reconnect(struct sevent_ws_conn *c) {
     c->recv_len = 0;
     c->recv_pos = 0;
 
+    /* 重置消息接收状态机 (旧连接可能残留未完成消息) */
+    c->msg.mode       = WS_MSG_NONE;
+    c->msg.compressed = false;
+    c->msg.total      = 0;
+    c->msg.fin_sent   = false;
+    c->frag_len       = 0;
+    c->stream_remaining = 0;
+    c->stream_fin       = false;
+
     int fd = ws_tcp_connect(c->host, c->port);
     if(fd < 0)
         return false;
@@ -792,111 +817,116 @@ static int frag_append(struct sevent_ws_conn *c, const uint8_t *data, size_t len
     if(len == 0)
         return 0;
     if(len > c->recv_cap)
-        return -1; /* 单分片超过缓冲区 */
+        return -1; /* 单分片超过缓冲区 (大帧由流式路径处理) */
     /* 放不下时先 flush 当前积压 (fin=0) 腾空间 */
     if(c->frag_len + len > c->recv_cap) {
-        if(c->frag_compressed) {
+        if(c->msg.compressed) {
             /* 压缩分片: 整块 frag_buf 喂给流式解压 (解压流式化后无消息边界问题) */
             if(c->on_message && c->frag_len > 0) {
-                bool is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
+                bool is_bin = (c->msg.opcode == WS_OPCODE_BINARY);
                 decompress_stream_chunk(c, c->frag_buf, c->frag_len, is_bin);
                 if(c->destroyed)
                     return 0;
             }
         } else if(c->on_message && c->frag_len > 0) {
             void *d      = c->user_data;
-            bool  is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
+            bool  is_bin = (c->msg.opcode == WS_OPCODE_BINARY);
             c->on_message(d, c->frag_buf, c->frag_len, is_bin, false, 0);
             if(c->destroyed)
                 return 0;
         }
         c->frag_len = 0;
     }
-    c->frag_total += len;
+    c->msg.total += len;
     memcpy(c->frag_buf + c->frag_len, data, len);
     c->frag_len += len;
     return 0;
 }
 
-/* 从 frag_buf 吐出完整块给 on_message, fin=1 表示最后一次 */
-static int frag_flush(struct sevent_ws_conn *c, bool fin) {
-    if(!c->on_message) {
-        if(fin) {
-            c->frag_pending = false;
-            c->frag_len     = 0;
-            c->frag_total   = 0;
+/* 消息结束统一收尾: MSG_FRAG / MSG_STREAM → MSG_NONE
+ * 两个独立职责, 互不耦合:
+ *   1. 压缩消息必补 tail (RFC 7692 §7.2.2: 发送端剥掉 00 00 FF FF, 接收端补回).
+ *      与数据送达方式无关 — 数据可能经 frag_buf 余量 / while 刷出 / stream_consume
+ *      送达, 消息结束都必须补 tail. (修复: 此前由 fin_sent 隐式控制, 数据恰好
+ *      recv_cap 整数倍 (fin 帧 0 字节) 时 fin_sent 未置/已置都会漏补, 导致下一条
+ *      消息压缩流错位)
+ *   2. on_message(fin=true) 恰好一次 (fin_sent 保证):
+ *      - 数据已以 fin 回调送出 (frag_flush last_flag / stream_consume last /
+ *        decompress_stream_end 内部) → fin_sent=true, 不重复
+ *      - 纯空消息 (全部分片 0 长度) / 流式后的 0 字节终止帧 → fin_sent 未置,
+ *        补发空消息通知上层消息结束 (case 6.1.2) */
+static void msg_end(struct sevent_ws_conn *c, bool is_bin) {
+    if(c->msg.mode != WS_MSG_NONE) {
+        if(c->msg.compressed) {
+            /* 压缩流收尾: 补 tail + (fin_sent 未置时) 发 fin 回调 */
+            decompress_stream_end(c, is_bin);
+        } else if(!c->msg.fin_sent && c->on_message) {
+            c->on_message(c->user_data, NULL, 0, is_bin, true, c->msg.total);
+            c->msg.fin_sent = true;
         }
-        return 0;
     }
+    c->msg.mode       = WS_MSG_NONE;
+    c->msg.compressed = false;
+    c->msg.total      = 0;
+    c->msg.fin_sent   = false; /* 下一条消息重新计数 */
+    c->frag_len       = 0;
+}
+
+/* 从 frag_buf 吐出完整块给 on_message, fin=1 表示最后一次 (MSG_FRAG 路径) */
+static int frag_flush(struct sevent_ws_conn *c, bool fin) {
     void *d      = c->user_data;
-    bool  is_bin = (c->frag_opcode == WS_OPCODE_BINARY);
+    bool  is_bin = (c->msg.opcode == WS_OPCODE_BINARY);
 
     /* 刷出完整 recv_cap 块。
      *
-     *  条件 (fin || frag_len > recv_cap || frag_compressed):
+     *  条件 (fin || frag_len > recv_cap || msg.compressed):
      *    - fin=1 → 消息结束了，必须把数据全刷出去
      *    - frag_len > recv_cap → 缓冲区积压超过一块，必须刷（否则放不下）
      *    - fin=0 && frag_len == recv_cap → 非压缩精确填满时不刷，
      *      留在缓冲区里等下一帧。避免服务器用单独的 0 字节终止帧
      *      发 fin=1 时，这里已经把数据用 fin=0 刷出去了。
-     *    - frag_compressed → 压缩分片整块喂流式解压，无上述边界问题，
+     *    - msg.compressed → 压缩分片整块喂流式解压，无上述边界问题，
      *      frag_len == recv_cap 即刷（否则下一片会溢出）。
      */
-    bool sent_fin = false;
-    while(c->frag_len >= c->recv_cap && (fin || c->frag_len > c->recv_cap || c->frag_compressed)) {
+    while(c->frag_len >= c->recv_cap && (fin || c->frag_len > c->recv_cap || c->msg.compressed)) {
         /* 这次刷完 frag_buf 就空了 → 如果 fin=1 这就是最后一块 */
         bool last_flag = fin && (c->frag_len == c->recv_cap);
         if(last_flag)
-            sent_fin = true;
-        if(c->frag_compressed) {
+            c->msg.fin_sent = true; /* fin 回调已发, msg_end 不补发 */
+        if(c->msg.compressed) {
             decompress_stream_chunk(c, c->frag_buf, c->recv_cap, is_bin);
         } else {
-            c->on_message(d, c->frag_buf, c->recv_cap, is_bin, last_flag, 0);
+            /* total 仅在 fin 回调时携带消息总长, 非 fin 回调传 0 */
+            c->on_message(d, c->frag_buf, c->recv_cap, is_bin, last_flag,
+                          last_flag ? c->msg.total : 0);
         }
         if(c->destroyed)
             return 0;
         c->frag_len -= c->recv_cap;
         memmove(c->frag_buf, c->frag_buf + c->recv_cap, c->frag_len);
     }
-    /* 余量 < recv_cap, 消息结束: 刷出最后一小块 */
-    if(fin && c->frag_len > 0) {
-        if(c->frag_compressed) {
-            decompress_stream_chunk(c, c->frag_buf, c->frag_len, is_bin);
-            if(c->destroyed) return 0;
-            decompress_stream_end(c, is_bin);
-        } else {
-            /* RFC 6455 §5.6: 分片 TEXT 结束时校验 UTF-8 */
-            if(!is_bin && !ws_utf8_validate(c->frag_buf, c->frag_len)) {
-                ws_send_close_code(c, SEVENT_WS_CLOSE_INVALID_PAYLOAD);
-                return 0;
-            }
-            c->on_message(d, c->frag_buf, c->frag_len, is_bin, true, c->frag_total);
-        }
-        if(c->destroyed)
-            return 0;
-        c->frag_len     = 0;
-        c->frag_pending = false;
-        c->frag_compressed = false;
-        c->frag_total   = 0;
-    } else if(fin && !sent_fin) {
-        /* 零负载终止帧或 while 循环未覆盖 fin=1:
-         * 数据可能已通过流式读取(stream_consume)送达,
-         * 仍需通知上层消息结束。 */
-        if(c->on_message && c->frag_pending) {
-            if(c->frag_compressed) {
-                decompress_stream_end(c, is_bin);
+    if(fin) {
+        /* [状态机] MSG_FRAG --fin 帧--> MSG_NONE: 刷余量 + 统一收尾
+         * (压缩补 tail 由 msg_end 统一负责, 不在此重复调 end) */
+        if(c->frag_len > 0) {
+            if(c->msg.compressed) {
+                decompress_stream_chunk(c, c->frag_buf, c->frag_len, is_bin);
+                if(c->destroyed)
+                    return 0;
             } else {
+                /* RFC 6455 §5.6: 分片 TEXT 结束时校验 UTF-8 */
+                if(!is_bin && !ws_utf8_validate(c->frag_buf, c->frag_len)) {
+                    ws_send_close_code(c, SEVENT_WS_CLOSE_INVALID_PAYLOAD);
+                    return 0;
+                }
+                c->msg.fin_sent = true;
+                c->on_message(d, c->frag_buf, c->frag_len, is_bin, true, c->msg.total);
             }
             if(c->destroyed)
                 return 0;
+            c->frag_len = 0;
         }
-        c->frag_pending = false;
-        c->frag_compressed = false;
-        c->frag_total   = 0;
-    } else if(fin) {
-        c->frag_pending = false;
-        c->frag_compressed = false;
-        c->frag_total   = 0;
+        msg_end(c, is_bin);
     }
     return 0;
 }
@@ -907,9 +937,11 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
  * ==================================================================== */
 
 static int handle_text_binary(struct sevent_ws_conn *c, const ws_frame_header *hdr, const uint8_t *payload) {
-    if(c->frag_pending)
+    /* 新消息首帧 (TEXT/BINARY): 必须无消息进行中, 否则协议错误 */
+    if(c->msg.mode != WS_MSG_NONE)
         return SEVENT_WS_ERR_PROTOCOL;
     if(hdr->fin) {
+        /* 单帧消息: 直接回调, 不驻留消息状态 */
         /* RFC 6455 §5.6: TEXT 帧 payload 必须是 UTF-8 */
         if(hdr->opcode == WS_OPCODE_TEXT && !ws_utf8_validate(payload, (size_t)hdr->payload_len)) {
             ws_send_close_code(c, SEVENT_WS_CLOSE_INVALID_PAYLOAD);
@@ -926,8 +958,12 @@ static int handle_text_binary(struct sevent_ws_conn *c, const ws_frame_header *h
                 return -1;
         }
     } else {
-        c->frag_opcode  = hdr->opcode;
-        c->frag_pending = true;
+        /* [状态机] MSG_NONE → MSG_FRAG: 分片消息首帧 (数据走 frag_append/frag_flush).
+         * opcode 消息级决定; compressed 由 process_frames 的 RSV1 分支置位 */
+        c->msg.opcode     = hdr->opcode;
+        c->msg.total      = 0;
+        c->msg.fin_sent   = false;
+        c->msg.mode       = WS_MSG_FRAG;
         if(frag_append(c, payload, (size_t)hdr->payload_len) != 0)
             return SEVENT_ERR_NOMEM;
         frag_flush(c, false);
@@ -938,7 +974,8 @@ static int handle_text_binary(struct sevent_ws_conn *c, const ws_frame_header *h
 }
 
 static int handle_cont(struct sevent_ws_conn *c, const ws_frame_header *hdr, const uint8_t *payload) {
-    if(!c->frag_pending)
+    /* CONT 帧: 必须处于消息进行中 (FRAG/STREAM), 保持当前 mode */
+    if(c->msg.mode == WS_MSG_NONE)
         return SEVENT_WS_ERR_PROTOCOL;
     if(frag_append(c, payload, (size_t)hdr->payload_len) != 0)
         return SEVENT_ERR_NOMEM;
@@ -1007,28 +1044,27 @@ static int process_frames(struct sevent_ws_conn *c) {
         }
         size_t frame_size = (size_t)n + (size_t)hdr.payload_len;
         if(avail < frame_size) {
-            /* 单帧 > recv_cap 时进入流式读取, 不再等整帧收齐 */
+            /* 单帧 > recv_cap 时进入流式读取, 边收边消费 (控制 recv_buf 内存) */
             if(frame_size > c->recv_cap) {
-                c->stream_active    = true;
-                /* 消息级: 首帧 opcode 决定 binary/text, CONT 帧 (opcode=0) 不覆盖 */
-                if(hdr.opcode != WS_OPCODE_CONT)
-                    c->stream_opcode = hdr.opcode;
-                c->stream_remaining = hdr.payload_len;
-                c->stream_total     = hdr.payload_len;
-                c->stream_fin       = hdr.fin;
-                /* 流式读取绕过 frag_append/frag_flush,
-                 * 但后续 0 字节终止帧需经 handle_cont → 依赖 frag_pending */
-                if(!hdr.fin && hdr.opcode != WS_OPCODE_CLOSE && hdr.opcode != WS_OPCODE_PING &&
-                   hdr.opcode != WS_OPCODE_PONG) {
-                    c->frag_pending = true;
+                if(c->msg.mode != WS_MSG_STREAM) {
+                    /* [状态机] 首帧 TEXT/BINARY (fin=0, 大帧): → MSG_STREAM
+                     * CONT 帧: 保持当前消息状态 (大片中段帧流式消费) */
                     if(hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY) {
-                        c->frag_opcode = hdr.opcode;
+                        c->msg.opcode     = hdr.opcode; /* 消息级, CONT 帧不覆盖 */
+                        c->msg.total      = 0;
+                        c->msg.fin_sent   = false;
                         if(hdr.rsv1)
-                            c->frag_compressed = true; /* 消息级压缩状态, CONT 帧沿用 */
+                            c->msg.compressed = true; /* 消息级压缩, CONT 帧沿用 */
+                        c->msg.mode       = WS_MSG_STREAM;
+                    } else if(hdr.opcode != WS_OPCODE_CONT) {
+                        return SEVENT_WS_ERR_PROTOCOL; /* 控制帧不流式 */
+                    } else if(c->msg.mode == WS_MSG_NONE) {
+                        return SEVENT_WS_ERR_PROTOCOL; /* CONT 无消息进行中 */
                     }
                 }
-                /* 压缩是消息级属性: 首帧 rsv1 标记, 后续 CONT 帧 rsv1=0 但消息仍压缩 */
-                c->stream_compressed = hdr.rsv1 || c->frag_compressed;
+                c->stream_remaining = hdr.payload_len; /* 帧级剩余, 消息状态保持 */
+                c->stream_fin       = hdr.fin;
+                c->msg.total       += hdr.payload_len; /* 消息总长累积 (压缩时为压缩字节) */
                 c->recv_pos += (size_t)n; /* 消费帧头 */
                 stream_consume(c);
             }
@@ -1048,9 +1084,9 @@ static int process_frames(struct sevent_ws_conn *c) {
 
         /* ---- RSV1: 一次性解压 or 分片标记 ---- */
         if(hdr.rsv1 && hdr.fin && hdr.opcode != WS_OPCODE_CONT) {
-            if(c->frag_pending)
+            if(c->msg.mode != WS_MSG_NONE)
                 return SEVENT_WS_ERR_PROTOCOL;
-            /* 解压后消息已通过 on_message 分批+fin 送达 */
+            /* 单帧压缩消息: 解压后通过 on_message 分批+fin 送达, 不驻留消息状态 */
             int r = decompress_oneshot(c, payload, (size_t)hdr.payload_len,
                                        (hdr.opcode == WS_OPCODE_BINARY));
             if(r != 0)
@@ -1060,8 +1096,9 @@ static int process_frames(struct sevent_ws_conn *c) {
             c->recv_pos += frame_size; /* 本帧已消费 */
             continue;
         } else if(hdr.rsv1 && !hdr.fin) {
+            /* [状态机] 压缩分片消息首帧: 置消息级压缩标记, CONT 帧沿用 */
             if(hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY)
-                c->frag_compressed = true;
+                c->msg.compressed = true;
         }
 
         /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
@@ -1133,14 +1170,16 @@ static void on_data(void *data) {
         return;
     }
 
-    if(c->stream_active) {
-        /* 流式模式下可能多次循环: stream_consume 每次消费 up to recv_cap */
+    if(c->msg.mode == WS_MSG_STREAM) {
+        /* 流式模式: stream_consume 每次消费 up to recv_cap;
+         * 当前帧消费完 (stream_remaining==0) 后必须交还 process_frames
+         * 处理 recv_buf 中的后续帧 (流式消息的下一 CONT 帧等). */
         int err = 0;
         while(c->recv_pos < c->recv_len && err == 0) {
             size_t prev = c->recv_pos;
-            if(c->stream_active)
+            if(c->stream_remaining > 0)
                 stream_consume(c);
-            if(!c->stream_active)
+            if(c->stream_remaining == 0)
                 err = process_frames(c);
             if(c->recv_pos == prev)
                 break;

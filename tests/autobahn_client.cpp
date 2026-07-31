@@ -33,6 +33,7 @@ static int                                   g_port  = 9001;
 static std::string                           g_agent = "libsevent";
 static int                                   g_total = 0, g_cur = 0;
 static int                                   g_msg_count = 0;
+static int                                   g_fin_count = 0;
 static bool                                  g_run = false, g_done = false;
 static std::chrono::steady_clock::time_point g_case_start;
 static std::vector<uint8_t>                  g_acc;
@@ -42,22 +43,31 @@ static void do_count(void *data);
 static void do_case(void *data);
 static void do_report(void *data);
 
-/* per-case 超时: 超过此时间未完成则断开跳到下一 case */
-#define CASE_TIMEOUT_MS 2000
+/* 看门狗: 周期定时器 + 计数比较.
+ * on_message 只增 g_msg_count, 不碰定时器;
+ * 定时器回调比较 g_msg_count 与上次检查值, 3s 无新数据视为卡死. */
+#define WATCHDOG_MS 10000
+static int g_last_count = 0;
 
-static void on_case_timeout(void *) {
-    std::fprintf(stderr, "[timeout] case %d: >%dms\n", g_cur, CASE_TIMEOUT_MS);
-    if(g_ws) {
-        g_case_timer = nullptr; /* 定时器已触发, 清零防止 on_close 重复 unregister */
-        sevent_ws_shutdown(g_ws, 1002, "timeout");
+static void on_watchdog(void *) {
+    if(g_msg_count == g_last_count) {
+        std::fprintf(stderr, "[watchdog] case %d: %dms 无数据 (cb=%d fin=%d)\n", g_cur, WATCHDOG_MS, g_msg_count, g_fin_count);
+        if(g_ws) {
+            g_case_timer = nullptr; /* 定时器已触发, 清零防止 on_close 重复 unregister */
+            sevent_ws_shutdown(g_ws, 1002, "watchdog timeout");
+        }
+        return;
     }
+    g_last_count = g_msg_count;
 }
 
 static void on_open(void *) {
     g_case_start = std::chrono::steady_clock::now();
     g_acc.clear();
     g_msg_count = 0;
-    g_case_timer = sevent_timer_register(g_ctx, CASE_TIMEOUT_MS, on_case_timeout, nullptr);
+    g_fin_count = 0;
+    g_last_count = 0;
+    g_case_timer = sevent_timer_register(g_ctx, WATCHDOG_MS, on_watchdog, nullptr);
 }
 
 static void on_close(void *, uint16_t, const char *, size_t) {
@@ -76,7 +86,7 @@ static void on_close(void *, uint16_t, const char *, size_t) {
     if(g_run) {
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_case_start)
                           .count();
-        std::printf("%s case %d/%d done (%ldms) cb=%d\n", now_str(), g_cur, g_total, ms, g_msg_count);
+        std::printf("%s case %d/%d done (%ldms) cb=%d fin=%d\n", now_str(), g_cur, g_total, ms, g_msg_count, g_fin_count);
         g_cur++;
         if(g_cur <= g_total)
             sevent_post(g_ctx, do_case, nullptr);
@@ -132,6 +142,10 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
     if(g_total == 0 && !g_run) {
         char buf[32] = {0};
         std::memcpy(buf, m, l < 31 ? l : 31);
+        fprintf(stderr, "[DIAG] count msg l=%zu fin=%d hex=", l, fin ? 1 : 0);
+        for(size_t i = 0; i < (l < 16 ? l : 16); i++)
+            fprintf(stderr, "%02x", ((const uint8_t *)m)[i]);
+        fprintf(stderr, "\n");
         g_total = std::atoi(buf);
         std::printf("%s total cases: %d\n", now_str(), g_total);
         return;
@@ -142,8 +156,11 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
             if(l > 0)
                 g_acc.insert(g_acc.end(), static_cast<const uint8_t *>(m), static_cast<const uint8_t *>(m) + l);
         } else {
+            g_fin_count++;
             if(l > 0)
                 g_acc.insert(g_acc.end(), static_cast<const uint8_t *>(m), static_cast<const uint8_t *>(m) + l);
+#ifndef TEST_NO_ECHO
+            fprintf(stderr, "%s [ECHO-DBG] fin=%d g_ws=%p\n", now_str(), g_fin_count, (void *)g_ws);
             auto t1 = std::chrono::steady_clock::now();
             int  r;
             if(bin)
@@ -153,6 +170,7 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
             auto t2  = std::chrono::steady_clock::now();
             auto snd = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
             std::printf("%s case %d echo %zu bytes r=%d send=%ldms\n", now_str(), g_cur, g_acc.size(), r, snd);
+#endif
             g_acc.clear();
         }
     }
@@ -165,6 +183,7 @@ static void connect_path(const std::string &path) {
     cfg.port       = static_cast<uint16_t>(g_port);
     cfg.path           = path.c_str();
     cfg.enable_deflate = true;
+    cfg.deflate_level  = SEVENT_WS_DEFLATE_LEVEL_NONE;
     cfg.on_open    = on_open;
     cfg.on_message = on_message;
     cfg.on_close   = on_close;
