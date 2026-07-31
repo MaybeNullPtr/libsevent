@@ -815,6 +815,14 @@ static void on_write_ready(void *data) {
     if(remain == 0) {
         /* 队列已空, 注销可写回调 (保持可读).
          * HANDSHAKE 阶段 (握手请求部分写续写完成) 读回调是 on_handshake_data. */
+        /* FIXME(close-handshake): CLOSING 状态下 rcb=NULL → ws_update_io(NULL)
+         * → sevent_io_register 拒绝无回调注册 → ws_enter_closed(0) 误触发:
+         * shutdown 后写队列 flush 完成时提前 on_close + 强关 socket, 对端 CLOSE
+         * 未收到, 关闭握手不完整 (RFC 6455 §7.1.2 "both sent and received" 才
+         * clean close; §7.1.1 对端 MUST 回 CLOSE).
+         * 修复方案: CLOSING 时 rcb=on_data (继续读等对端 CLOSE) + close_timer
+         * 超时兜底 (RFC 6455 未规定关闭握手超时, 5s 是业界常用实现选择).
+         * 待后续处理, 当前不动. */
         void (*rcb)(void *) = NULL;
         if(c->state == WS_STATE_OPEN)
             rcb = on_data;
