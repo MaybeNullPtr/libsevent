@@ -1070,6 +1070,8 @@ static int process_frames(struct sevent_ws_conn *c) {
                     return SEVENT_WS_ERR_PROTOCOL;
                 if(hdr.rsv1 && !c->deflate)
                     return SEVENT_WS_ERR_PROTOCOL;
+                if(hdr.rsv1 && hdr.opcode == WS_OPCODE_CONT)
+                    return SEVENT_WS_ERR_PROTOCOL; /* RFC 7692 §7.2.3: CONT 帧 RSV1 必须 0 */
                 if(c->msg.mode == WS_MSG_STREAM || c->msg.mode == WS_MSG_FRAG) {
                     /* [状态机] 消息进行中 (FRAG/STREAM): 只允许 CONT 续帧
                      * (RFC 6455 §5.4: 消息未完成时的新数据帧是协议违规) */
@@ -1116,6 +1118,9 @@ static int process_frames(struct sevent_ws_conn *c) {
             return SEVENT_WS_ERR_PROTOCOL;
         if(hdr.rsv1 && !c->deflate)
             return SEVENT_WS_ERR_PROTOCOL;
+        if(hdr.rsv1 && hdr.opcode == WS_OPCODE_CONT)
+            return SEVENT_WS_ERR_PROTOCOL; /* RFC 7692 §7.2.3: 分片压缩消息的
+                                            * CONT 帧 RSV1 必须为 0 (仅首帧置 1) */
 
         /* ---- RSV1: 一次性解压 or 分片标记 ---- */
         if(hdr.rsv1 && hdr.fin && hdr.opcode != WS_OPCODE_CONT) {
