@@ -386,9 +386,7 @@ int sevent_dispatch(sevent_context *ctx, sevent_handler_fn h, void *data) {
     return sevent_post(ctx, h, data);
 }
 
-int sevent_is_running(sevent_context *ctx) {
-    return ctx && ctx->running ? 1 : 0;
-}
+int sevent_is_running(sevent_context *ctx) { return ctx && ctx->running ? 1 : 0; }
 
 static void run_posts(sevent_context *ctx, bool *fired) {
     /* 双队列: 将 pending 队列入队到本地 active, 新任务进 pending 下轮处理 */

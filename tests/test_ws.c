@@ -796,7 +796,7 @@ TEST(handshake_full_roundtrip) {
     T(frame_parse_incomplete_ext16)                                                                                    \
     T(frame_parse_incomplete_ext64)                                                                                    \
     T(frame_parse_incomplete_mask)                                                                                     \
-    T(frame_parse_rsv)                                                                                           \
+    T(frame_parse_rsv)                                                                                                 \
     T(frame_parse_msb_length_error)                                                                                    \
     T(frame_parse_continuation)                                                                                        \
     T(frame_build_small_unmasked)                                                                                      \

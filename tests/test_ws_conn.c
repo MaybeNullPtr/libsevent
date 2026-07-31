@@ -1933,23 +1933,23 @@ static int shake_deflate(int sfd) {
     ws_base64_encode(dg, 20, ac, sizeof(ac));
     char resp[512];
     int  rn = snprintf(resp,
-                       sizeof(resp),
-                       "HTTP/1.1 101 Switching Protocols\r\n"
-                        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                        "Sec-WebSocket-Accept: %s\r\n"
-                        "Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n",
-                       ac);
+                      sizeof(resp),
+                      "HTTP/1.1 101 Switching Protocols\r\n"
+                       "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                       "Sec-WebSocket-Accept: %s\r\n"
+                       "Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n",
+                      ac);
     WS_WRITE(sfd, resp, (size_t)rn);
     return 0;
 }
 
 /* wsend_compressed: 服务端发压缩 WS 帧 (rsv1=1) */
 static void wsend_compressed(int fd, uint8_t op, const void *p, uint64_t l) {
-    ws_deflate             *df     = NULL;
-    ws_deflate_params       params = {0};
+    ws_deflate       *df     = NULL;
+    ws_deflate_params params = {0};
     if(!ws_deflate_create(&df, &params) || !df)
         return;
-    size_t cap = ws_deflate_compress_maxlen(df, l);
+    size_t   cap  = ws_deflate_compress_maxlen(df, l);
     uint8_t *comp = (uint8_t *)malloc(cap);
     if(comp && ws_deflate_compress(df, p, l, comp, &cap)) {
         uint8_t b[4096];
@@ -2273,14 +2273,14 @@ static int t_deflate_frag(void) {
     ws_deflate_params params = {0};
     if(!ws_deflate_create(&df, &params) || !df)
         return 1;
-    size_t   cap = ws_deflate_compress_maxlen(df, 10);
+    size_t   cap  = ws_deflate_compress_maxlen(df, 10);
     uint8_t *comp = (uint8_t *)malloc(cap);
-    int      ok  = 0;
+    int      ok   = 0;
     if(comp && ws_deflate_compress(df, (const uint8_t *)"HelloWorld", 10, comp, &cap)) {
         uint8_t b[128];
         int     hl;
         /* 分片 1: rsv1=1, TEXT, fin=0 */
-        size_t half = cap / 2;
+        size_t  half = cap / 2;
         if(half == 0)
             half = 1;
         hl = ws_frame_build_header(b, 0, 1, WS_OPCODE_TEXT, NULL, half);
@@ -2340,7 +2340,7 @@ static int t_deflate_rsv_reject(void) {
     /* 构造 TEXT 帧但 rsv2=1 */
     uint8_t b[16];
     int     hl = ws_frame_build_header(b, 1, 0, WS_OPCODE_TEXT, NULL, 3);
-    b[0] |= 0x20; /* 设 RSV2 位 */
+    b[0]       |= 0x20; /* 设 RSV2 位 */
     memcpy(b + hl, "abc", 3);
     WS_WRITE(sfd, b, (size_t)(hl + 3));
     g_ev              = 0;

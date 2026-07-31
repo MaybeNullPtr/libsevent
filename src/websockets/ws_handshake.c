@@ -43,11 +43,11 @@ static int read_random(void *buf, size_t len) {
 
 /* ---- 辅助: fallback PRNG ---- */
 static unsigned int xorshift32(unsigned int *seed) {
-    unsigned int x  = *seed;
+    unsigned int x = *seed;
     x              ^= x << 13;
     x              ^= x >> 17;
     x              ^= x << 5;
-    *seed           = x;
+    *seed          = x;
     return x;
 }
 
@@ -99,8 +99,8 @@ int ws_build_request(char       *buf,
 #ifdef SEVENT_WS_DEFLATE
     /* permessage-deflate 压缩扩展协商 */
     if(enable_deflate) {
-        int m = snprintf(buf + n, cap - (size_t)n,
-                         "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n");
+        int m = snprintf(
+                buf + n, cap - (size_t)n, "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n");
         if(m < 0 || (size_t)m >= cap - (size_t)n)
             return -1;
         n += m;
@@ -127,10 +127,10 @@ int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *res
         return 0;
 
     /* 初始化 */
-    resp->status_code = 0;
-    resp->accept[0]   = '\0';
-    resp->protocol[0] = '\0';
-    resp->location[0] = '\0';
+    resp->status_code   = 0;
+    resp->accept[0]     = '\0';
+    resp->protocol[0]   = '\0';
+    resp->location[0]   = '\0';
     resp->extensions[0] = '\0';
 
     /* ---- 查找 HTTP 响应结尾 (\r\n\r\n) ---- */

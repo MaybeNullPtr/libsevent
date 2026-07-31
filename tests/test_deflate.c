@@ -46,8 +46,7 @@ static int g_total;
  *  返回解压长度; 0 表示错误或输出不足.
  * ==================================================================== */
 #ifdef SEVENT_WS_DEFLATE
-static size_t test_decompress(ws_deflate *df, const uint8_t *in, size_t in_len,
-                              uint8_t *out, size_t out_cap) {
+static size_t test_decompress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap) {
     uint8_t *buf = (uint8_t *)malloc(in_len + 4);
     if(!buf)
         return 0;
@@ -69,7 +68,7 @@ static size_t test_decompress(ws_deflate *df, const uint8_t *in, size_t in_len,
         }
         z->next_out  = out + used;
         z->avail_out = (uInt)(out_cap - used);
-        int rc = inflate(z, Z_SYNC_FLUSH);
+        int rc       = inflate(z, Z_SYNC_FLUSH);
         if(rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
             inflateReset(z);
             free(buf);
@@ -343,7 +342,7 @@ static void test_params(void) {
             ws_deflate_destroy(df);
             return;
         }
-        comp     = c2;
+        comp       = c2;
         size_t cl2 = om2;
         if(!ws_deflate_compress(df, (const uint8_t *)buf2, sizeof(buf2), comp, &cl2)) {
             FAIL("compress (2nd)");
@@ -375,14 +374,14 @@ static void test_params(void) {
  * ==================================================================== */
 
 /* 将 (in,in_len) 分 nchunks 段, 每段依次压缩 → 合著 total_comp。返回 comp 长度。 */
-static size_t stream_compress(ws_deflate *df, const uint8_t *in, size_t in_len,
-                               uint8_t *comp, size_t comp_cap, int nchunks) {
+static size_t
+stream_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *comp, size_t comp_cap, int nchunks) {
     size_t chunk = in_len / (size_t)nchunks;
     size_t pos   = 0;
     size_t total = 0;
 
     while(pos < in_len) {
-        size_t sz = (pos + chunk < in_len) ? chunk : (in_len - pos);
+        size_t sz     = (pos + chunk < in_len) ? chunk : (in_len - pos);
         size_t out_sz = comp_cap - total;
         if(out_sz == 0)
             return 0;
@@ -415,15 +414,29 @@ static void test_stream_roundtrip(void) {
     for(size_t i = 0; i < sizeof(src); i++)
         src[i] = (uint8_t)(i * 73 + 17);
 
-    size_t cmax = ws_deflate_compress_maxlen(df, sizeof(src));
+    size_t   cmax = ws_deflate_compress_maxlen(df, sizeof(src));
     uint8_t *comp = (uint8_t *)malloc(cmax);
-    if(!comp) { FAIL("malloc"); ws_deflate_destroy(df); return; }
+    if(!comp) {
+        FAIL("malloc");
+        ws_deflate_destroy(df);
+        return;
+    }
 
     size_t cl = stream_compress(df, (const uint8_t *)src, sizeof(src), comp, cmax, 4);
-    if(cl == 0) { FAIL("stream_compress"); free(comp); ws_deflate_destroy(df); return; }
+    if(cl == 0) {
+        FAIL("stream_compress");
+        free(comp);
+        ws_deflate_destroy(df);
+        return;
+    }
 
     uint8_t *dec = (uint8_t *)malloc(sizeof(src) + 64);
-    if(!dec) { FAIL("malloc dec"); free(comp); ws_deflate_destroy(df); return; }
+    if(!dec) {
+        FAIL("malloc dec");
+        free(comp);
+        ws_deflate_destroy(df);
+        return;
+    }
 
     size_t dl = test_decompress(df, comp, cl, dec, sizeof(src) + 64);
     if(dl != sizeof(src) || memcmp(dec, src, sizeof(src)) != 0) {
@@ -454,22 +467,39 @@ static void test_stream_chunked(void) {
     size_t      len = strlen(msg);
 
     /* 逐字节压缩 */
-    size_t cmax = ws_deflate_compress_maxlen(df, len);
+    size_t   cmax = ws_deflate_compress_maxlen(df, len);
     uint8_t *comp = (uint8_t *)malloc(cmax);
-    if(!comp) { FAIL("malloc"); ws_deflate_destroy(df); return; }
+    if(!comp) {
+        FAIL("malloc");
+        ws_deflate_destroy(df);
+        return;
+    }
 
     ws_deflate_compress_reset(df);
     size_t cpos = 0;
     for(size_t i = 0; i < len; i++) {
         size_t sz = cmax - cpos;
-        if(sz == 0) { FAIL("comp full"); free(comp); ws_deflate_destroy(df); return; }
-        if(!ws_deflate_compress_stream(df, (const uint8_t *)(msg + i), 1, comp + cpos, &sz))
-            { FAIL("compress_stream"); free(comp); ws_deflate_destroy(df); return; }
+        if(sz == 0) {
+            FAIL("comp full");
+            free(comp);
+            ws_deflate_destroy(df);
+            return;
+        }
+        if(!ws_deflate_compress_stream(df, (const uint8_t *)(msg + i), 1, comp + cpos, &sz)) {
+            FAIL("compress_stream");
+            free(comp);
+            ws_deflate_destroy(df);
+            return;
+        }
         cpos += sz;
     }
     size_t esz = cmax - cpos;
-    if(esz == 0 || !ws_deflate_compress_end(df, comp + cpos, &esz))
-        { FAIL("compress_end"); free(comp); ws_deflate_destroy(df); return; }
+    if(esz == 0 || !ws_deflate_compress_end(df, comp + cpos, &esz)) {
+        FAIL("compress_end");
+        free(comp);
+        ws_deflate_destroy(df);
+        return;
+    }
     cpos += esz;
 
     /* 解压验证 */
@@ -501,9 +531,13 @@ static void test_stream_compression(void) {
     char buf[1024];
     memset(buf, 'A', sizeof(buf));
 
-    size_t cmax = ws_deflate_compress_maxlen(df, sizeof(buf));
+    size_t   cmax = ws_deflate_compress_maxlen(df, sizeof(buf));
     uint8_t *comp = (uint8_t *)malloc(cmax);
-    if(!comp) { FAIL("malloc"); ws_deflate_destroy(df); return; }
+    if(!comp) {
+        FAIL("malloc");
+        ws_deflate_destroy(df);
+        return;
+    }
 
     size_t cl = stream_compress(df, (const uint8_t *)buf, sizeof(buf), comp, cmax, 4);
     if(cl == 0 || cl >= sizeof(buf)) {
@@ -541,12 +575,21 @@ static void test_stream_params(void) {
     char buf[64];
     memset(buf, 'B', sizeof(buf));
 
-    size_t cmax = ws_deflate_compress_maxlen(df, sizeof(buf));
+    size_t   cmax = ws_deflate_compress_maxlen(df, sizeof(buf));
     uint8_t *comp = (uint8_t *)malloc(cmax);
-    if(!comp) { FAIL("malloc"); ws_deflate_destroy(df); return; }
+    if(!comp) {
+        FAIL("malloc");
+        ws_deflate_destroy(df);
+        return;
+    }
 
     size_t cl = stream_compress(df, (const uint8_t *)buf, sizeof(buf), comp, cmax, 2);
-    if(cl == 0) { FAIL("compress"); free(comp); ws_deflate_destroy(df); return; }
+    if(cl == 0) {
+        FAIL("compress");
+        free(comp);
+        ws_deflate_destroy(df);
+        return;
+    }
 
     uint8_t dec[128];
     size_t  dl = test_decompress(df, comp, cl, dec, sizeof(dec));
@@ -564,7 +607,12 @@ static void test_stream_params(void) {
     inflateReset(&df->inflate);
 
     cl = stream_compress(df, (const uint8_t *)buf2, sizeof(buf2), comp, cmax, 2);
-    if(cl == 0) { FAIL("compress (2nd)"); free(comp); ws_deflate_destroy(df); return; }
+    if(cl == 0) {
+        FAIL("compress (2nd)");
+        free(comp);
+        ws_deflate_destroy(df);
+        return;
+    }
 
     dl = test_decompress(df, comp, cl, dec, sizeof(dec));
     if(dl != sizeof(buf2) || memcmp(dec, buf2, sizeof(buf2)) != 0) {

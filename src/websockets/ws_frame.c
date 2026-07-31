@@ -25,7 +25,7 @@ int ws_frame_parse_header(const uint8_t *buf, size_t len, ws_frame_header *hdr) 
         return 0;
 
     /* ---- 解析 Byte 0 ---- */
-    uint8_t b0 = buf[0];
+    uint8_t b0  = buf[0];
     /* RSV 位由上层协议 (如 permessage-deflate) 协商后检查, 此处仅记录 */
     hdr->fin    = (b0 & FIN_BIT) ? 1 : 0;
     hdr->rsv1   = (b0 & 0x40) ? 1 : 0;
@@ -45,7 +45,7 @@ int ws_frame_parse_header(const uint8_t *buf, size_t len, ws_frame_header *hdr) 
     } else if(len7 == LEN16_CODE) {
         if(len < 4)
             return 0; /* 需要 2+2=4 字节 */
-        hdr->payload_len  = ((uint64_t)buf[2] << 8) | (uint64_t)buf[3];
+        hdr->payload_len = ((uint64_t)buf[2] << 8) | (uint64_t)buf[3];
         offset           += 2;
     } else { /* len7 == 127 */
         if(len < 10)
@@ -64,10 +64,10 @@ int ws_frame_parse_header(const uint8_t *buf, size_t len, ws_frame_header *hdr) 
     if(hdr->mask) {
         if(len < offset + 4)
             return 0;
-        hdr->mask_key[0]  = buf[offset];
-        hdr->mask_key[1]  = buf[offset + 1];
-        hdr->mask_key[2]  = buf[offset + 2];
-        hdr->mask_key[3]  = buf[offset + 3];
+        hdr->mask_key[0] = buf[offset];
+        hdr->mask_key[1] = buf[offset + 1];
+        hdr->mask_key[2] = buf[offset + 2];
+        hdr->mask_key[3] = buf[offset + 3];
         offset           += 4;
     }
 

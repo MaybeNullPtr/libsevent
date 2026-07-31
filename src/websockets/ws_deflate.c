@@ -18,17 +18,28 @@
  * 未知值一律安全回退默认 6. */
 static int deflate_level_to_zlib(sevent_ws_deflate_level lvl) {
     switch(lvl) {
-    case SEVENT_WS_DEFLATE_LEVEL_NONE: return Z_NO_COMPRESSION;       /* 0 */
-    case SEVENT_WS_DEFLATE_LEVEL_1:    return 1;
-    case SEVENT_WS_DEFLATE_LEVEL_2:    return 2;
-    case SEVENT_WS_DEFLATE_LEVEL_3:    return 3;
-    case SEVENT_WS_DEFLATE_LEVEL_4:    return 4;
-    case SEVENT_WS_DEFLATE_LEVEL_5:    return 5;
-    case SEVENT_WS_DEFLATE_LEVEL_6:    return 6;
-    case SEVENT_WS_DEFLATE_LEVEL_7:    return 7;
-    case SEVENT_WS_DEFLATE_LEVEL_8:    return 8;
-    case SEVENT_WS_DEFLATE_LEVEL_9:    return 9;
-    default:                           return Z_DEFAULT_COMPRESSION;  /* DEFAULT(0)/未知 */
+    case SEVENT_WS_DEFLATE_LEVEL_NONE:
+        return Z_NO_COMPRESSION; /* 0 */
+    case SEVENT_WS_DEFLATE_LEVEL_1:
+        return 1;
+    case SEVENT_WS_DEFLATE_LEVEL_2:
+        return 2;
+    case SEVENT_WS_DEFLATE_LEVEL_3:
+        return 3;
+    case SEVENT_WS_DEFLATE_LEVEL_4:
+        return 4;
+    case SEVENT_WS_DEFLATE_LEVEL_5:
+        return 5;
+    case SEVENT_WS_DEFLATE_LEVEL_6:
+        return 6;
+    case SEVENT_WS_DEFLATE_LEVEL_7:
+        return 7;
+    case SEVENT_WS_DEFLATE_LEVEL_8:
+        return 8;
+    case SEVENT_WS_DEFLATE_LEVEL_9:
+        return 9;
+    default:
+        return Z_DEFAULT_COMPRESSION; /* DEFAULT(0)/未知 */
     }
 }
 
@@ -46,7 +57,7 @@ bool ws_deflate_create(ws_deflate **out, const ws_deflate_params *params) {
         sbw                            = params->server_max_window_bits ? params->server_max_window_bits : 15;
         df->client_no_context_takeover = params->client_no_context_takeover;
         df->server_no_context_takeover = params->server_no_context_takeover;
-        level = deflate_level_to_zlib(params->compression_level);
+        level                          = deflate_level_to_zlib(params->compression_level);
     }
     df->client_window_bits = (uint8_t)cbw;
     df->server_window_bits = (uint8_t)sbw;
@@ -204,12 +215,18 @@ bool ws_deflate_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8
 void ws_deflate_compress_reset(ws_deflate *df) { (void)df; }
 
 bool ws_deflate_compress_stream(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap) {
-    (void)df; (void)in; (void)in_len; (void)out; (void)out_cap;
+    (void)df;
+    (void)in;
+    (void)in_len;
+    (void)out;
+    (void)out_cap;
     return false;
 }
 
 bool ws_deflate_compress_end(ws_deflate *df, uint8_t *out, size_t *out_cap) {
-    (void)df; (void)out; (void)out_cap;
+    (void)df;
+    (void)out;
+    (void)out_cap;
     return false;
 }
 

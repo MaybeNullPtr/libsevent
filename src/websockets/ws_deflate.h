@@ -24,11 +24,11 @@ extern "C" {
 
 /* ===== 参数 ===== */
 typedef struct {
-    bool    server_no_context_takeover; /* 默认 false */
-    bool    client_no_context_takeover; /* 默认 false */
-    uint8_t server_max_window_bits;     /* 0=默认 15 */
-    uint8_t client_max_window_bits;     /* 0=默认 15 */
-    sevent_ws_deflate_level compression_level; /* 本端发送压缩等级, 默认 DEFAULT(6) */
+    bool                    server_no_context_takeover; /* 默认 false */
+    bool                    client_no_context_takeover; /* 默认 false */
+    uint8_t                 server_max_window_bits;     /* 0=默认 15 */
+    uint8_t                 client_max_window_bits;     /* 0=默认 15 */
+    sevent_ws_deflate_level compression_level;          /* 本端发送压缩等级, 默认 DEFAULT(6) */
 } ws_deflate_params;
 
 /* ===== 公开结构 =====
@@ -41,10 +41,10 @@ typedef struct ws_deflate {
     z_stream deflate;
     z_stream inflate;
 #endif
-    bool     server_no_context_takeover;
-    bool     client_no_context_takeover;
-    uint8_t  server_window_bits;
-    uint8_t  client_window_bits;
+    bool    server_no_context_takeover;
+    bool    client_no_context_takeover;
+    uint8_t server_window_bits;
+    uint8_t client_window_bits;
 } ws_deflate;
 
 /* ===== API ===== */

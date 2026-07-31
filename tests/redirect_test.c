@@ -75,13 +75,13 @@ static void on_redir_conn(void *data) {
     ssize_t n = read(fd, buf, sizeof(buf));
     if(n <= 0)
         goto close;
-    char resp[512];
-    int  rl = snprintf(resp,
+    char    resp[512];
+    int     rl = snprintf(resp,
                       sizeof(resp),
                       "HTTP/1.1 301 Moved Permanently\r\n"
-                       "Location: ws://127.0.0.1:%d/new-path\r\n"
-                       "Content-Length: 0\r\n"
-                       "\r\n",
+                          "Location: ws://127.0.0.1:%d/new-path\r\n"
+                          "Content-Length: 0\r\n"
+                          "\r\n",
                       PORT_ECHO);
     ssize_t rw = write(fd, resp, (size_t)rl);
     (void)rw;
@@ -182,14 +182,14 @@ static void on_echo_read(void *data) {
                 ws_sha1((const uint8_t *)concat, strlen(concat), digest);
                 char b64[32];
                 ws_base64_encode(digest, 20, b64, sizeof(b64));
-                char resp[512];
-                int  rl = snprintf(resp,
+                char    resp[512];
+                int     rl = snprintf(resp,
                                   sizeof(resp),
                                   "HTTP/1.1 101 Switching Protocols\r\n"
-                                   "Upgrade: websocket\r\n"
-                                   "Connection: Upgrade\r\n"
-                                   "Sec-WebSocket-Accept: %s\r\n"
-                                   "\r\n",
+                                      "Upgrade: websocket\r\n"
+                                      "Connection: Upgrade\r\n"
+                                      "Sec-WebSocket-Accept: %s\r\n"
+                                      "\r\n",
                                   b64);
                 ssize_t rw = write(g_echo_fd, resp, (size_t)rl);
                 (void)rw;

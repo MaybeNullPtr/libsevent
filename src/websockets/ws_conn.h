@@ -55,11 +55,11 @@ enum ws_msg_mode {
 };
 
 struct ws_msg_state {
-    enum ws_msg_mode mode;   /* 当前接收路径 */
-    uint8_t  opcode;         /* 消息级 opcode (首帧 TEXT/BINARY) */
-    bool     compressed;     /* 消息级压缩 (首帧 rsv1, CONT 帧沿用) */
-    uint64_t total;          /* 消息总字节, fin 回调传给 on_message */
-    bool     fin_sent;       /* fin 回调已发 → msg_end 保证"恰好一次" */
+    enum ws_msg_mode mode;       /* 当前接收路径 */
+    uint8_t          opcode;     /* 消息级 opcode (首帧 TEXT/BINARY) */
+    bool             compressed; /* 消息级压缩 (首帧 rsv1, CONT 帧沿用) */
+    uint64_t         total;      /* 消息总字节, fin 回调传给 on_message */
+    bool             fin_sent;   /* fin 回调已发 → msg_end 保证"恰好一次" */
 };
 
 /* 内部连接结构 */
@@ -91,7 +91,7 @@ struct sevent_ws_conn {
     /* ---- 压缩 (permessage-deflate) ---- */
     bool                    enable_deflate;
     sevent_ws_deflate_level deflate_level; /* 发送压缩等级 */
-    ws_deflate              *deflate;
+    ws_deflate             *deflate;
 
     /* ---- 用户回调 ---- */
     void                         *user_data;
@@ -127,7 +127,6 @@ struct sevent_ws_conn {
     ws_write_node *write_tail;
     int            write_count;
     uint32_t       mask_seed; /* gen_mask_key 用, 连接初始化时播种 */
-
 };
 
 #ifdef __cplusplus

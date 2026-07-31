@@ -16,17 +16,17 @@
 #include <glob.h>
 #include <algorithm>
 
-static sevent_context                       *g_ctx   = nullptr;
-static sevent_ws_conn                       *g_ws    = nullptr;
-static sevent_timer                         *g_case_timer = nullptr;
-static std::string                           g_host  = "127.0.0.1";
-static int                                   g_port  = 9001;
-static std::string                           g_agent = "libsevent";
-static int                                   g_total = 0, g_cur = 0;
-static int                                   g_msg_count = 0;
-static int                                   g_fin_count = 0;
-static bool                                  g_run = false, g_done = false;
-static std::vector<uint8_t>                  g_acc;
+static sevent_context      *g_ctx        = nullptr;
+static sevent_ws_conn      *g_ws         = nullptr;
+static sevent_timer        *g_case_timer = nullptr;
+static std::string          g_host       = "127.0.0.1";
+static int                  g_port       = 9001;
+static std::string          g_agent      = "libsevent";
+static int                  g_total = 0, g_cur = 0;
+static int                  g_msg_count = 0;
+static int                  g_fin_count = 0;
+static bool                 g_run = false, g_done = false;
+static std::vector<uint8_t> g_acc;
 
 static void connect_path(const std::string &path);
 static void do_count(void *data);
@@ -53,8 +53,8 @@ static void on_watchdog(void *) {
 
 static void on_open(void *) {
     g_acc.clear();
-    g_msg_count = 0;
-    g_fin_count = 0;
+    g_msg_count  = 0;
+    g_fin_count  = 0;
     g_last_count = 0;
     g_case_timer = sevent_timer_register(g_ctx, WATCHDOG_MS, on_watchdog, nullptr);
 }
@@ -155,16 +155,16 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
 static void connect_path(const std::string &path) {
     sevent_ws_config cfg;
     std::memset(&cfg, 0, sizeof(cfg));
-    cfg.host       = g_host.c_str();
-    cfg.port       = static_cast<uint16_t>(g_port);
+    cfg.host           = g_host.c_str();
+    cfg.port           = static_cast<uint16_t>(g_port);
     cfg.path           = path.c_str();
     cfg.enable_deflate = true;
     cfg.deflate_level  = SEVENT_WS_DEFLATE_LEVEL_NONE;
-    cfg.on_open    = on_open;
-    cfg.on_message = on_message;
-    cfg.on_close   = on_close;
-    cfg.on_error   = on_error;
-    g_ws           = sevent_ws_connect(g_ctx, &cfg);
+    cfg.on_open        = on_open;
+    cfg.on_message     = on_message;
+    cfg.on_close       = on_close;
+    cfg.on_error       = on_error;
+    g_ws               = sevent_ws_connect(g_ctx, &cfg);
 }
 
 static void do_count(void *data) {
