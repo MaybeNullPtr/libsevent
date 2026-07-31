@@ -142,10 +142,6 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
     if(g_total == 0 && !g_run) {
         char buf[32] = {0};
         std::memcpy(buf, m, l < 31 ? l : 31);
-        fprintf(stderr, "[DIAG] count msg l=%zu fin=%d hex=", l, fin ? 1 : 0);
-        for(size_t i = 0; i < (l < 16 ? l : 16); i++)
-            fprintf(stderr, "%02x", ((const uint8_t *)m)[i]);
-        fprintf(stderr, "\n");
         g_total = std::atoi(buf);
         std::printf("%s total cases: %d\n", now_str(), g_total);
         return;
@@ -160,7 +156,6 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
             if(l > 0)
                 g_acc.insert(g_acc.end(), static_cast<const uint8_t *>(m), static_cast<const uint8_t *>(m) + l);
 #ifndef TEST_NO_ECHO
-            fprintf(stderr, "%s [ECHO-DBG] fin=%d g_ws=%p\n", now_str(), g_fin_count, (void *)g_ws);
             auto t1 = std::chrono::steady_clock::now();
             int  r;
             if(bin)
