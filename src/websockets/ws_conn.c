@@ -888,6 +888,11 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
      *    - msg.compressed → 压缩分片整块喂流式解压，无上述边界问题，
      *      frag_len == recv_cap 即刷（否则下一片会溢出）。
      */
+    /* FIXME(utf8-frag): 分片 TEXT 消息的 UTF-8 校验不完整 — 下面 while 刷出的
+     * 完整块 (>= recv_cap) 直接回调不校验, 仅本函数 fin 分支的余量 (< recv_cap)
+     * 在此校验. 无效 UTF-8 落在完整块内时漏检 (RFC 6455 §5.6 要求整条消息合法).
+     * 修复方案: 增量 UTF-8 校验器 (跨块保留至多 3 字节尾态), 完整块也过校验.
+     * 待后续处理, 当前不动. */
     while(c->frag_len >= c->recv_cap && (fin || c->frag_len > c->recv_cap || c->msg.compressed)) {
         /* 这次刷完 frag_buf 就空了 → 如果 fin=1 这就是最后一块 */
         bool last_flag = fin && (c->frag_len == c->recv_cap);
@@ -929,6 +934,20 @@ static int frag_flush(struct sevent_ws_conn *c, bool fin) {
         msg_end(c, is_bin);
     }
     return 0;
+}
+
+/* 刷出 frag_buf 余量 (fin=0 回调), 用于 FRAG→STREAM 切换时保持数据顺序:
+ * 小帧积压在 frag_buf 中未发, 必须先于大 CONT 帧的流式数据发出. */
+static void frag_flush_tail(struct sevent_ws_conn *c) {
+    if(c->frag_len == 0)
+        return;
+    bool is_bin = (c->msg.opcode == WS_OPCODE_BINARY);
+    if(c->msg.compressed) {
+        decompress_stream_chunk(c, c->frag_buf, c->frag_len, is_bin);
+    } else if(c->on_message) {
+        c->on_message(c->user_data, c->frag_buf, c->frag_len, is_bin, false, 0);
+    }
+    c->frag_len = 0;
 }
 
 /* ====================================================================
@@ -1046,21 +1065,37 @@ static int process_frames(struct sevent_ws_conn *c) {
         if(avail < frame_size) {
             /* 单帧 > recv_cap 时进入流式读取, 边收边消费 (控制 recv_buf 内存) */
             if(frame_size > c->recv_cap) {
-                if(c->msg.mode != WS_MSG_STREAM) {
-                    /* [状态机] 首帧 TEXT/BINARY (fin=0, 大帧): → MSG_STREAM
-                     * CONT 帧: 保持当前消息状态 (大片中段帧流式消费) */
-                    if(hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY) {
-                        c->msg.opcode     = hdr.opcode; /* 消息级, CONT 帧不覆盖 */
-                        c->msg.total      = 0;
-                        c->msg.fin_sent   = false;
-                        if(hdr.rsv1)
-                            c->msg.compressed = true; /* 消息级压缩, CONT 帧沿用 */
-                        c->msg.mode       = WS_MSG_STREAM;
-                    } else if(hdr.opcode != WS_OPCODE_CONT) {
-                        return SEVENT_WS_ERR_PROTOCOL; /* 控制帧不流式 */
-                    } else if(c->msg.mode == WS_MSG_NONE) {
-                        return SEVENT_WS_ERR_PROTOCOL; /* CONT 无消息进行中 */
+                /* ---- 流式分支协议检查 (与正常路径 RSV 验证对齐) ---- */
+                if(hdr.rsv2 || hdr.rsv3)
+                    return SEVENT_WS_ERR_PROTOCOL;
+                if(hdr.rsv1 && !c->deflate)
+                    return SEVENT_WS_ERR_PROTOCOL;
+                if(c->msg.mode == WS_MSG_STREAM || c->msg.mode == WS_MSG_FRAG) {
+                    /* [状态机] 消息进行中 (FRAG/STREAM): 只允许 CONT 续帧
+                     * (RFC 6455 §5.4: 消息未完成时的新数据帧是协议违规) */
+                    if(hdr.opcode != WS_OPCODE_CONT)
+                        return SEVENT_WS_ERR_PROTOCOL;
+                    if(c->msg.mode == WS_MSG_FRAG) {
+                        /* FRAG → STREAM 切换: 先刷 frag 积压 (fin=0)
+                         * 保持数据顺序, 再转流式续帧 */
+                        frag_flush_tail(c);
+                        if(c->destroyed)
+                            return 0;
+                        c->msg.mode = WS_MSG_STREAM;
                     }
+                } else if(hdr.opcode == WS_OPCODE_TEXT || hdr.opcode == WS_OPCODE_BINARY) {
+                    /* [状态机] mode==NONE: 新消息首帧 (大帧) → MSG_STREAM.
+                     * opcode/compressed 消息级决定, CONT 帧沿用 */
+                    c->msg.opcode     = hdr.opcode;
+                    c->msg.total      = 0;
+                    c->msg.fin_sent   = false;
+                    if(hdr.rsv1)
+                        c->msg.compressed = true; /* 消息级压缩, CONT 帧沿用 */
+                    c->msg.mode       = WS_MSG_STREAM;
+                } else if(hdr.opcode != WS_OPCODE_CONT) {
+                    return SEVENT_WS_ERR_PROTOCOL; /* 控制帧不流式 */
+                } else {
+                    return SEVENT_WS_ERR_PROTOCOL; /* CONT 无消息进行中 */
                 }
                 c->stream_remaining = hdr.payload_len; /* 帧级剩余, 消息状态保持 */
                 c->stream_fin       = hdr.fin;
