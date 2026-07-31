@@ -1208,7 +1208,7 @@ static void on_data(void *data) {
             WS_UNLOCK(c);
             return;
         }
-        ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, "connection closed", 18);
+        ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, "connection closed", sizeof("connection closed") - 1);
         WS_UNLOCK(c);
         return;
     }
