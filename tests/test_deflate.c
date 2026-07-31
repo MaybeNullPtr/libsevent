@@ -373,6 +373,7 @@ static void test_params(void) {
  *  测试: 流式压缩
  * ==================================================================== */
 
+#ifdef SEVENT_WS_DEFLATE
 /* 将 (in,in_len) 分 nchunks 段, 每段依次压缩 → 合著 total_comp。返回 comp 长度。 */
 static size_t
 stream_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *comp, size_t comp_cap, int nchunks) {
@@ -399,6 +400,7 @@ stream_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *comp,
     total += end_sz;
     return total;
 }
+#endif /* SEVENT_WS_DEFLATE */
 
 static void test_stream_roundtrip(void) {
 #ifdef SEVENT_WS_DEFLATE

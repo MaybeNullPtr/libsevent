@@ -155,16 +155,18 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
 static void connect_path(const std::string &path) {
     sevent_ws_config cfg;
     std::memset(&cfg, 0, sizeof(cfg));
-    cfg.host           = g_host.c_str();
-    cfg.port           = static_cast<uint16_t>(g_port);
-    cfg.path           = path.c_str();
+    cfg.host = g_host.c_str();
+    cfg.port = static_cast<uint16_t>(g_port);
+    cfg.path = path.c_str();
+#ifdef SEVENT_WS_DEFLATE
     cfg.enable_deflate = true;
     cfg.deflate_level  = SEVENT_WS_DEFLATE_LEVEL_NONE;
-    cfg.on_open        = on_open;
-    cfg.on_message     = on_message;
-    cfg.on_close       = on_close;
-    cfg.on_error       = on_error;
-    g_ws               = sevent_ws_connect(g_ctx, &cfg);
+#endif
+    cfg.on_open    = on_open;
+    cfg.on_message = on_message;
+    cfg.on_close   = on_close;
+    cfg.on_error   = on_error;
+    g_ws           = sevent_ws_connect(g_ctx, &cfg);
 }
 
 static void do_count(void *data) {

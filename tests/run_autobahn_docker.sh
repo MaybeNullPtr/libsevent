@@ -20,6 +20,11 @@ CASES="${CASES:-[\"*\"]}"
 PORT=9001
 ECHO_PORT=9002
 TIMEOUT="${TIMEOUT:-500}"
+# SEVENT_WS_DEFLATE=OFF 时: 库与测试程序都不带 deflate 宏 (client 不 offer 压缩)
+DEFLATE_FLAG=""
+if [ "${SEVENT_WS_DEFLATE:-ON}" = "ON" ]; then
+    DEFLATE_FLAG="-DSEVENT_WS_DEFLATE"
+fi
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
@@ -34,11 +39,11 @@ log "============================================"
 log "[1] 编译..."
 cd "$PROJECT_DIR"
 "$PROJECT_DIR/build.sh" 2>&1 | tail -2
-gcc -std=c99 -Wall -Werror -DSEVENT_WS_DEFLATE -I include -I src -I src/websockets \
+gcc -std=c99 -Wall -Werror $DEFLATE_FLAG -I include -I src -I src/websockets \
     tests/autobahn_echo_server.c \
     -L build -lsevent_ws -lsevent -lz \
     -o "$BUILD_DIR/autobahn_echo_server" -Wl,-rpath,"$BUILD_DIR" 2>&1
-g++ -std=c++17 -Wall -Werror -DSEVENT_WS_DEFLATE -I include -I src -I src/websockets \
+g++ -std=c++17 -Wall -Werror $DEFLATE_FLAG -I include -I src -I src/websockets \
     tests/autobahn_client.cpp \
     -L build -lsevent_ws -lsevent -lz \
     -o "$BUILD_DIR/autobahn_client" -Wl,-rpath,"$BUILD_DIR" 2>&1
