@@ -13,17 +13,8 @@
 #include <string>
 #include <vector>
 #include <chrono>
-#include <ctime>
 #include <glob.h>
 #include <algorithm>
-#include <iostream>
-
-static const char *now_str() {
-    static char buf[16];
-    auto        tt = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&tt));
-    return buf;
-}
 
 static sevent_context                       *g_ctx   = nullptr;
 static sevent_ws_conn                       *g_ws    = nullptr;
@@ -35,7 +26,6 @@ static int                                   g_total = 0, g_cur = 0;
 static int                                   g_msg_count = 0;
 static int                                   g_fin_count = 0;
 static bool                                  g_run = false, g_done = false;
-static std::chrono::steady_clock::time_point g_case_start;
 static std::vector<uint8_t>                  g_acc;
 
 static void connect_path(const std::string &path);
@@ -51,7 +41,7 @@ static int g_last_count = 0;
 
 static void on_watchdog(void *) {
     if(g_msg_count == g_last_count) {
-        std::fprintf(stderr, "[watchdog] case %d: %dms 无数据 (cb=%d fin=%d)\n", g_cur, WATCHDOG_MS, g_msg_count, g_fin_count);
+        std::fprintf(stderr, "[watchdog] case %d: %dms 无数据\n", g_cur, WATCHDOG_MS);
         if(g_ws) {
             g_case_timer = nullptr; /* 定时器已触发, 清零防止 on_close 重复 unregister */
             sevent_ws_shutdown(g_ws, 1002, "watchdog timeout");
@@ -62,7 +52,6 @@ static void on_watchdog(void *) {
 }
 
 static void on_open(void *) {
-    g_case_start = std::chrono::steady_clock::now();
     g_acc.clear();
     g_msg_count = 0;
     g_fin_count = 0;
@@ -84,14 +73,10 @@ static void on_close(void *, uint16_t, const char *, size_t) {
         return;
     }
     if(g_run) {
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_case_start)
-                          .count();
-        std::printf("%s case %d/%d done (%ldms) cb=%d fin=%d\n", now_str(), g_cur, g_total, ms, g_msg_count, g_fin_count);
         g_cur++;
         if(g_cur <= g_total)
             sevent_post(g_ctx, do_case, nullptr);
         else {
-            std::printf("%s all %d cases done, generating report...\n", now_str(), g_total);
             g_run  = false;
             g_done = true;
             sevent_post(g_ctx, do_report, nullptr);
@@ -143,7 +128,6 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
         char buf[32] = {0};
         std::memcpy(buf, m, l < 31 ? l : 31);
         g_total = std::atoi(buf);
-        std::printf("%s total cases: %d\n", now_str(), g_total);
         return;
     }
     if(g_run) {
@@ -156,15 +140,12 @@ static void on_message(void *, const void *m, size_t l, bool bin, bool fin, uint
             if(l > 0)
                 g_acc.insert(g_acc.end(), static_cast<const uint8_t *>(m), static_cast<const uint8_t *>(m) + l);
 #ifndef TEST_NO_ECHO
-            auto t1 = std::chrono::steady_clock::now();
-            int  r;
+            int r;
             if(bin)
                 r = sevent_ws_send_binary(g_ws, g_acc.data(), g_acc.size());
             else
                 r = sevent_ws_send_text(g_ws, g_acc.data(), g_acc.size());
-            auto t2  = std::chrono::steady_clock::now();
-            auto snd = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-            std::printf("%s case %d echo %zu bytes r=%d send=%ldms\n", now_str(), g_cur, g_acc.size(), r, snd);
+            (void)r;
 #endif
             g_acc.clear();
         }
