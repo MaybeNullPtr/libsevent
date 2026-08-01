@@ -13,6 +13,9 @@
 #ifdef SEVENT_WS_DEFLATE
 #include <zlib.h>
 
+/* RFC 7692 §6: Z_SYNC_FLUSH 固定尾部 00 00 FF FF (4 字节), 发送剥掉/接收补回 */
+#define WS_DEFLATE_TAIL_LEN 4
+
 /* 转义层: sevent_ws_deflate_level → zlib deflate level.
  * 枚举值 1-9 与 zlib 字面对应, DEFAULT(0)=默认 6, NONE(10)=不压缩,
  * 未知值一律安全回退默认 6. */
@@ -94,7 +97,7 @@ void ws_deflate_destroy(ws_deflate *df) {
 size_t ws_deflate_compress_maxlen(ws_deflate *df, size_t in_len) {
     if(!df || in_len > UINT_MAX)
         return 0;
-    return deflateBound(&df->deflate, (uLong)in_len) + 4; /* +4 尾部 */
+    return deflateBound(&df->deflate, (uLong)in_len) + WS_DEFLATE_TAIL_LEN; /* 尾部 */
 }
 
 bool ws_deflate_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_cap) {
@@ -114,13 +117,13 @@ bool ws_deflate_compress(ws_deflate *df, const uint8_t *in, size_t in_len, uint8
     }
 
     size_t used = *out_cap - df->deflate.avail_out;
-    if(used < 4) {
+    if(used < WS_DEFLATE_TAIL_LEN) {
         deflateReset(&df->deflate);
         return false; /* 尾部都放不下, 不可能 */
     }
 
     /* RFC 7692 §6: 去掉尾部 0x00 0x00 0xff 0xff (Z_SYNC_FLUSH 固定输出) */
-    *out_cap = used - 4;
+    *out_cap = used - WS_DEFLATE_TAIL_LEN;
 
     if(df->client_no_context_takeover)
         deflateReset(&df->deflate);
@@ -173,11 +176,11 @@ bool ws_deflate_compress_end(ws_deflate *df, uint8_t *out, size_t *out_cap) {
     }
 
     size_t used = *out_cap - df->deflate.avail_out;
-    if(used < 4) {
+    if(used < WS_DEFLATE_TAIL_LEN) {
         deflateReset(&df->deflate);
         return false;
     }
-    *out_cap = used - 4;
+    *out_cap = used - WS_DEFLATE_TAIL_LEN;
 
     if(df->client_no_context_takeover)
         deflateReset(&df->deflate);

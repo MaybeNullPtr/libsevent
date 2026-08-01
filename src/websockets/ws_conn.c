@@ -710,7 +710,7 @@ static int ws_redirect_parse(struct sevent_ws_conn *c, const char *loc) {
             return -1;
         c->port = (uint16_t)port;
     } else {
-        c->port = 80;
+        c->port = WS_DEFAULT_PORT;
     }
     if(*p == '/') {
         strncpy(c->path, p, sizeof(c->path) - 1);
@@ -1339,7 +1339,7 @@ static void on_handshake_data(void *data) {
         return;
     }
     /* 3xx 重定向: 库内部处理, 不回调上层 */
-    if(resp.status_code >= 300 && resp.status_code < 400 && resp.location[0]) {
+    if(resp.status_code >= WS_HTTP_STATUS_REDIRECT_MIN && resp.status_code < WS_HTTP_STATUS_REDIRECT_MAX && resp.location[0]) {
         if(c->redirect_count >= SEVENT_WS_MAX_REDIRECTS) {
             WS_UNLOCK(c);
             ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
@@ -1366,7 +1366,7 @@ static void on_handshake_data(void *data) {
     size_t      blen    = c->recv_len - (size_t)ret;
 
     if(c->on_http_response) {
-        if(resp.status_code != 101 || ws_verify_accept(c->sec_ws_key, resp.accept) != 0) {
+        if(resp.status_code != WS_HTTP_STATUS_SWITCHING || ws_verify_accept(c->sec_ws_key, resp.accept) != 0) {
             /* 非 101 或 accept 不匹配 → 回调让上层处理 */
             c->on_http_response(c->user_data, resp.status_code, headers, hlen, body, blen);
             if(c->destroyed) {

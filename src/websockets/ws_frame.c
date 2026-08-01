@@ -8,6 +8,9 @@
 
 /* ---- Byte 0 中各字段的掩码/位移 ---- */
 #define FIN_BIT 0x80
+#define RSV1_BIT 0x40
+#define RSV2_BIT 0x20
+#define RSV3_BIT 0x10
 #define RSV_MASK 0x70 /* RSV1|RSV2|RSV3 */
 #define OPCODE_MASK 0x0F
 
@@ -28,9 +31,9 @@ int ws_frame_parse_header(const uint8_t *buf, size_t len, ws_frame_header *hdr) 
     uint8_t b0  = buf[0];
     /* RSV 位由上层协议 (如 permessage-deflate) 协商后检查, 此处仅记录 */
     hdr->fin    = (b0 & FIN_BIT) ? 1 : 0;
-    hdr->rsv1   = (b0 & 0x40) ? 1 : 0;
-    hdr->rsv2   = (b0 & 0x20) ? 1 : 0;
-    hdr->rsv3   = (b0 & 0x10) ? 1 : 0;
+    hdr->rsv1   = (b0 & RSV1_BIT) ? 1 : 0;
+    hdr->rsv2   = (b0 & RSV2_BIT) ? 1 : 0;
+    hdr->rsv3   = (b0 & RSV3_BIT) ? 1 : 0;
     hdr->opcode = b0 & OPCODE_MASK;
 
     /* ---- 解析 Byte 1 ---- */

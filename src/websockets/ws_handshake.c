@@ -233,7 +233,7 @@ int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *res
     }
 
     /* 101 响应必须带 Sec-WebSocket-Accept */
-    if(resp->status_code == 101 && resp->accept[0] == '\0')
+    if(resp->status_code == WS_HTTP_STATUS_SWITCHING && resp->accept[0] == '\0')
         return -1;
 
     return (int)header_len;

@@ -25,6 +25,14 @@ extern "C" {
 #define WS_KEY_BASE64_LEN 25    /* 16 字节随机数 → base64 (24 字符 + NUL) */
 #define WS_ACCEPT_BASE64_LEN 29 /* 20 字节 SHA1 → base64 (含 NUL) */
 
+/* HTTP 状态码 (握手/重定向判断用) */
+#define WS_HTTP_STATUS_SWITCHING 101 /* 101 Switching Protocols */
+#define WS_HTTP_STATUS_REDIRECT_MIN 300
+#define WS_HTTP_STATUS_REDIRECT_MAX 399
+
+/* ws:// 无端口时的默认端口 */
+#define WS_DEFAULT_PORT 80
+
 /* ===== 握手响应解析结果 ===== */
 typedef struct {
     int  status_code;                  /* 应 = 101 */
