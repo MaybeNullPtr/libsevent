@@ -1195,16 +1195,12 @@ static int process_frames(struct sevent_ws_conn *c) {
             ret = handle_pong(c, &hdr, payload);
             break;
         default:
-            if(payload != (uint8_t *)p + n)
-                sevent_i_free((void *)payload);
-            return SEVENT_WS_ERR_PROTOCOL;
+            return SEVENT_WS_ERR_PROTOCOL; /* 保留 opcode */
         }
         if(ret < 0)
             return -1;
         if(ret > 0)
             return ret;
-        if(payload != (uint8_t *)p + n)
-            sevent_i_free((void *)payload);
         c->recv_pos += frame_size;
     }
     return 0;
