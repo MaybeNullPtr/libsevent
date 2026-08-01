@@ -1363,6 +1363,14 @@ static void on_handshake_data(void *data) {
             p.server_no_context_takeover = true;
         if(strstr(resp.extensions, "client_no_context_takeover"))
             p.client_no_context_takeover = true;
+        /* client_max_window_bits=N: 服务器限定本端发送窗口 (RFC 7692 §7.1.2.2,
+         * MUST NOT 用更大窗口). 不遵守则 32KB 窗口压缩流超出服务器解压能力. */
+        const char *cw = strstr(resp.extensions, "client_max_window_bits=");
+        if(cw) {
+            int v = atoi(cw + strlen("client_max_window_bits="));
+            if(v >= 8 && v <= 15) /* RFC 7692 §7.1.2: 合法范围 8-15 */
+                p.client_max_window_bits = (uint8_t)v;
+        }
         p.compression_level = c->deflate_level;
         ws_deflate_create(&c->deflate, &p);
     }
