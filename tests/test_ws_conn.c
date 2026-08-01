@@ -33,6 +33,20 @@ static size_t   g_frag_len;   /* g_msg 累计长度(受 256 限制) */
 static size_t   g_frag_total; /* 实际累计字节数(无限制) */
 static uint64_t g_last_total; /* 最近一次 on_message 的 total 参数 */
 
+
+/* 跑完 pending post: destroy 统一 post 后, 延迟 free 由 run_posts 执行 —
+ * sevent_destroy 丢弃未执行的 post (不执行回调), 销毁 ev 前必须推进循环 */
+static void flush_posts(sevent_context *ctx) {
+    for(int i = 0; i < 1000; i++) {
+        int post_count = -1;
+        sevent_get_counts(ctx, NULL, NULL, &post_count);
+        if(post_count <= 0)
+            return;
+        sevent_wakeup(ctx);
+        sevent_run_once(ctx);
+    }
+}
+
 static void ev_open(void *d) {
     (void)d;
     g_ev = 1;
@@ -295,6 +309,7 @@ static int t_lifecycle(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -331,6 +346,7 @@ static int t_client_send_text(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -369,6 +385,7 @@ static int t_client_send_binary(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -411,6 +428,7 @@ static int t_auto_pong(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -458,6 +476,7 @@ static int t_on_pong(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -500,6 +519,7 @@ static int t_large_msg(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -536,6 +556,7 @@ static int t_client_ping(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -590,6 +611,7 @@ static int t_client_close(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -652,6 +674,7 @@ static int t_fragmentation(void) {
 
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -712,6 +735,7 @@ static int t_frag_large(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -770,6 +794,7 @@ static int t_frag_many(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -832,6 +857,7 @@ static int t_frag_interleave(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -880,6 +906,7 @@ static int t_frag_proto_error(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -960,6 +987,7 @@ static int t_sticky_packet(void) {
 
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1002,6 +1030,7 @@ static int t_http_fail(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1046,6 +1075,7 @@ static int t_http_fail_with_body(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1102,6 +1132,7 @@ static int t_sticky_multi_frame(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1162,6 +1193,7 @@ static int t_sticky_stream_tail(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1217,6 +1249,7 @@ static int t_stream_total(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1281,6 +1314,7 @@ static int t_split_frame(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1349,6 +1383,7 @@ static int t_sticky_partial(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1418,6 +1453,7 @@ static int t_frag_split_read(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1449,6 +1485,7 @@ static int t_state_checks(void) {
     close(fds[0]);
     c->fd = -1;
     sevent_ws_destroy(c);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1521,6 +1558,7 @@ static int t_cross_thread_send(void) {
 
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1590,6 +1628,7 @@ static int t_cross_thread_close(void) {
 
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1638,6 +1677,9 @@ static int t_cross_thread_destroy(void) {
     pthread_join(thr, NULL);
     if(a.result != 0)
         return 1;
+    /* join 保证 destroy 已完成 (post 已入队) — 确定性等 cleanup 执行
+     * (50 轮 loop 可能在线程 destroy 之前跑完, 不保证 post 已入队) */
+    flush_posts(ctx);
 
     /* destroy 完成后不得再访问 ws */
     close(sfd);
@@ -1680,8 +1722,7 @@ static int t_double_destroy(void) {
     sevent_ws_close(ws);
     sevent_ws_close(ws);
     sevent_ws_destroy(ws);
-    for(int i = 0; i < 10; i++)
-        sevent_run_once(ctx); /* 让 post 的 cleanup (free) 执行 */
+    flush_posts(ctx); /* 让 post 的 cleanup (free) 执行 */
 
     close(sfd);
     sevent_destroy(ctx);
@@ -1743,6 +1784,7 @@ static int t_recv_invalid_control_payload(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1800,6 +1842,7 @@ static int t_recv_invalid_close_code(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1842,6 +1885,7 @@ static int t_invalid_ping_payload(void) {
 
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1894,6 +1938,7 @@ static int t_invalid_close_code(void) {
 
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1923,6 +1968,7 @@ static int t_connect_timeout(void) {
     if(g_ev != 3)
         return 1;
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1955,6 +2001,7 @@ static int t_connect_timeout_not_reached(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -1987,6 +2034,7 @@ static int t_connect_timeout_disabled(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2091,6 +2139,7 @@ static int t_deflate_create(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2131,6 +2180,7 @@ static int t_deflate_client_win_ok(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2170,6 +2220,7 @@ static int t_deflate_client_win_bad(void) {
             return 1;
         close(sfd);
         sevent_ws_destroy(ws);
+        flush_posts(ctx);
         sevent_destroy(ctx);
     }
     return 0;
@@ -2215,6 +2266,7 @@ static int t_nct_config(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2253,6 +2305,7 @@ static int t_win_client_offer(void) {
             return 1; /* 自我承诺/响应均应为 9 */
         close(sfd);
         sevent_ws_destroy(ws);
+        flush_posts(ctx);
         sevent_destroy(ctx);
     }
     return 0;
@@ -2290,6 +2343,7 @@ static int t_win_client_exceed(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2329,6 +2383,7 @@ static int t_win_server_offer(void) {
             return 1;
         close(sfd);
         sevent_ws_destroy(ws);
+        flush_posts(ctx);
         sevent_destroy(ctx);
     }
     return 0;
@@ -2365,6 +2420,7 @@ static int t_win_server_active(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2401,6 +2457,7 @@ static int t_win_server_exceed(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2440,6 +2497,7 @@ static int t_win_server_bad(void) {
             return 1;
         close(sfd);
         sevent_ws_destroy(ws);
+        flush_posts(ctx);
         sevent_destroy(ctx);
     }
     return 0;
@@ -2478,6 +2536,7 @@ static int t_deflate_unoffered_ext(void) {
         return 1; /* 协商失败不应创建 deflate */
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2516,6 +2575,7 @@ static int t_deflate_unoffered_unknown(void) {
             return 1;
         close(sfd);
         sevent_ws_destroy(ws);
+        flush_posts(ctx);
         sevent_destroy(ctx);
     }
     return 0;
@@ -2571,6 +2631,7 @@ static int t_deflate_recv(void) {
     }
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2618,6 +2679,7 @@ static int t_deflate_recv_large(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2674,6 +2736,7 @@ static int t_deflate_send(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2725,6 +2788,7 @@ static int t_deflate_send_bin(void) {
         return 1; /* 不应是明文 */
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2884,6 +2948,7 @@ static int t_deflate_send_large(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -2957,6 +3022,7 @@ static int t_deflate_frag(void) {
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return 0;
 }
@@ -3006,6 +3072,7 @@ static int t_deflate_rsv_reject(void) {
     int ok = (g_ev == 3);
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return ok ? 0 : 1;
 }
@@ -3102,6 +3169,7 @@ static int t_close_in_on_message(void) {
     ok     = ok && (sevent_ws_send_text(ws, "x", 1) != 0);
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return ok ? 0 : 1;
 }
@@ -3177,6 +3245,7 @@ static int t_pipelined_proto_error(void) {
     int ok = (g_ev == 3 && g_pipe_err != 0);
     close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return ok ? 0 : 1;
 }
@@ -3252,6 +3321,7 @@ static int t_eof_stream_trailing_close(void) {
     if(sfd >= 0)
         close(sfd);
     sevent_ws_destroy(ws);
+    flush_posts(ctx);
     sevent_destroy(ctx);
     return ok ? 0 : 1;
 }

@@ -1796,13 +1796,13 @@ void sevent_ws_destroy(sevent_ws_conn *c) {
     /* 注意: destroy 不允许幂等 — 调用后对象作废, 再使用 (含再次 destroy)
      * 是编程错误, 未定义行为 (对象可能已释放). 不做任何防护. */
     sevent_ws_close(c); /* 逻辑关闭: destroyed/CLOSED + 摘 IO/定时器, 不释放内存 */
-    /* 将 c 的 free 推迟到 run_posts 阶段, 保证调用栈安全展开 */
-    if(c->ev && sevent_is_running(c->ev)) {
-        if(sevent_post(c->ev, ws_cleanup_conn, c) != SEVENT_SUCCESS)
-            ws_cleanup_conn(c); /* OOM, 立即释放 */
-    } else {
-        ws_cleanup_conn(c);
-    }
+    /* 统一 post 延迟释放 (不判断 is_running, 与 tcp_conn 同): 回调栈内
+     * destroy 后回调代码仍需访问对象 (解锁等), 立即释放会造成 UAF —
+     * run_once 手动驱动模式同样延迟. 前提: 事件循环继续推进 (run_posts
+     * 执行 cleanup); sevent_destroy 丢弃未执行的 post (不执行回调),
+     * 调用方须在销毁 ev 前推进循环, 否则对象泄漏. */
+    if(sevent_post(c->ev, ws_cleanup_conn, c) != SEVENT_SUCCESS)
+        ws_cleanup_conn(c); /* OOM: 立即释放 (极端情况) */
 }
 
 int sevent_ws_get_state(const sevent_ws_conn *c) {
