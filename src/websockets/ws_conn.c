@@ -160,16 +160,18 @@ static void gen_mask_key(struct sevent_ws_conn *c, uint8_t key[4]) {
 /* RFC 6455 §7.4: 校验 Close 码是否合法 */
 static bool ws_close_code_valid(uint16_t code) {
     if(code < SEVENT_WS_CLOSE_NORMAL)
-        return 0; /* 0-999 保留 */
+        return false; /* 0-999 保留 */
     if(code == 1004 || code == 1005 || code == 1006)
-        return 0; /* 1004-1006 保留/仅内部 */
-    if(code >= 1012 && code <= 1015)
-        return 0; /* 1012-1015 保留 (含 TLS 握手) */
+        return false; /* 1004-1006 保留/仅内部 */
+    if(code == 1015)
+        return false; /* 1015 保留, MUST NOT 发送 (IANA) */
+    /* 1012-1014 (Service Restart / Try Again Later / Bad Gateway):
+     * RFC 6455 发布后 IANA 已注册, 应正常接受 (发送/接收两侧) */
     if(code >= 1016 && code <= 2999)
-        return 0; /* 1016-2999 未分配 */
+        return false; /* 1016-2999 未分配 */
     if(code > 4999)
-        return 0; /* 5000+ 保留/非法 */
-    return 1;
+        return false; /* 5000+ 保留/非法 */
+    return true;
 }
 
 static void ws_close_socket(struct sevent_ws_conn *c) {
