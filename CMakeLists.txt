@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(libsevent VERSION 1.4.0 LANGUAGES C)
+project(libsevent VERSION 1.4.2 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)

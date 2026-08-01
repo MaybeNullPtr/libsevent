@@ -11,8 +11,9 @@
  *    5. 使用 sevent_ws_shutdown 发起关闭或 sevent_ws_close 立即销毁
  *
  *  线程安全:
- *    编译时 SEVENT_WS_THREAD_SAFE=ON 时, send_text/binary/ping/close/get_state
- *    跨线程安全 (各连接一把递归锁). connect/destroy 仍为 [loop 线程].
+ *    编译时 SEVENT_WS_THREAD_SAFE=ON 时, send_text/binary/ping/shutdown/
+ *    close/get_state/destroy 跨线程安全 (各连接一把递归锁). connect 仍为
+ *    [loop 线程]. destroy 完成后不得再对 c 调用任何 API.
  *    默认 OFF 时与 sevent 一致 — 所有调用需在 loop 线程或启动前.
  *  ========================================================================= */
 
@@ -165,25 +166,23 @@ int sevent_ws_shutdown(sevent_ws_conn *c, uint16_t code, const char *reason);
 
 /*
  * 立即关闭连接 (不发送 Close 帧).
- * 行为: 置 destroyed/CLOSED 标记 → 关闭 socket + 摘除 IO + 清写队列
- *       + 注销定时器; 不释放内存 (对象仍可安全访问).
- * 回调: 回调内可安全调用 (on_message / on_pong / on_open / on_error /
+ * 注意: 不释放内存 — 调用后对象仍可安全访问 (get_state 等,
+ *       用于在回调内提前终止连接), 最终须调用 sevent_ws_destroy 释放.
+ * 回调内可安全调用 (on_message / on_pong / on_open / on_error /
  *       on_http_response; 事件已摘除, 不会重入).
- * 线程: [loop 线程].
- *
- * 调用后连接仍可安全访问 (用于在回调内提前终止连接),
- * 最终需调用 sevent_ws_destroy 释放内存.
+ * 重复调用安全 (幂等).
+ * 线程: SEVENT_WS_THREAD_SAFE=ON 时跨线程安全, OFF 时 [loop 线程].
  */
 void sevent_ws_close(sevent_ws_conn *c);
 
 /*
  * 释放连接内存.
- * 行为: 先 sevent_ws_close, 再销毁压缩对象; 连接本体的 free 推迟到
- *       事件循环 run_posts 阶段 (sevent_post), 保证回调栈安全展开 —
- *       因此回调内 (on_open / on_message / on_error / on_close) 均可调用.
- * 注:   loop 未运行时立即释放; 回调内调用时, CLOSE 帧处理等后续代码
- *       在 free 之前完成 (post 延迟), 连接状态仍可安全访问.
- * 线程: [loop 线程].
+ * 回调内可安全调用 (on_open / on_message / on_error / on_close).
+ * 线程: SEVENT_WS_THREAD_SAFE=ON 时跨线程安全, OFF 时 [loop 线程].
+ * 约束: 调用后对象作废 — 不得再对 c 调用任何 API (含再次 destroy),
+ *       违反为未定义行为 (对象可能已释放). destroy 不允许幂等.
+ * 注:   loop 未运行时立即释放; 回调内调用时, 后续代码在 free 之前
+ *       完成 (延迟释放), 连接状态仍可安全访问.
  */
 void sevent_ws_destroy(sevent_ws_conn *c);
 

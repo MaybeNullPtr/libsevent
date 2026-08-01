@@ -1752,7 +1752,12 @@ int sevent_ws_shutdown(sevent_ws_conn *c, uint16_t code, const char *reason) {
 void sevent_ws_close(sevent_ws_conn *c) {
     if(!c)
         return;
-    /* destroy 无锁 — loop 线程专用 */
+    /* 锁: close 与 loop 线程回调 (on_data/on_write_ready 的 ws_flush) 可能
+     * 并发, 无锁时状态/队列操作会与 flush 交错.
+     * 递归锁: 回调内 (on_open/on_close/on_error) 调用也安全.
+     * close 不释放任何内存 (deflate/写队列/缓冲区统一由 ws_cleanup_conn
+     * 在 run_posts 阶段释放) — 与文档 "不释放内存, 对象仍可安全访问" 一致. */
+    WS_LOCK(c);
     c->destroyed = 1;
     c->state     = WS_STATE_CLOSED;
     ws_close_socket(c);
@@ -1764,12 +1769,19 @@ void sevent_ws_close(sevent_ws_conn *c) {
         sevent_timer_unregister(c->ev, c->ping_timer);
         c->ping_timer = NULL;
     }
-    ws_queue_clear(c);
+    WS_UNLOCK(c);
 }
 
-/* deferred free: 只释放连接内存 (recv_buf / frag_buf / c 本身) */
+/* deferred free: 连接全部内存的单一释放出口.
+ * 在 run_posts 阶段 (loop 线程) 执行 — 此时回调栈已展开, IO/定时器已摘除,
+ * 且 destroy 保证恰好一次 → 不存在任何使用中的内存被释放 (UAF). */
 static void ws_cleanup_conn(void *data) {
     struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
+    if(c->deflate) {
+        ws_deflate_destroy(c->deflate);
+        c->deflate = NULL;
+    }
+    ws_queue_clear(c);
 #ifdef SEVENT_WS_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif
@@ -1781,11 +1793,10 @@ static void ws_cleanup_conn(void *data) {
 void sevent_ws_destroy(sevent_ws_conn *c) {
     if(!c)
         return;
-    sevent_ws_close(c);
-    /* deflate 有独立的内部内存, 立即销毁, 不参与 deferred free */
-    ws_deflate_destroy(c->deflate);
-    c->deflate = NULL;
-    /* 将 c 本身的 free 推迟到 run_posts 阶段, 保证调用栈安全展开 */
+    /* 注意: destroy 不允许幂等 — 调用后对象作废, 再使用 (含再次 destroy)
+     * 是编程错误, 未定义行为 (对象可能已释放). 不做任何防护. */
+    sevent_ws_close(c); /* 逻辑关闭: destroyed/CLOSED + 摘 IO/定时器, 不释放内存 */
+    /* 将 c 的 free 推迟到 run_posts 阶段, 保证调用栈安全展开 */
     if(c->ev && sevent_is_running(c->ev)) {
         if(sevent_post(c->ev, ws_cleanup_conn, c) != SEVENT_SUCCESS)
             ws_cleanup_conn(c); /* OOM, 立即释放 */

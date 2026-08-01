@@ -1593,10 +1593,100 @@ static int t_cross_thread_close(void) {
     sevent_destroy(ctx);
     return 0;
 }
+
+static void *thr_destroy(void *a) {
+    struct thr_arg *ta = (struct thr_arg *)a;
+    sevent_ws_destroy(ta->ws);
+    ta->result = 0;
+    return NULL;
+}
+
+/* 跨线程 destroy: 工作线程销毁 (无并发 API, 用户协调契约),
+ * loop 运行中 → cleanup 经 post 延迟到 run_posts 执行 */
+static int t_cross_thread_destroy(void) {
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host    = "127.0.0.1";
+    cfg.path    = "/";
+    cfg.on_open = ev_open;
+    g_ev        = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+
+    struct thr_arg a = {ws, -1};
+    pthread_t      thr;
+    if(pthread_create(&thr, NULL, thr_destroy, &a) != 0)
+        return 1;
+    /* loop 继续跑, 让 post 的 cleanup (free) 在 run_posts 执行 */
+    for(int i = 0; i < 50; i++)
+        sevent_run_once(ctx);
+    pthread_join(thr, NULL);
+    if(a.result != 0)
+        return 1;
+
+    /* destroy 完成后不得再访问 ws */
+    close(sfd);
+    sevent_destroy(ctx);
+    return 0;
+}
 #else
 static int t_cross_thread_send(void) { return 0; }
 static int t_cross_thread_close(void) { return 0; }
+static int t_cross_thread_destroy(void) { return 0; }
 #endif
+
+/* close 后 destroy: 合法流程 — close 幂等 (可重复), destroy 正常释放 */
+static int t_double_destroy(void) {
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host    = "127.0.0.1";
+    cfg.path    = "/";
+    cfg.on_open = ev_open;
+    g_ev        = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+
+    /* close 幂等 (可重复) + close 后 destroy 合法 */
+    sevent_ws_close(ws);
+    sevent_ws_close(ws);
+    sevent_ws_destroy(ws);
+    for(int i = 0; i < 10; i++)
+        sevent_run_once(ctx); /* 让 post 的 cleanup (free) 执行 */
+
+    close(sfd);
+    sevent_destroy(ctx);
+    return 0;
+}
 
 /* ==================== 协议校验测试 ==================== */
 
@@ -3202,6 +3292,8 @@ int main(void) {
                  {"state_checks", t_state_checks},
                  {"cross_thread_send", t_cross_thread_send},
                  {"cross_thread_close", t_cross_thread_close},
+                 {"cross_thread_destroy", t_cross_thread_destroy},
+                 {"double_destroy", t_double_destroy},
                  {"close_in_on_message", t_close_in_on_message},
                  {"pipelined_proto_error", t_pipelined_proto_error},
                  {"eof_stream_trailing_close", t_eof_stream_trailing_close},
