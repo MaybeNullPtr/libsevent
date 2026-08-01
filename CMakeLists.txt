@@ -84,6 +84,12 @@ target_link_libraries(sevent PUBLIC Threads::Threads)
 
 # ---------- WebSocket 库 ----------
 
+# 传输层 (通用, 不依赖 ws 协议; 公开 API 见 include/sevent_stream_conn.h)
+set(TRANSPORT_SOURCES
+    src/stream_conn.c
+    src/tcp_conn.c
+)
+
 set(WEBSOCKET_SOURCES
     src/websockets/ws_sha1.c
     src/websockets/ws_base64.c
@@ -93,7 +99,7 @@ set(WEBSOCKET_SOURCES
     src/websockets/ws_deflate.c
 )
 
-add_library(sevent_ws STATIC ${WEBSOCKET_SOURCES})
+add_library(sevent_ws STATIC ${WEBSOCKET_SOURCES} ${TRANSPORT_SOURCES})
 target_include_directories(sevent_ws PUBLIC
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -113,6 +119,15 @@ if(SEVENT_WS_DEFLATE)
     target_compile_definitions(sevent_ws PRIVATE SEVENT_WS_DEFLATE)
     target_include_directories(sevent_ws PRIVATE ${ZLIB_INCLUDE_DIRS})
     target_link_libraries(sevent_ws PRIVATE ${ZLIB_LIBRARIES})
+endif()
+
+# TLS 传输 (stream_conn/tls_conn), 需要 OpenSSL
+if(SEVENT_WS_TLS)
+    find_package(OpenSSL REQUIRED)
+    target_compile_definitions(sevent_ws PRIVATE SEVENT_WS_TLS)
+    target_include_directories(sevent_ws PRIVATE ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(sevent_ws PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    target_sources(sevent_ws PRIVATE src/tls_conn.c)
 endif()
 
 # ---------- tests ----------
@@ -160,6 +175,7 @@ add_test(NAME ws_conn_tests COMMAND test-ws-conn)
 add_test(NAME frag_stream_tests COMMAND test-frag-stream)
 add_test(NAME redirect_tests COMMAND test-redirect)
 add_test(NAME deflate_tests COMMAND test-deflate)
+add_test(NAME stream_conn_tests COMMAND test-stream-conn)
 
 # ---------- examples ----------
 
@@ -207,6 +223,16 @@ add_executable(test-redirect
 target_include_directories(test-redirect PRIVATE include)
 target_include_directories(test-redirect PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test-redirect PRIVATE sevent_ws)
+
+add_executable(test-stream-conn
+    tests/test_stream_conn.c
+)
+target_include_directories(test-stream-conn PRIVATE include)
+target_include_directories(test-stream-conn PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test-stream-conn PRIVATE sevent_ws)
+if(SEVENT_THREAD_SAFE)
+    target_compile_definitions(test-stream-conn PRIVATE SEVENT_THREAD_SAFE)
+endif()
 
 add_executable(test-deflate
     tests/test_deflate.c
@@ -345,3 +371,6 @@ install(TARGETS sevent DESTINATION lib)
 install(TARGETS sevent_ws DESTINATION lib)
 install(FILES include/sevent.h DESTINATION include)
 install(FILES include/sevent_ws.h DESTINATION include)
+install(FILES include/sevent_stream_conn.h DESTINATION include)
+install(FILES include/sevent_tcp_conn.h DESTINATION include)
+install(FILES include/sevent_tls_conn.h DESTINATION include)

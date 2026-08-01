@@ -49,8 +49,12 @@ extern "C" {
 /* ==================== 错误码 ==================== */
 
 #define SEVENT_SUCCESS 0
-#define SEVENT_ERR_INVAL -1 /* 参数无效 */
-#define SEVENT_ERR_NOMEM -2 /* 内存不足 */
+#define SEVENT_ERR_INVAL -1     /* 参数无效 */
+#define SEVENT_ERR_NOMEM -2     /* 内存不足 */
+#define SEVENT_ERR_CONNECT -3   /* 连接建立失败 (TCP/TLS 传输层) */
+#define SEVENT_ERR_HANDSHAKE -4 /* TLS 握手失败 (含证书验证失败) */
+#define SEVENT_ERR_READ -5      /* 读致命错误 */
+#define SEVENT_ERR_WRITE -6     /* 写致命错误 */
 
 /* ==================== 内存分配器 ==================== */
 
