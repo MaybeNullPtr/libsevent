@@ -590,13 +590,13 @@ void sevent_tcp_conn_destroy(sevent_tcp_conn *c) {
      * 是编程错误, 未定义行为. 不做任何防护. */
     t->destroyed       = true; /* 回调重入守卫: 回调栈内 destroy 后不再访问 */
     sevent_tcp_conn_close(c);  /* 逻辑关闭, 不释放内存 */
-    /* 将 free 推迟到 run_posts 阶段, 保证调用栈安全展开 */
-    if(t->ev && sevent_is_running(t->ev)) {
-        if(sevent_post(t->ev, tcp_cleanup, t) != SEVENT_SUCCESS)
-            tcp_cleanup(t); /* OOM: 立即释放 */
-    } else {
-        tcp_cleanup(t);
-    }
+    /* 统一 post 延迟释放 (不判断 is_running): 回调栈内 destroy 后, 库的回调
+     * 代码仍要访问对象 (解锁等), 立即释放会造成 UAF — run_once 手动驱动
+     * 模式同样延迟. 前提: 事件循环继续推进 (run_posts 执行 cleanup);
+     * sevent_destroy 丢弃未执行的 post (不执行回调), 调用方须在销毁 ev
+     * 前推进循环, 否则对象泄漏. */
+    if(sevent_post(t->ev, tcp_cleanup, t) != SEVENT_SUCCESS)
+        tcp_cleanup(t); /* OOM: 立即释放 (极端情况, 与 ws 层同) */
 }
 
 /* ===== stream_conn 适配层 (ws 模块经 sevent_stream_* 使用) ===== */

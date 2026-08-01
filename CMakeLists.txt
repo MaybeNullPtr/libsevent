@@ -88,6 +88,7 @@ target_link_libraries(sevent PUBLIC Threads::Threads)
 set(TRANSPORT_SOURCES
     src/stream_conn.c
     src/tcp_conn.c
+    src/tcp_acceptor.c
 )
 
 set(WEBSOCKET_SOURCES
@@ -373,4 +374,5 @@ install(FILES include/sevent.h DESTINATION include)
 install(FILES include/sevent_ws.h DESTINATION include)
 install(FILES include/sevent_stream_conn.h DESTINATION include)
 install(FILES include/sevent_tcp_conn.h DESTINATION include)
+install(FILES include/sevent_tcp_acceptor.h DESTINATION include)
 install(FILES include/sevent_tls_conn.h DESTINATION include)

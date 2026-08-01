@@ -33,6 +33,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "sevent.h"
+#include "sevent_stream_conn.h" /* 回调类型 + sevent_stream_conn_init */
 
 #ifdef __cplusplus
 extern "C" {
@@ -118,13 +119,14 @@ void sevent_tcp_conn_close(sevent_tcp_conn *c);
 
 /*
  * 释放对象内存.
- * 行为:     先 close, 再释放; 对象内存的 free 推迟到事件循环 run_posts
+ * 行为:     先 close, 再释放; 对象内存的 free 一律推迟到事件循环 run_posts
  *           阶段 (sevent_post), 保证回调栈安全展开 — 回调内可安全调用
- *           (与 sevent_ws_destroy 同模式).
+ *           (与 sevent_ws_destroy 同模式; 不区分 sevent_run/run_once 模式).
  * 约束:     调用后对象作废 — 不得再对 c 调用任何 API (含再次 destroy),
  *           违反为未定义行为 (对象可能已释放). destroy 不允许幂等.
- * 注:       loop 未运行时立即释放; 回调内调用时, 后续代码在 free 之前
- *           完成 (延迟释放), 连接状态仍可安全访问.
+ * 注:       free 由事件循环执行 — destroy 后须推进循环 (run_once/sevent_run)
+ *           让 run_posts 执行 cleanup; sevent_destroy 会丢弃未执行的 post
+ *           (不执行回调), 销毁 ev 前未推进循环则对象泄漏.
  * 线程:     SEVENT_THREAD_SAFE=ON 时跨线程安全, OFF 时 [loop 线程].
  */
 void sevent_tcp_conn_destroy(sevent_tcp_conn *c);

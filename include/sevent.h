@@ -55,6 +55,7 @@ extern "C" {
 #define SEVENT_ERR_HANDSHAKE -4 /* TLS 握手失败 (含证书验证失败) */
 #define SEVENT_ERR_READ -5      /* 读致命错误 */
 #define SEVENT_ERR_WRITE -6     /* 写致命错误 */
+#define SEVENT_ERR_LISTEN -7    /* 监听失败 (bind/listen, 含端口占用) */
 
 /* ==================== 内存分配器 ==================== */
 
