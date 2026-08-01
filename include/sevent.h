@@ -94,6 +94,7 @@ sevent_context *sevent_create(void);
 /*
  * 销毁上下文, 释放所有内部资源.
  * 前置条件: loop 已停止 (sevent_run 已返回), 无其他线程正在操作此 ctx.
+ *           禁止在 IO/Timer/post 回调内调用 — 回调内停止请用 sevent_stop.
  *           所有活跃的 IO/Timer 句柄在 destroy 后不可再用于 unregister.
  *           如果外层仍有句柄指针, 需在 destroy 前调 unregister 释放.
  * 后置条件: ctx 指针及所有 IO/Timer 句柄不可再用于任何 API.
