@@ -1365,11 +1365,22 @@ static void on_handshake_data(void *data) {
             p.client_no_context_takeover = true;
         /* client_max_window_bits=N: 服务器限定本端发送窗口 (RFC 7692 §7.1.2.2,
          * MUST NOT 用更大窗口). 不遵守则 32KB 窗口压缩流超出服务器解压能力. */
-        const char *cw = strstr(resp.extensions, "client_max_window_bits=");
+        const char *cw = strstr(resp.extensions, "client_max_window_bits");
         if(cw) {
-            int v = atoi(cw + strlen("client_max_window_bits="));
-            if(v >= 8 && v <= 15) /* RFC 7692 §7.1.2: 合法范围 8-15 */
+            const char *after = cw + strlen("client_max_window_bits");
+            if(*after == '=') {
+                /* 带值必须为 8-15 数字; 范围外/非数字 = 服务器违规 → Fail
+                 * the Connection (RFC 7692 §7.1.2, atoi 溢出为 UB 用 strtol) */
+                char *end = NULL;
+                long  v   = strtol(after + 1, &end, 10);
+                if(end == after + 1 || v < 8 || v > 15) {
+                    WS_UNLOCK(c);
+                    ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
+                    return;
+                }
                 p.client_max_window_bits = (uint8_t)v;
+            }
+            /* 无值 (';'/','/结尾): 合法, 不限制 (保持 15) */
         }
         p.compression_level = c->deflate_level;
         ws_deflate_create(&c->deflate, &p);
