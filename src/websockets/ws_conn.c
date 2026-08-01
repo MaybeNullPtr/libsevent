@@ -1077,6 +1077,14 @@ static int handle_close(struct sevent_ws_conn *c, const ws_frame_header *hdr, co
     return 0;
 }
 
+/* 帧处理主循环 (5 个职责段, 修改任一须注意与其它段的交互):
+ *   1. 帧头解析 (ws_frame_parse_header)
+ *   2. 流式大帧路由 (frame_size > recv_cap → MSG_STREAM, 协议检查与
+ *      正常路径 4 对齐 — RSV2/3、进行中仅 CONT、FRAG→STREAM 切换)
+ *   3. RSV 位验证 + 解压调度 (oneshot / 分片标记)
+ *   4. 控制帧约束检查 (payload ≤125、不可分片)
+ *   5. opcode 分发 (handle_*)
+ * 流式路由段与正常路径的协议检查必须保持一致 (曾因不一致漏检). */
 static int process_frames(struct sevent_ws_conn *c) {
     while(c->recv_pos < c->recv_len) {
         if(c->destroyed)
@@ -1276,6 +1284,13 @@ static void on_data(void *data) {
  *  握手
  * ==================================================================== */
 
+/* 握手响应处理 (5 个职责段, 按顺序串联; 3xx 与协商段互斥前置 return):
+ *   1. 读响应 (recv_read)
+ *   2. 解析 HTTP 响应 (ws_parse_response; 不完整 → 等下一轮)
+ *   3. 3xx 重定向 (解析 Location → ws_redirect_reconnect, 前置 return)
+ *   4. on_http_response 回调 / accept 校验 (非 101 或 accept 不匹配 → 收尾)
+ *   5. deflate 协商 + 设 OPEN + on_open + 粘包残留帧处理
+ * 若将来拆分, 协商段 (5) 可独立为 ws_negotiate_deflate(). */
 static void on_handshake_data(void *data) {
     struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
     WS_LOCK(c);
