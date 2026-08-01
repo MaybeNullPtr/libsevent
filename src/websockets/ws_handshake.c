@@ -99,8 +99,8 @@ int ws_build_request(char       *buf,
 #ifdef SEVENT_WS_DEFLATE
     /* permessage-deflate 压缩扩展协商 */
     if(enable_deflate) {
-        int m = snprintf(
-                buf + n, cap - (size_t)n, "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n");
+        int m = snprintf(buf + n, cap - (size_t)n,
+                         "Sec-WebSocket-Extensions: " WS_EXT_PMD "; " WS_EXT_CLIENT_MAX_WB "\r\n");
         if(m < 0 || (size_t)m >= cap - (size_t)n)
             return -1;
         n += m;
@@ -202,25 +202,25 @@ int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *res
             }
 
             /* 大小写不敏感比较头名 */
-            if(ci_eq((const char *)p, name_len, "sec-websocket-accept")) {
+            if(ci_eq((const char *)p, name_len, WS_HDR_ACCEPT)) {
                 size_t copy = val_len;
                 if(copy >= WS_ACCEPT_BASE64_LEN)
                     copy = WS_ACCEPT_BASE64_LEN - 1;
                 memcpy(resp->accept, val, copy);
                 resp->accept[copy] = '\0';
-            } else if(ci_eq((const char *)p, name_len, "sec-websocket-protocol")) {
+            } else if(ci_eq((const char *)p, name_len, WS_HDR_PROTOCOL)) {
                 size_t copy = val_len;
                 if(copy >= sizeof(resp->protocol))
                     copy = sizeof(resp->protocol) - 1;
                 memcpy(resp->protocol, val, copy);
                 resp->protocol[copy] = '\0';
-            } else if(ci_eq((const char *)p, name_len, "location")) {
+            } else if(ci_eq((const char *)p, name_len, WS_HDR_LOCATION)) {
                 size_t copy = val_len;
                 if(copy >= sizeof(resp->location))
                     copy = sizeof(resp->location) - 1;
                 memcpy(resp->location, val, copy);
                 resp->location[copy] = '\0';
-            } else if(ci_eq((const char *)p, name_len, "sec-websocket-extensions")) {
+            } else if(ci_eq((const char *)p, name_len, WS_HDR_EXTENSIONS)) {
                 size_t copy = val_len;
                 if(copy >= sizeof(resp->extensions))
                     copy = sizeof(resp->extensions) - 1;

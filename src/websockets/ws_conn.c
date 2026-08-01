@@ -47,6 +47,10 @@
 /* 最大重定向次数 */
 #define SEVENT_WS_MAX_REDIRECTS 5
 
+/* on_close reason 串 (与 sizeof-1 计算强绑定, 改字面量须同步) */
+#define SEVENT_WS_REASON_EOF "connection closed"
+#define SEVENT_WS_REASON_READ_ERR "read error"
+
 /* 发送标志 (RSV 位, 供未来的扩展使用) */
 #define WS_SEND_RSV1 0x01
 #define WS_SEND_RSV2 0x02
@@ -1245,12 +1249,12 @@ static void on_data(void *data) {
             WS_UNLOCK(c);
             return;
         }
-        ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, "connection closed", sizeof("connection closed") - 1);
+        ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, SEVENT_WS_REASON_EOF, sizeof(SEVENT_WS_REASON_EOF) - 1);
         WS_UNLOCK(c);
         return;
     }
     if(n < 0 && errno != EAGAIN && errno != EINTR) {
-        ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, "read error", 10);
+        ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, SEVENT_WS_REASON_READ_ERR, sizeof(SEVENT_WS_REASON_READ_ERR) - 1);
         WS_UNLOCK(c);
         return;
     }
@@ -1386,17 +1390,17 @@ static void on_handshake_data(void *data) {
         }
     }
     /* permessage-deflate 协商 */
-    if(c->enable_deflate && strstr(resp.extensions, "permessage-deflate")) {
+    if(c->enable_deflate && strstr(resp.extensions, WS_EXT_PMD)) {
         ws_deflate_params p = {0};
-        if(strstr(resp.extensions, "server_no_context_takeover"))
+        if(strstr(resp.extensions, WS_EXT_SERVER_NO_CTX))
             p.server_no_context_takeover = true;
-        if(strstr(resp.extensions, "client_no_context_takeover"))
+        if(strstr(resp.extensions, WS_EXT_CLIENT_NO_CTX))
             p.client_no_context_takeover = true;
         /* client_max_window_bits=N: 服务器限定本端发送窗口 (RFC 7692 §7.1.2.2,
          * MUST NOT 用更大窗口). 不遵守则 32KB 窗口压缩流超出服务器解压能力. */
-        const char *cw = strstr(resp.extensions, "client_max_window_bits");
+        const char *cw = strstr(resp.extensions, WS_EXT_CLIENT_MAX_WB);
         if(cw) {
-            const char *after = cw + strlen("client_max_window_bits");
+            const char *after = cw + strlen(WS_EXT_CLIENT_MAX_WB);
             if(*after == '=') {
                 /* 带值必须为 8-15 数字; 范围外/非数字 = 服务器违规 → Fail
                  * the Connection (RFC 7692 §7.1.2, atoi 溢出为 UB 用 strtol) */

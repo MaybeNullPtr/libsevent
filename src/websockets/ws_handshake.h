@@ -33,6 +33,18 @@ extern "C" {
 /* ws:// 无端口时的默认端口 */
 #define WS_DEFAULT_PORT 80
 
+/* permessage-deflate 协商参数名 (RFC 7692 §7.1, offer/解析共用) */
+#define WS_EXT_PMD "permessage-deflate"
+#define WS_EXT_SERVER_NO_CTX "server_no_context_takeover"
+#define WS_EXT_CLIENT_NO_CTX "client_no_context_takeover"
+#define WS_EXT_CLIENT_MAX_WB "client_max_window_bits"
+
+/* HTTP 响应头名 (小写, 解析用 ci_eq 比较) */
+#define WS_HDR_EXTENSIONS "sec-websocket-extensions"
+#define WS_HDR_PROTOCOL "sec-websocket-protocol"
+#define WS_HDR_ACCEPT "sec-websocket-accept"
+#define WS_HDR_LOCATION "location"
+
 /* ===== 握手响应解析结果 ===== */
 typedef struct {
     int  status_code;                  /* 应 = 101 */
