@@ -2128,6 +2128,192 @@ static int t_nct_config(void) {
     return 0;
 }
 
+static int t_win_client_offer(void) {
+    /* request_client_max_window_bits=9: offer 带值自我承诺 —
+     * 响应不带该参数也应生效 (RFC 7692 §7.1.2.2); 响应带 =9 同样生效 */
+    const char *exts[] = {"", "; " WS_EXT_CLIENT_MAX_WB "=9"};
+    for(size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+        sevent_context *ctx = sevent_create();
+        if(!ctx)
+            return 1;
+        sevent_ws_config cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.host                           = "127.0.0.1";
+        cfg.path                           = "/";
+        cfg.enable_deflate                 = true;
+        cfg.request_client_max_window_bits = 9;
+        cfg.on_open                        = ev_open;
+        g_ev                               = 0;
+        sevent_ws_conn *ws;
+        int             sfd = pair(ctx, &cfg, &ws);
+        if(sfd < 0)
+            return 1;
+        sevent_run_once(ctx);
+        if(shake_deflate_ext(sfd, exts[i]) < 0)
+            return 1;
+        for(int j = 0; j < 200; j++) {
+            sevent_run_once(ctx);
+            if(g_ev == 1)
+                break;
+        }
+        if(g_ev != 1)
+            return 1;
+        if(!ws->deflate || ws->deflate->client_window_bits != 9)
+            return 1; /* 自我承诺/响应均应为 9 */
+        close(sfd);
+        sevent_ws_destroy(ws);
+        sevent_destroy(ctx);
+    }
+    return 0;
+}
+
+static int t_win_client_exceed(void) {
+    /* offer 带值 =9, 响应 =10 (大于 offer 值) → 服务器违约 → fail
+     * (RFC 7692 §7.1.2.2: 响应值 MUST be no larger than offer value) */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host                           = "127.0.0.1";
+    cfg.path                           = "/";
+    cfg.enable_deflate                 = true;
+    cfg.request_client_max_window_bits = 9;
+    cfg.on_open                        = ev_open;
+    cfg.on_error                       = ev_error;
+    g_ev                               = 0;
+    g_err                              = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate_ext(sfd, "; " WS_EXT_CLIENT_MAX_WB "=10") < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 3)
+            break;
+    }
+    if(g_ev != 3 || g_err != SEVENT_WS_ERR_PROTOCOL)
+        return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_win_server_offer(void) {
+    /* request_server_max_window_bits=9: 响应带 =9 → 解压窗口受限为 9;
+     * 响应不带 → 服务器拒绝降窗 → 保持 15 (RFC 7692 §7.1.2.1 decline) */
+    const char *exts[]    = {"; " WS_EXT_SERVER_MAX_WB "=9", ""};
+    const int   expects[] = {9, 15};
+    for(size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+        sevent_context *ctx = sevent_create();
+        if(!ctx)
+            return 1;
+        sevent_ws_config cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.host                           = "127.0.0.1";
+        cfg.path                           = "/";
+        cfg.enable_deflate                 = true;
+        cfg.request_server_max_window_bits = 9;
+        cfg.on_open                        = ev_open;
+        g_ev                               = 0;
+        sevent_ws_conn *ws;
+        int             sfd = pair(ctx, &cfg, &ws);
+        if(sfd < 0)
+            return 1;
+        sevent_run_once(ctx);
+        if(shake_deflate_ext(sfd, exts[i]) < 0)
+            return 1;
+        for(int j = 0; j < 200; j++) {
+            sevent_run_once(ctx);
+            if(g_ev == 1)
+                break;
+        }
+        if(g_ev != 1)
+            return 1;
+        if(!ws->deflate || ws->deflate->server_window_bits != expects[i])
+            return 1;
+        close(sfd);
+        sevent_ws_destroy(ws);
+        sevent_destroy(ctx);
+    }
+    return 0;
+}
+
+static int t_win_server_active(void) {
+    /* 未请求 server_max_window_bits, 服务器主动带 =9 (RFC 7692 §7.1.2.1
+     * 允许) → 客户端解压窗口随之用 9 (服务器承诺压缩窗口 ≤9) */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host           = "127.0.0.1";
+    cfg.path           = "/";
+    cfg.enable_deflate = true;
+    cfg.on_open        = ev_open;
+    g_ev               = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate_ext(sfd, "; " WS_EXT_SERVER_MAX_WB "=9") < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+    if(!ws->deflate || ws->deflate->server_window_bits != 9)
+        return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_win_server_exceed(void) {
+    /* offer 请求 =9, 响应 =10 (大于请求值) → 服务器违约 → fail
+     * (RFC 7692 §7.1.2.1: 响应值 MUST be no larger than offer value) */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host                           = "127.0.0.1";
+    cfg.path                           = "/";
+    cfg.enable_deflate                 = true;
+    cfg.request_server_max_window_bits = 9;
+    cfg.on_open                        = ev_open;
+    cfg.on_error                       = ev_error;
+    g_ev                               = 0;
+    g_err                              = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate_ext(sfd, "; " WS_EXT_SERVER_MAX_WB "=10") < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 3)
+            break;
+    }
+    if(g_ev != 3 || g_err != SEVENT_WS_ERR_PROTOCOL)
+        return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
 static int t_deflate_unoffered_ext(void) {
     /* enable_deflate=false (未 offer 任何扩展), 服务器响应却带 permessage-deflate
      * → 握手失败 (RFC 6455 §4.1 第 5 条: 未请求的扩展 MUST fail) */
@@ -2539,6 +2725,11 @@ static int t_deflate_create(void) { return 0; }
 static int t_deflate_client_win_ok(void) { return 0; }
 static int t_deflate_client_win_bad(void) { return 0; }
 static int t_nct_config(void) { return 0; }
+static int t_win_client_offer(void) { return 0; }
+static int t_win_client_exceed(void) { return 0; }
+static int t_win_server_offer(void) { return 0; }
+static int t_win_server_active(void) { return 0; }
+static int t_win_server_exceed(void) { return 0; }
 static int t_deflate_unoffered_ext(void) { return 0; }
 static int t_deflate_unoffered_unknown(void) { return 0; }
 static int t_deflate_recv(void) { return 0; }
@@ -2816,6 +3007,11 @@ int main(void) {
                  {"deflate_client_win_ok", t_deflate_client_win_ok},
                  {"deflate_client_win_bad", t_deflate_client_win_bad},
                  {"nct_config", t_nct_config},
+                 {"win_client_offer", t_win_client_offer},
+                 {"win_client_exceed", t_win_client_exceed},
+                 {"win_server_offer", t_win_server_offer},
+                 {"win_server_active", t_win_server_active},
+                 {"win_server_exceed", t_win_server_exceed},
                  {"deflate_unoffered_ext", t_deflate_unoffered_ext},
                  {"deflate_unoffered_unknown", t_deflate_unoffered_unknown},
                  {"deflate_recv", t_deflate_recv},

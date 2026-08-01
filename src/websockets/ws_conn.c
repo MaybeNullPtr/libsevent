@@ -1441,18 +1441,45 @@ static void on_handshake_data(void *data) {
         if(cw) {
             const char *after = cw + strlen(WS_EXT_CLIENT_MAX_WB);
             if(*after == '=') {
-                /* 带值必须为 8-15 数字; 范围外/非数字 = 服务器违规 → Fail
-                 * the Connection (RFC 7692 §7.1.2, atoi 溢出为 UB 用 strtol) */
-                char *end = NULL;
-                long  v   = strtol(after + 1, &end, 10);
-                if(end == after + 1 || v < 8 || v > 15) {
+                /* 带值必须为 8-15 数字且 ≤ offer 值 (offer 带值时);
+                 * 违规 = 服务器违约 → Fail the Connection (RFC 7692 §7.1.2,
+                 * atoi 溢出为 UB 用 strtol) */
+                char   *end = NULL;
+                long    v   = strtol(after + 1, &end, 10);
+                uint8_t req = c->request_client_max_window_bits;
+                if(end == after + 1 || v < 8 || v > 15 || (req && v > req)) {
                     WS_UNLOCK(c);
                     ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
                     return;
                 }
                 p.client_max_window_bits = (uint8_t)v;
             }
-            /* 无值 (';'/','/结尾): 合法, 不限制 (保持 15) */
+            /* 无值响应: 合法, 不限制 */
+        }
+        /* 自我承诺: offer 带值 (8-15) 时, 无论服务器是否响应该参数, 本端发送
+         * 窗口 ≤ offer 值 (RFC 7692 §7.1.2.2); 响应带值优先 (上面已覆盖) */
+        if(!p.client_max_window_bits && c->request_client_max_window_bits >= 8 &&
+           c->request_client_max_window_bits <= 15)
+            p.client_max_window_bits = c->request_client_max_window_bits;
+        /* server_max_window_bits=N: 服务器承诺本端压缩窗口 ≤N (RFC 7692
+         * §7.1.2.1). 响应可主动带 (即使 offer 未请求); offer 请求了则响应值
+         * 必须 ≤ 请求值, 违规 = 服务器违约 → Fail the Connection. 客户端
+         * 解压窗口随之缩小 (省接收侧内存), 安全前提: 解压窗口 ≥ 压缩窗口. */
+        const char *sw = strstr(resp.extensions, WS_EXT_SERVER_MAX_WB);
+        if(sw) {
+            const char *after = sw + strlen(WS_EXT_SERVER_MAX_WB);
+            if(*after == '=') {
+                char   *end = NULL;
+                long    v   = strtol(after + 1, &end, 10);
+                uint8_t req = c->request_server_max_window_bits;
+                if(end == after + 1 || v < 8 || v > 15 || (req && v > req)) {
+                    WS_UNLOCK(c);
+                    ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
+                    return;
+                }
+                p.server_max_window_bits = (uint8_t)v;
+            }
+            /* 无值: 合法, 不限制 (保持 15) */
         }
         /* 自我承诺的 no_context_takeover 本地直接生效 (不依赖服务器响应);
          * server 侧 (request_server_no_context_takeover) 已在上面响应解析处理 */
@@ -1527,6 +1554,11 @@ static void on_connect_ready(void *data) {
     if(c->enable_deflate) {
         pmd_offer.client_no_context_takeover = c->request_client_no_context_takeover;
         pmd_offer.server_no_context_takeover = c->request_server_no_context_takeover;
+        /* 降窗: 仅 8-15 合法值生效 (0/范围外 = 默认行为) */
+        if(c->request_client_max_window_bits >= 8 && c->request_client_max_window_bits <= 15)
+            pmd_offer.client_max_window_bits = c->request_client_max_window_bits;
+        if(c->request_server_max_window_bits >= 8 && c->request_server_max_window_bits <= 15)
+            pmd_offer.server_max_window_bits = c->request_server_max_window_bits;
     }
     char req[1024];
     int  req_len = ws_build_request(req,
@@ -1612,6 +1644,8 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->deflate_level                      = cfg->deflate_level;
     c->request_client_no_context_takeover = cfg->request_client_no_context_takeover;
     c->request_server_no_context_takeover = cfg->request_server_no_context_takeover;
+    c->request_client_max_window_bits     = cfg->request_client_max_window_bits;
+    c->request_server_max_window_bits     = cfg->request_server_max_window_bits;
 
     /* 固定大小接收/分片缓冲区.
      * recv_buf 同时用于 HTTP 握手响应读取, 至少 SEVENT_WS_RECV_MIN. */

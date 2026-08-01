@@ -93,6 +93,8 @@ struct sevent_ws_conn {
     sevent_ws_deflate_level deflate_level;                      /* 发送压缩等级 */
     bool                    request_client_no_context_takeover; /* 自我承诺 (offer + 本地生效) */
     bool                    request_server_no_context_takeover; /* 请求对端 (offer, 响应同意才生效) */
+    uint8_t                 request_client_max_window_bits;     /* 0=无值 offer; 8-15=带值自我承诺 */
+    uint8_t                 request_server_max_window_bits;     /* 0=不请求; 8-15=请求服务器降窗 */
     ws_deflate             *deflate;
 
     /* ---- 用户回调 ---- */

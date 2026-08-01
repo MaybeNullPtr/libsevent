@@ -105,7 +105,12 @@ typedef struct sevent_ws_config {
     sevent_ws_deflate_level deflate_level;                      /* 发送压缩等级, 默认 DEFAULT(6) */
     bool                    request_client_no_context_takeover; /* 自我承诺: 每条消息重置本端压缩上下文
                                                                  * (错误隔离: 单条消息损坏不影响后续) */
-    bool request_server_no_context_takeover; /* 请求对端每条消息重置 (服务器同意才生效) */
+    bool    request_server_no_context_takeover; /* 请求对端每条消息重置 (服务器同意才生效) */
+    uint8_t request_client_max_window_bits;     /* 0=默认无值 offer (服务器可指定, 现状);
+                                                 * 8-15=offer 带值自我承诺本端发送窗口
+                                                 * ≤N (省发送侧内存, 服务器不响应也生效) */
+    uint8_t request_server_max_window_bits;     /* 0=不请求; 8-15=请求服务器压缩窗口 ≤N
+                                                 * (省接收侧内存, 服务器拒绝则保持默认) */
 
     /* ---- 用户回调 ---- */
     sevent_ws_on_open_fn          on_open;
