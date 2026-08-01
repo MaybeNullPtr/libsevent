@@ -117,10 +117,12 @@ int sevent_stream_write(sevent_stream_conn *s, const void *data, size_t len);
  * 不触发 on_close; 关闭后可重新 open/accept. */
 void sevent_stream_close(sevent_stream_conn *s);
 
-/* 释放对象. free 推迟到事件循环 run_posts 阶段 (sevent_post), 回调栈
- * 安全展开 — 回调内可安全调用 (与 sevent_ws_destroy 同模式).
+/* 释放对象. free 一律推迟到事件循环 run_posts 阶段 (sevent_post, 不区分
+ * sevent_run/run_once 模式), 回调栈安全展开 — 回调内可安全调用.
  * 约束: 调用后对象作废 — 不得再对 s 调用任何 API (含再次 destroy),
  *       违反为未定义行为. destroy 不允许幂等.
+ * 注: free 由事件循环执行 — destroy 后须推进循环; sevent_destroy 丢弃
+ *     未执行的 post, 销毁 ev 前未推进循环则对象泄漏.
  * 线程: SEVENT_THREAD_SAFE=ON 时跨线程安全, OFF 时 [loop 线程]. */
 void sevent_stream_destroy(sevent_stream_conn *s);
 
