@@ -292,7 +292,8 @@ static void test_errors(void) {
  * 连续上下文下 msg2 会引用 msg1 的窗口 (距离 4096) → 独立流解压报错;
  * no_context_takeover (deflateReset) 后 msg2 独立 → 独立流可解. */
 #ifdef SEVENT_WS_DEFLATE
-static int decompress_fresh(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap, size_t *out_used) {
+static int
+decompress_fresh_wb(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap, size_t *out_used, int window_bits) {
     uint8_t *buf = (uint8_t *)malloc(in_len + 4);
     if(!buf)
         return -1;
@@ -301,7 +302,7 @@ static int decompress_fresh(const uint8_t *in, size_t in_len, uint8_t *out, size
 
     z_stream zi;
     memset(&zi, 0, sizeof(zi));
-    if(inflateInit2(&zi, -15) != Z_OK) {
+    if(inflateInit2(&zi, window_bits) != Z_OK) {
         free(buf);
         return -1;
     }
@@ -314,11 +315,11 @@ static int decompress_fresh(const uint8_t *in, size_t in_len, uint8_t *out, size
             rc = Z_BUF_ERROR;
             break;
         }
-        zi.next_out  = out + used;
-        zi.avail_out = (uInt)(out_cap - used);
+        zi.next_out   = out + used;
+        zi.avail_out  = (uInt)(out_cap - used);
         size_t before = zi.avail_out; /* 本轮可用输出 */
         rc            = inflate(&zi, Z_SYNC_FLUSH);
-        used += before - zi.avail_out; /* 本轮消耗 */
+        used          += before - zi.avail_out; /* 本轮消耗 */
         if(rc != Z_OK || zi.avail_out > 0)
             break;
     }
@@ -326,6 +327,10 @@ static int decompress_fresh(const uint8_t *in, size_t in_len, uint8_t *out, size
     free(buf);
     *out_used = used;
     return (rc == Z_OK) ? 0 : -1;
+}
+/* 默认 15 位窗口 (与协议层一致) */
+static int decompress_fresh(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap, size_t *out_used) {
+    return decompress_fresh_wb(in, in_len, out, out_cap, out_used, -15);
 }
 #endif /* SEVENT_WS_DEFLATE */
 
@@ -433,8 +438,8 @@ static void test_nct_independence(void) {
     memset(msg2, 'X', 4096);
     memcpy(msg2 + 4096, r, 4096);
 
-    ws_deflate       *df  = NULL;
-    ws_deflate_params p   = {.client_no_context_takeover = true};
+    ws_deflate       *df = NULL;
+    ws_deflate_params p  = {.client_no_context_takeover = true};
     if(!ws_deflate_create(&df, &p)) {
         FAIL("create");
         free(r);
@@ -469,11 +474,11 @@ static void test_nct_independence(void) {
     /* 对照: 不带 nct 的 df 压缩同样两条 → 独立流解 msg2 必须失败
      * (证明构造确实触发跨消息引用; 若对照也成功, 本测试无效) */
     {
-        ws_deflate       *df2  = NULL;
-        ws_deflate_params p2   = {0};
+        ws_deflate       *df2 = NULL;
+        ws_deflate_params p2  = {0};
         if(!ws_deflate_create(&df2, &p2)) {
             FAIL("create (对照)");
-                goto out;
+            goto out;
         }
         uint8_t *a2 = (uint8_t *)malloc(cmax);
         uint8_t *b2 = (uint8_t *)malloc(cmax);
@@ -482,7 +487,7 @@ static void test_nct_independence(void) {
             free(a2);
             free(b2);
             ws_deflate_destroy(df2);
-                goto out;
+            goto out;
         }
         size_t a1l = cmax, a2l = cmax;
         ws_deflate_compress(df2, (const uint8_t *)msg1, sizeof(msg1), a2, &a1l);
@@ -494,7 +499,7 @@ static void test_nct_independence(void) {
         ws_deflate_destroy(df2);
         if(r2 == 0) {
             FAIL("对照: 无 nct 时独立流也应失败 (构造未触发跨消息引用)");
-                goto out;
+            goto out;
         }
     }
     PASS();
@@ -505,6 +510,79 @@ out:
     free(r);
 #else
     TEST("nct independence (stub)");
+    PASS();
+#endif
+}
+
+static void test_window_bits(void) {
+#ifdef SEVENT_WS_DEFLATE
+    TEST("client_max_window_bits=9: 发送窗口受限真实生效");
+    /* 构造 r(4096)+r(4096): 第二半与第一半完全一致, 引用距离 4096.
+     * r 用 LCG 生成且验证无 3 字节串重复 → 第二半只能引用第一半 (dist=4096).
+     * 9 位窗口 (512B) 无法引用 → 几乎全字面量输出; 15 位窗口可引用 → 输出明显更小.
+     * 输出大小对比即窗口受限的行为证据 (若 create 忽略窗口参数用 15 位,
+     * 两者输出应接近, 断言失败).
+     * 注: 不用"15 位压缩流被 9 位窗口解压应失败"作对照 — zlib 1.2.11 实测
+     * inflate 不拒绝超窗距离 (r+r 15 位压缩流 9 位解压成功且内容一致). */
+    uint8_t *r = (uint8_t *)malloc(4096);
+    if(!r) {
+        FAIL("malloc");
+        return;
+    }
+    /* 确定性伪随机 (可复现) */
+    unsigned int seed = 12345;
+    for(size_t i = 0; i < 4096; i++) {
+        seed = seed * 1103515245u + 12345u;
+        r[i] = (uint8_t)(seed >> 24);
+    }
+    char msg[8192];
+    memcpy(msg, r, 4096);
+    memcpy(msg + 4096, r, 4096);
+
+    ws_deflate       *df9 = NULL, *df15 = NULL;
+    ws_deflate_params p9 = {.client_max_window_bits = 9};
+    if(!ws_deflate_create(&df9, &p9) || !ws_deflate_create(&df15, NULL)) {
+        FAIL("create");
+        goto out;
+    }
+    size_t   cmax = ws_deflate_compress_maxlen(df9, sizeof(msg));
+    uint8_t *c9   = (uint8_t *)malloc(cmax);
+    uint8_t *c15  = (uint8_t *)malloc(cmax);
+    if(!c9 || !c15) {
+        FAIL("malloc");
+        goto out;
+    }
+    size_t c9l = cmax;
+    if(!ws_deflate_compress(df9, (const uint8_t *)msg, sizeof(msg), c9, &c9l)) {
+        FAIL("compress (9-bit)");
+        goto out;
+    }
+    size_t c15l = cmax;
+    if(!ws_deflate_compress(df15, (const uint8_t *)msg, sizeof(msg), c15, &c15l)) {
+        FAIL("compress (15-bit)");
+        goto out;
+    }
+    if(c9l <= c15l) {
+        FAIL("9 位窗口输出应显著大于 15 位 (构造未触发长距引用)");
+        goto out;
+    }
+    /* 9 位窗口压缩流 → 9 位窗口解压必须成功且内容一致 */
+    uint8_t dec[8192 + 64];
+    size_t  used = 0;
+    if(decompress_fresh_wb(c9, c9l, dec, sizeof(dec), &used, -9) != 0 || used != sizeof(msg) ||
+       memcmp(dec, msg, sizeof(msg)) != 0) {
+        FAIL("9 位窗口压缩流应被 9 位窗口解压");
+        goto out;
+    }
+    PASS();
+out:
+    free(c9);
+    free(c15);
+    ws_deflate_destroy(df9);
+    ws_deflate_destroy(df15);
+    free(r);
+#else
+    TEST("window bits (stub)");
     PASS();
 #endif
 }
@@ -783,6 +861,7 @@ int main(void) {
     test_errors();
     test_params();
     test_nct_independence();
+    test_window_bits();
     test_stream_roundtrip();
     test_stream_chunked();
     test_stream_compression();
