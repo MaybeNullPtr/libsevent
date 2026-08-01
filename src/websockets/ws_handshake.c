@@ -99,8 +99,8 @@ int ws_build_request(char       *buf,
 #ifdef SEVENT_WS_DEFLATE
     /* permessage-deflate 压缩扩展协商 */
     if(enable_deflate) {
-        int m = snprintf(buf + n, cap - (size_t)n,
-                         "Sec-WebSocket-Extensions: " WS_EXT_PMD "; " WS_EXT_CLIENT_MAX_WB "\r\n");
+        int m = snprintf(
+                buf + n, cap - (size_t)n, "Sec-WebSocket-Extensions: " WS_EXT_PMD "; " WS_EXT_CLIENT_MAX_WB "\r\n");
         if(m < 0 || (size_t)m >= cap - (size_t)n)
             return -1;
         n += m;

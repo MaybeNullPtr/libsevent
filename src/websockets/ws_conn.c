@@ -145,11 +145,11 @@ static bool ws_utf8_validate(const uint8_t *data, size_t len) {
 }
 
 static unsigned int xorshift32(unsigned int *seed) {
-    unsigned int x  = *seed;
+    unsigned int x = *seed;
     x              ^= x << 13;
     x              ^= x >> 17;
     x              ^= x << 5;
-    *seed           = x;
+    *seed          = x;
     return x;
 }
 
@@ -730,7 +730,7 @@ static int ws_tcp_connect(const char *host, uint16_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if(fd < 0)
         return -1;
-    /* 最佳尝试 SO_REUSEADDR — 失败不影响建连 */
+        /* 最佳尝试 SO_REUSEADDR — 失败不影响建连 */
 #ifdef SO_REUSEADDR
     {
         int on = 1;
@@ -1153,8 +1153,8 @@ static int process_frames(struct sevent_ws_conn *c) {
                 } else {
                     return SEVENT_WS_ERR_PROTOCOL; /* CONT 无消息进行中 */
                 }
-                c->stream_remaining  = hdr.payload_len; /* 帧级剩余, 消息状态保持 */
-                c->stream_fin        = hdr.fin;
+                c->stream_remaining = hdr.payload_len; /* 帧级剩余, 消息状态保持 */
+                c->stream_fin       = hdr.fin;
                 c->msg.total        += hdr.payload_len; /* 消息总长累积 (压缩时为压缩字节) */
                 c->recv_pos         += (size_t)n;       /* 消费帧头 */
                 stream_consume(c);
@@ -1343,7 +1343,8 @@ static void on_handshake_data(void *data) {
         return;
     }
     /* 3xx 重定向: 库内部处理, 不回调上层 */
-    if(resp.status_code >= WS_HTTP_STATUS_REDIRECT_MIN && resp.status_code < WS_HTTP_STATUS_REDIRECT_MAX && resp.location[0]) {
+    if(resp.status_code >= WS_HTTP_STATUS_REDIRECT_MIN && resp.status_code < WS_HTTP_STATUS_REDIRECT_MAX &&
+       resp.location[0]) {
         if(c->redirect_count >= SEVENT_WS_MAX_REDIRECTS) {
             WS_UNLOCK(c);
             ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
@@ -1482,13 +1483,13 @@ static void on_connect_ready(void *data) {
     ws_gen_key(c->sec_ws_key);
     char req[1024];
     int  req_len = ws_build_request(req,
-                                    sizeof(req),
-                                    c->host,
-                                    c->port,
-                                    c->path,
-                                    c->sec_ws_key,
-                                    c->sub_protocol[0] ? c->sub_protocol : NULL,
-                                    c->enable_deflate);
+                                   sizeof(req),
+                                   c->host,
+                                   c->port,
+                                   c->path,
+                                   c->sec_ws_key,
+                                   c->sub_protocol[0] ? c->sub_protocol : NULL,
+                                   c->enable_deflate);
     if(req_len < 0) {
         WS_UNLOCK(c);
         ws_fatal(c, SEVENT_ERR_NOMEM);

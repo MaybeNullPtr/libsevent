@@ -50,8 +50,8 @@ typedef struct {
     int  status_code;                  /* 应 = 101 */
     char accept[WS_ACCEPT_BASE64_LEN]; /* Sec-WebSocket-Accept 原始值 */
     char protocol[64];                 /* Sec-WebSocket-Protocol 协商结果 */
-    char location[256];   /* Location 头 (重定向用) */
-    char extensions[256]; /* Sec-WebSocket-Extensions 头 (扩展协商) */
+    char location[256];                /* Location 头 (重定向用) */
+    char extensions[256];              /* Sec-WebSocket-Extensions 头 (扩展协商) */
 } ws_handshake_response;
 
 /* ===== 生成随机 Sec-WebSocket-Key =====

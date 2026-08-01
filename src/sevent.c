@@ -405,8 +405,8 @@ static void run_posts(sevent_context *ctx, bool *fired) {
     }
 }
 
-#define MAX_EXPIRED_PER_TICK 32  /* 单 tick 最多触发的定时器数 */
-#define MAX_FIRE_PER_TIMER 100   /* 单定时器单 tick 连续触发上限 (防长时间阻塞) */
+#define MAX_EXPIRED_PER_TICK 32 /* 单 tick 最多触发的定时器数 */
+#define MAX_FIRE_PER_TIMER 100  /* 单定时器单 tick 连续触发上限 (防长时间阻塞) */
 
 struct expire_entry {
     struct sevent_timer *t;
