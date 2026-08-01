@@ -295,6 +295,13 @@ static void stream_consume(struct sevent_ws_conn *c) {
 
 /* ====================================================================
  *  异步写队列
+ *
+ *  模块边界: 纯数据流逻辑, 零协议依赖 (不碰消息状态机/压缩).
+ *  语义约定 (修改时注意):
+ *    - 节点持有 data 所有权 (入队即转移, 须为堆分配; OOM 时 free 调用者 data)
+ *    - 部分写由 io_write 回调 (on_write_ready) 驱动续写
+ *    - 控制帧 (is_ctrl) 插队首优先发送
+ *  若其他模块需要类似 queue: 抽为独立 ws_writeq.c 并补部分写续写单测.
  * ==================================================================== */
 
 static int ws_enqueue(struct sevent_ws_conn *c, uint8_t *data, size_t len, bool is_ctrl) {
