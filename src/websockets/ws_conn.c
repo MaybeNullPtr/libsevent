@@ -161,6 +161,38 @@ static void gen_mask_key(struct sevent_ws_conn *c, uint8_t key[4]) {
     key[3]         = (uint8_t)(r);
 }
 
+/* 校验握手响应中的扩展均为客户端已 offer 的 (RFC 6455 §9 开头: 服务器不得
+ * 响应未请求的扩展; §4.1 第 5 条: 客户端收到未请求的扩展 MUST Fail the
+ * WebSocket Connection). 参数层不校验 — RFC 7692 §7.1.2.1 允许服务器主动带
+ * server_max_window_bits (即使 offer 没有). 返回 true=合法. */
+static bool ws_extensions_ok(const char *extensions, bool offered_deflate) {
+    if(extensions[0] == '\0')
+        return true; /* 未带扩展头 */
+    if(!offered_deflate)
+        return false; /* 未 offer 任何扩展, 响应带扩展 = 违规 */
+    const char *p = extensions;
+    while(*p) {
+        while(*p == ' ' || *p == '\t')
+            p++; /* 跳前导空白 (逗号分隔后的 OWS) */
+        if(*p == '\0')
+            break; /* 尾部逗号后的空 token */
+        /* 一个扩展: token *( ";" param ), 扩展间以 ',' 分隔 */
+        const char *semi    = strchr(p, ';');
+        const char *comma   = strchr(p, ',');
+        const char *tok_end = semi ? (comma && comma < semi ? comma : semi) : (comma ? comma : p + strlen(p));
+        const char *e       = tok_end;
+        while(e > p && (e[-1] == ' ' || e[-1] == '\t'))
+            e--; /* 去尾空白 */
+        size_t n = (size_t)(e - p);
+        if(n != strlen(WS_EXT_PMD) || strncmp(p, WS_EXT_PMD, n) != 0)
+            return false;
+        if(!comma)
+            break;
+        p = comma + 1;
+    }
+    return true;
+}
+
 /* RFC 6455 §7.4: 校验 Close 码是否合法 */
 static bool ws_close_code_valid(uint16_t code) {
     if(code < SEVENT_WS_CLOSE_NORMAL)
@@ -1389,6 +1421,12 @@ static void on_handshake_data(void *data) {
             ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
             return;
         }
+    }
+    /* 响应不得含未 offer 的扩展 (RFC 6455 §9/§4.1 第 5 条) */
+    if(!ws_extensions_ok(resp.extensions, c->enable_deflate)) {
+        WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
+        return;
     }
     /* permessage-deflate 协商 */
     if(c->enable_deflate && strstr(resp.extensions, WS_EXT_PMD)) {
