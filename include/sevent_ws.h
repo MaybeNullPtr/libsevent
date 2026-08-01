@@ -165,8 +165,10 @@ int sevent_ws_shutdown(sevent_ws_conn *c, uint16_t code, const char *reason);
 
 /*
  * 立即关闭连接 (不发送 Close 帧).
- * 关闭 socket + IO + 写队列, 但不释放内存.
- * 可在 on_message / on_pong / on_open / on_http_response 中安全调用.
+ * 行为: 置 destroyed/CLOSED 标记 → 关闭 socket + 摘除 IO + 清写队列
+ *       + 注销定时器; 不释放内存 (对象仍可安全访问).
+ * 回调: 回调内可安全调用 (on_message / on_pong / on_open / on_error /
+ *       on_http_response; 事件已摘除, 不会重入).
  * 线程: [loop 线程].
  *
  * 调用后连接仍可安全访问 (用于在回调内提前终止连接),
@@ -176,10 +178,11 @@ void sevent_ws_close(sevent_ws_conn *c);
 
 /*
  * 释放连接内存.
- * 内部先调 sevent_ws_close, 再释放所有内存.
- * 应在 loop 结束后调用.
- * 注: on_error 中可调, 但 on_close 中推荐用 sevent_ws_close 而非此函数,
- *     因为 CLOSE 帧处理完成后库可能还需访问连接状态.
+ * 行为: 先 sevent_ws_close, 再销毁压缩对象; 连接本体的 free 推迟到
+ *       事件循环 run_posts 阶段 (sevent_post), 保证回调栈安全展开 —
+ *       因此回调内 (on_open / on_message / on_error / on_close) 均可调用.
+ * 注:   loop 未运行时立即释放; 回调内调用时, CLOSE 帧处理等后续代码
+ *       在 free 之前完成 (post 延迟), 连接状态仍可安全访问.
  * 线程: [loop 线程].
  */
 void sevent_ws_destroy(sevent_ws_conn *c);
