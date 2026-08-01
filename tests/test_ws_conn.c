@@ -1903,6 +1903,7 @@ static int t_connect_timeout_disabled(void) {
 
 /* ===== permessage-deflate 测试 ===== */
 #ifdef SEVENT_WS_DEFLATE
+#include <zlib.h>
 
 /* shake_deflate_full: 握手回复, extensions 为完整扩展头值 */
 static int shake_deflate_full(int sfd, const char *extensions) {
@@ -2314,6 +2315,46 @@ static int t_win_server_exceed(void) {
     return 0;
 }
 
+static int t_win_server_bad(void) {
+    /* 服务器主动带非法 server_max_window_bits 值 (范围外/非数字) → fail
+     * (RFC 7692 §7.1.2: 值必须为 8-15 数字) */
+    const char *bad[] = {"=7", "=16", "=abc"};
+    for(size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        sevent_context *ctx = sevent_create();
+        if(!ctx)
+            return 1;
+        sevent_ws_config cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.host           = "127.0.0.1";
+        cfg.path           = "/";
+        cfg.enable_deflate = true;
+        cfg.on_open        = ev_open;
+        cfg.on_error       = ev_error;
+        g_ev               = 0;
+        g_err              = 0;
+        sevent_ws_conn *ws;
+        int             sfd = pair(ctx, &cfg, &ws);
+        if(sfd < 0)
+            return 1;
+        sevent_run_once(ctx);
+        char ext[64];
+        snprintf(ext, sizeof(ext), "; " WS_EXT_SERVER_MAX_WB "%s", bad[i]);
+        if(shake_deflate_ext(sfd, ext) < 0)
+            return 1;
+        for(int j = 0; j < 200; j++) {
+            sevent_run_once(ctx);
+            if(g_ev == 3)
+                break;
+        }
+        if(g_ev != 3 || g_err != SEVENT_WS_ERR_PROTOCOL)
+            return 1;
+        close(sfd);
+        sevent_ws_destroy(ws);
+        sevent_destroy(ctx);
+    }
+    return 0;
+}
+
 static int t_deflate_unoffered_ext(void) {
     /* enable_deflate=false (未 offer 任何扩展), 服务器响应却带 permessage-deflate
      * → 握手失败 (RFC 6455 §4.1 第 5 条: 未请求的扩展 MUST fail) */
@@ -2598,6 +2639,165 @@ static int t_deflate_send_bin(void) {
     return 0;
 }
 
+/* 读一完整帧 (循环读, 支持部分读/64-bit 长度), 返回 payload 长度 */
+static int read_frame_full(int fd, ws_frame_header *h, uint8_t *pay, size_t cap) {
+    uint8_t b[4096];
+    size_t  got = 0;
+    int     hdr = -1;
+    for(;;) {
+        ssize_t n = read(fd, b + got, sizeof(b) - got);
+        if(n <= 0)
+            return -1;
+        got += (size_t)n;
+        hdr = ws_frame_parse_header(b, got, h);
+        if(hdr > 0)
+            break;
+        if(got >= sizeof(b))
+            return -1;
+    }
+    size_t pl = (size_t)h->payload_len;
+    if(pl > cap)
+        return -1;
+    if(pl + (size_t)hdr > got) {
+        /* payload 未读完: 先搬已到的, 再补读 */
+        memcpy(pay, b + hdr, got - (size_t)hdr);
+        size_t have = got - (size_t)hdr;
+        while(have < pl) {
+            ssize_t n = read(fd, pay + have, pl - have);
+            if(n <= 0)
+                return -1;
+            have += (size_t)n;
+        }
+    } else {
+        memcpy(pay, b + hdr, pl);
+    }
+    if(h->mask)
+        ws_frame_apply_mask(pay, pl, h->mask_key);
+    return (int)pl;
+}
+
+/* 独立 15 位窗口解压 (补 tail, RFC 7692 §7.2.2), 返回 0=成功且内容完整 */
+static int decompress_payload(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap, size_t *out_used) {
+    uint8_t *buf = (uint8_t *)malloc(in_len + 4);
+    if(!buf)
+        return -1;
+    memcpy(buf, in, in_len);
+    memcpy(buf + in_len, "\x00\x00\xff\xff", 4);
+    z_stream zi;
+    memset(&zi, 0, sizeof(zi));
+    if(inflateInit2(&zi, -15) != Z_OK) {
+        free(buf);
+        return -1;
+    }
+    zi.next_in  = buf;
+    zi.avail_in = (uInt)(in_len + 4);
+    size_t used = 0;
+    int    rc   = Z_OK;
+    for(;;) {
+        if(used >= out_cap) {
+            inflateEnd(&zi);
+            free(buf);
+            return -1; /* 输出不足 */
+        }
+        zi.next_out   = out + used;
+        zi.avail_out  = (uInt)(out_cap - used);
+        size_t before = zi.avail_out;
+        rc            = inflate(&zi, Z_SYNC_FLUSH);
+        used          += before - zi.avail_out;
+        if(rc != Z_OK || zi.avail_out > 0)
+            break; /* 到达 sync 点 (输出未满) */
+    }
+    inflateEnd(&zi);
+    free(buf);
+    *out_used = used;
+    return (rc == Z_OK) ? 0 : -1;
+}
+
+static int t_deflate_send_large(void) {
+    /* 发送 >64KB 不可压缩数据: 帧头走 64-bit 长度 + 压缩帧解压还原一致 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host           = "127.0.0.1";
+    cfg.path           = "/";
+    cfg.enable_deflate = true;
+    cfg.on_open        = ev_open;
+    g_ev               = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+
+    const size_t BIG = 70000;
+    uint8_t     *big = (uint8_t *)malloc(BIG);
+    uint8_t     *pay = (uint8_t *)malloc(BIG + 4096);
+    if(!big || !pay) {
+        free(big);
+        free(pay);
+        return 1;
+    }
+    /* 确定性伪随机 (不可压缩 → 压缩后仍 >65535, 触发 64-bit 长度头) */
+    unsigned int seed = 98765;
+    for(size_t i = 0; i < BIG; i++) {
+        seed   = seed * 1103515245u + 12345u;
+        big[i] = (uint8_t)(seed >> 24);
+    }
+    if(sevent_ws_send_binary(ws, big, BIG) != 0) {
+        free(big);
+        free(pay);
+        return 1;
+    }
+    ws_frame_header h;
+    int             pl = 0;
+    for(int i = 0; i < 200; i++) {
+        pl = read_frame_full(sfd, &h, pay, BIG + 4096);
+        if(pl >= 0)
+            break;
+        sevent_run_once(ctx);
+    }
+    if(pl < 1) {
+        free(big);
+        free(pay);
+        return 1;
+    }
+    /* 压缩帧 + 64-bit 长度头 (随机数据压缩后 ~70000 > 65535) */
+    if(h.opcode != WS_OPCODE_BINARY || !h.rsv1 || h.payload_len <= 65535) {
+        free(big);
+        free(pay);
+        return 1;
+    }
+    uint8_t *dec = (uint8_t *)malloc(BIG + 64);
+    if(!dec) {
+        free(big);
+        free(pay);
+        return 1;
+    }
+    size_t used = 0;
+    int    dr   = decompress_payload(pay, (size_t)pl, dec, BIG + 64, &used);
+    int    ok   = (dr == 0 && used == BIG && memcmp(dec, big, BIG) == 0);
+    free(dec);
+    free(big);
+    free(pay);
+    if(!ok)
+        return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
 static int t_deflate_frag(void) {
     /* 压缩分片: rsv1=1 TEXT fin=0 + CONT fin=1 */
     sevent_context *ctx = sevent_create();
@@ -2730,12 +2930,14 @@ static int t_win_client_exceed(void) { return 0; }
 static int t_win_server_offer(void) { return 0; }
 static int t_win_server_active(void) { return 0; }
 static int t_win_server_exceed(void) { return 0; }
+static int t_win_server_bad(void) { return 0; }
 static int t_deflate_unoffered_ext(void) { return 0; }
 static int t_deflate_unoffered_unknown(void) { return 0; }
 static int t_deflate_recv(void) { return 0; }
 static int t_deflate_recv_large(void) { return 0; }
 static int t_deflate_send(void) { return 0; }
 static int t_deflate_send_bin(void) { return 0; }
+static int t_deflate_send_large(void) { return 0; }
 static int t_deflate_frag(void) { return 0; }
 static int t_deflate_rsv_reject(void) { return 0; }
 #endif
@@ -3012,12 +3214,14 @@ int main(void) {
                  {"win_server_offer", t_win_server_offer},
                  {"win_server_active", t_win_server_active},
                  {"win_server_exceed", t_win_server_exceed},
+                 {"win_server_bad", t_win_server_bad},
                  {"deflate_unoffered_ext", t_deflate_unoffered_ext},
                  {"deflate_unoffered_unknown", t_deflate_unoffered_unknown},
                  {"deflate_recv", t_deflate_recv},
                  {"deflate_recv_large", t_deflate_recv_large},
                  {"deflate_send", t_deflate_send},
                  {"deflate_send_bin", t_deflate_send_bin},
+                 {"deflate_send_large", t_deflate_send_large},
                  {"deflate_frag", t_deflate_frag},
                  {"deflate_rsv_reject", t_deflate_rsv_reject},
                  {NULL, NULL}};

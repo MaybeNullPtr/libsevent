@@ -618,6 +618,8 @@ static int decompress_oneshot(struct sevent_ws_conn *c, const uint8_t *in, size_
             break;
     }
     c->on_message(c->user_data, batch, 0, is_bin, true, 0);
+    if(c->deflate->server_no_context_takeover)
+        inflateReset(z); /* 与流式路径一致: 每条消息结束重置解压上下文 */
     ret = 0;
 out:
     sevent_i_free(batch);
@@ -1549,7 +1551,7 @@ static void on_connect_ready(void *data) {
         return;
     }
     ws_gen_key(c->sec_ws_key);
-    /* 压缩 offer 参数 (仅 request_* 字段; window_bits 留待降窗功能) */
+    /* 压缩 offer 参数: nct 承诺 + 降窗请求 */
     ws_deflate_params pmd_offer = {0};
     if(c->enable_deflate) {
         pmd_offer.client_no_context_takeover = c->request_client_no_context_takeover;
