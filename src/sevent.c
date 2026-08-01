@@ -360,6 +360,9 @@ static void run_io_callbacks(
     if(FD_ISSET(ctx->wake_fds[0], rfds))
         sevent_wakeup_drain(ctx->wake_fds[0]);
 
+    /* 快照保护: iosnap 是 select 前拍的快照, 另一线程可能已在 select 期间
+     * unregister. 回调触发前检查 deleted — 已注销句柄绝不触发回调, 与
+     * unregister 的竞态由此关闭 (即使 fd 号已被复用也不会误调). */
     for(int i = 0; i < n_io; i++) {
         struct sevent_io *io = iosnap[i];
         if(io->deleted)
@@ -496,8 +499,10 @@ int sevent_run_once(sevent_context *ctx) {
         if(nfds < 0) {
             if(errno != EINTR && errno != EBADF)
                 return SEVENT_ERR_INVAL;
-            /* EINTR (信号打断) / EBADF (fd 在 select 期间被 unregister+close):
-               跳过 IO 回调, fall through 到 posts + timers */
+            /* EINTR (信号打断) / EBADF (fd 在 select 期间被另一线程
+               unregister+close): 跳过 IO 回调, fall through 到 posts + timers.
+               这是跨线程注销 + close(fd) 的兜底保证 — loop 不会因已关闭的
+               fd 崩溃, 也不会触发已注销句柄的回调. */
             if(errno == EBADF) {
                 /* select 立即返回 EBADF → delta=0 → 定时器不触发 → CPU 空转.
                  * 设置 delta=1 保证至少 1ms 让定时器降频触发 */
@@ -576,6 +581,8 @@ void sevent_io_unregister(sevent_context *ctx, sevent_io *h) {
             h->deleted = 1; /* 快照遍历时跳过 */
             io_list_del(h);
             ctx->io_count--;
+            /* 延迟释放: 挂入死亡链表, 内存由下一轮 loop 的 run_free_death
+             * 释放 — 注销后句柄指针仍有效, 回调内注销自身安全. */
             h->next       = ctx->death_io;
             ctx->death_io = h;
             found         = 1;
@@ -624,6 +631,8 @@ void sevent_timer_unregister(sevent_context *ctx, sevent_timer *h) {
             h->deleted = 1; /* 快照遍历时跳过 */
             timer_list_del(h);
             ctx->timer_count--;
+            /* 延迟释放: 挂入死亡链表, 内存由下一轮 loop 的 run_free_death
+             * 释放 — 注销后句柄指针仍有效, 回调内注销自身安全. */
             h->next          = ctx->death_timer;
             ctx->death_timer = h;
             break;

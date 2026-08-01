@@ -29,6 +29,14 @@ extern "C" {
  * 句柄生命周期:
  *   - IO / Timer: 由用户主动 unregister 释放, 释放前始终有效
  *   - Post:       run_posts 阶段自动释放, 执行后句柄失效
+ *
+ * unregister 使用注意 (IO / Timer 一致):
+ *   - 注销立即生效: 注销后该句柄的回调不再被触发 (含本轮 select 已就绪的)
+ *   - 句柄不得复用: 注销后不得再次 unregister (重复注销幂等, 安全无操作),
+ *     句柄指针也不得再用于其他 API
+ *   - 回调内可安全注销 (包括注销自己)
+ *   - 跨线程安全: 与 loop 的 select 阻塞并发注销并 close(fd) 安全,
+ *     loop 不会因已关闭的 fd 崩溃
  * ========================================================================= */
 
 /* ==================== 版本 ==================== */
@@ -180,8 +188,11 @@ void sevent_ignore_sigpipe(void);
 sevent_io *sevent_io_register(sevent_context *ctx, sevent_io_handler *h);
 
 /*
- * 注销 fd 监听, 释放内部资源.
- * 未注册或已注销的句柄安全 (幂等). 回调内可安全调用 (延迟释放).
+ * 注销 fd 监听.
+ * 注意: 注销立即生效 — 注销后该 fd 的回调不再触发; 句柄不得复用
+ *       (重复注销幂等, 安全无操作).
+ * 回调内可安全调用 (含注销自身). 跨线程可调, 与 select 阻塞并发安全
+ * (期间 close(fd) 不会导致 loop 崩溃).
  * h 必须为有效句柄 (来自 sevent_io_register).
  * 线程: 跨线程 (内部锁, lock).
  */
@@ -199,8 +210,10 @@ void sevent_io_unregister(sevent_context *ctx, sevent_io *h);
 sevent_timer *sevent_timer_register(sevent_context *ctx, unsigned int interval_ms, sevent_timer_fn cb, void *data);
 
 /*
- * 注销定时器, 释放内部资源.
- * 未注册或已注销的句柄安全 (幂等). 回调内可安全调用 (延迟释放).
+ * 注销定时器.
+ * 注意: 注销立即生效 — 注销后到期不再触发回调; 句柄不得复用
+ *       (重复注销幂等, 安全无操作).
+ * 回调内可安全调用 (含注销自身).
  * h 必须为有效句柄 (来自 sevent_timer_register).
  * 线程: 跨线程 (内部锁, lock).
  */
