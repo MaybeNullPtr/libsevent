@@ -449,6 +449,8 @@ static void run_timers(sevent_context *ctx, bool has_timer, long delta, bool *fi
         if(t->deleted)
             continue; /* 回调前已被其他回调 unregister，跳过 */
         for(int k = 0; k < expired[i].times; k++) {
+            if(t->deleted)
+                break; /* 回调内已 unregister 自己, 停止本轮补发 */
             t->cb(t->data);
             *fired = true;
         }
