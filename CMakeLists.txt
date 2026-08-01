@@ -13,9 +13,10 @@ add_compile_definitions(
 option(SEVENT_RTOS "Build for RTOS (bare-metal / no POSIX threads)" OFF)
 option(SEVENT_ENABLE_EVENTFD "Use eventfd for wakeup (Linux)" ON)
 option(SEVENT_ENABLE_PIPE     "Use pipe for wakeup (POSIX)" ON)
-option(SEVENT_WS_THREAD_SAFE
+option(SEVENT_THREAD_SAFE
     "WebSocket client with thread-safe API (adds per-connection mutex locking)" OFF)
 option(SEVENT_WS_DEFLATE "WebSocket permessage-deflate compression (requires zlib)" OFF)
+option(SEVENT_WS_TLS "WebSocket TLS transport (requires OpenSSL)" OFF)
 
 option(SEVENT_ASAN "Build with AddressSanitizer (memory/leak detection)" OFF)
 option(SEVENT_TSAN "Build with ThreadSanitizer (data race detection)" OFF)
@@ -102,8 +103,8 @@ target_include_directories(sevent_ws PRIVATE
 )
 target_link_libraries(sevent_ws PUBLIC sevent)
 
-if(SEVENT_WS_THREAD_SAFE)
-    target_compile_definitions(sevent_ws PRIVATE SEVENT_WS_THREAD_SAFE)
+if(SEVENT_THREAD_SAFE)
+    target_compile_definitions(sevent_ws PRIVATE SEVENT_THREAD_SAFE)
 endif()
 
 # permessage-deflate 压缩 (RFC 7692), 需要 zlib
@@ -189,8 +190,8 @@ add_executable(test-ws-conn
 target_include_directories(test-ws-conn PRIVATE include)
 target_include_directories(test-ws-conn PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test-ws-conn PRIVATE sevent_ws)
-if(SEVENT_WS_THREAD_SAFE)
-    target_compile_definitions(test-ws-conn PRIVATE SEVENT_WS_THREAD_SAFE)
+if(SEVENT_THREAD_SAFE)
+    target_compile_definitions(test-ws-conn PRIVATE SEVENT_THREAD_SAFE)
 endif()
 
 add_executable(test-frag-stream
@@ -272,8 +273,8 @@ add_executable(example-ws-client
 target_include_directories(example-ws-client PRIVATE include)
 target_include_directories(example-ws-client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(example-ws-client PRIVATE Threads::Threads)
-if(SEVENT_WS_THREAD_SAFE)
-    target_compile_definitions(example-ws-client PRIVATE SEVENT_WS_THREAD_SAFE)
+if(SEVENT_THREAD_SAFE)
+    target_compile_definitions(example-ws-client PRIVATE SEVENT_THREAD_SAFE)
 endif()
 if(SEVENT_WS_DEFLATE)
     target_compile_definitions(example-ws-client PRIVATE SEVENT_WS_DEFLATE)

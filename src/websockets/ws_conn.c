@@ -23,7 +23,7 @@
 #include "ws_frame.h"
 #include "ws_handshake.h"
 
-#ifdef SEVENT_WS_THREAD_SAFE
+#ifdef SEVENT_THREAD_SAFE
 #include "../../include/sevent_platform.h"
 #define WS_LOCK(c)                                                                                                     \
     do {                                                                                                               \
@@ -1611,7 +1611,7 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     struct sevent_ws_conn *c = SEVENT_I_NEW0(c);
     if(!c)
         return NULL;
-#ifdef SEVENT_WS_THREAD_SAFE
+#ifdef SEVENT_THREAD_SAFE
     if(sevent_mutex_init_recursive(&c->lock) != 0) {
         sevent_i_free(c);
         return NULL;
@@ -1674,7 +1674,7 @@ cleanup:
         close(c->fd);
     sevent_i_free(c->recv_buf);
     sevent_i_free(c->frag_buf);
-#ifdef SEVENT_WS_THREAD_SAFE
+#ifdef SEVENT_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif
     sevent_i_free(c);
@@ -1782,7 +1782,7 @@ static void ws_cleanup_conn(void *data) {
         c->deflate = NULL;
     }
     ws_queue_clear(c);
-#ifdef SEVENT_WS_THREAD_SAFE
+#ifdef SEVENT_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif
     sevent_i_free(c->recv_buf);

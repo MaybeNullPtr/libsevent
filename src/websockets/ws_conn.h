@@ -16,7 +16,7 @@
 /* 无效 socket 标记 */
 #define SEVENT_INVALID_SOCKET (-1)
 
-#ifdef SEVENT_WS_THREAD_SAFE
+#ifdef SEVENT_THREAD_SAFE
 #include "../../include/sevent_platform.h"
 #endif
 
@@ -73,7 +73,7 @@ struct sevent_ws_conn {
     /* ---- 状态 ---- */
     int  state;     /* enum ws_state */
     bool destroyed; /* 回调重入守卫: on_error/on_close 中 destroy 后不再访问 */
-#ifdef SEVENT_WS_THREAD_SAFE
+#ifdef SEVENT_THREAD_SAFE
     sevent_mutex_t lock; /* 跨线程锁 (递归) */
 #endif
 

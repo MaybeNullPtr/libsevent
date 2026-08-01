@@ -14,7 +14,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#ifdef SEVENT_WS_THREAD_SAFE
+#ifdef SEVENT_THREAD_SAFE
 #include <pthread.h>
 #endif
 
@@ -1453,7 +1453,7 @@ static int t_state_checks(void) {
     return 0;
 }
 
-#ifdef SEVENT_WS_THREAD_SAFE
+#ifdef SEVENT_THREAD_SAFE
 struct thr_arg {
     sevent_ws_conn *ws;
     int             result;
