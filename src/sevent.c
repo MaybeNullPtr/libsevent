@@ -484,7 +484,13 @@ int sevent_run_once(sevent_context *ctx) {
 
     /* 阶段 2: select */
     if(do_select) {
-        struct timeval *tvp = has_timer ? &tv : NULL;
+        if(!has_timer) {
+            /* 无 timer 时不死等: 最多 50ms 醒一次, 保证后续注册的
+             * timer / 跨线程状态变化能被及时处理 (timer 注册不唤醒 loop) */
+            tv.tv_sec  = 0;
+            tv.tv_usec = 50 * 1000;
+        }
+        struct timeval *tvp = &tv;
         struct timespec t0;
         clock_gettime(CLOCK_MONOTONIC, &t0);
 
