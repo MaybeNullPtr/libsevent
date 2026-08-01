@@ -628,20 +628,22 @@ TEST(handshake_build_request_pmd_offer) {
     ASSERT(strstr(buf, "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n") != NULL);
 
     /* 请求 no_context_takeover (client 自我承诺 + server 请求) */
-    ws_deflate_params p = {0};
+    ws_deflate_params p          = {0};
     p.client_no_context_takeover = true;
     p.server_no_context_takeover = true;
-    n = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL, true, &p);
+    n                            = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL, true, &p);
     ASSERT_GT(n, 0);
-    ASSERT(strstr(buf, "permessage-deflate; client_max_window_bits; "
-                       "client_no_context_takeover; server_no_context_takeover\r\n") != NULL);
+    ASSERT(strstr(buf,
+                  "permessage-deflate; client_max_window_bits; "
+                  "client_no_context_takeover; server_no_context_takeover\r\n") != NULL);
 
     /* 带值 client_max_window_bits (降窗功能预留) */
     p.client_max_window_bits = 9;
-    n = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL, true, &p);
+    n                        = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL, true, &p);
     ASSERT_GT(n, 0);
-    ASSERT(strstr(buf, "client_max_window_bits=9; client_no_context_takeover; "
-                       "server_no_context_takeover\r\n") != NULL);
+    ASSERT(strstr(buf,
+                  "client_max_window_bits=9; client_no_context_takeover; "
+                  "server_no_context_takeover\r\n") != NULL);
 #endif
 }
 

@@ -72,14 +72,14 @@ void ws_gen_key(char key[WS_KEY_BASE64_LEN]);
  * 非 NULL 时按字段拼接 (RFC 7692 §7.1.2).
  * <0 表示 buf 容量不足.
  */
-int ws_build_request(char                   *buf,
-                     size_t                  cap,
-                     const char             *host,
-                     uint16_t                port,
-                     const char             *path,
-                     const char             *key,
-                     const char             *sub_protocol,
-                     bool                    enable_deflate,
+int ws_build_request(char                    *buf,
+                     size_t                   cap,
+                     const char              *host,
+                     uint16_t                 port,
+                     const char              *path,
+                     const char              *key,
+                     const char              *sub_protocol,
+                     bool                     enable_deflate,
                      const ws_deflate_params *pmd_offer);
 
 /* ===== 解析 HTTP 升级响应 =====

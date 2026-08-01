@@ -63,14 +63,14 @@ void ws_gen_key(char key[WS_KEY_BASE64_LEN]) {
     ws_base64_encode(raw, sizeof(raw), key, WS_KEY_BASE64_LEN);
 }
 
-int ws_build_request(char                   *buf,
-                     size_t                  cap,
-                     const char             *host,
-                     uint16_t                port,
-                     const char             *path,
-                     const char             *key,
-                     const char             *sub_protocol,
-                     bool                    enable_deflate,
+int ws_build_request(char                    *buf,
+                     size_t                   cap,
+                     const char              *host,
+                     uint16_t                 port,
+                     const char              *path,
+                     const char              *key,
+                     const char              *sub_protocol,
+                     bool                     enable_deflate,
                      const ws_deflate_params *pmd_offer) {
     (void)enable_deflate;
     (void)pmd_offer;
@@ -108,13 +108,17 @@ int ws_build_request(char                   *buf,
         if(pmd_offer) {
             /* client_max_window_bits: 自我承诺发送窗口上限 (0=无值 offer) */
             if(pmd_offer->client_max_window_bits)
-                e += snprintf(ext + e, sizeof(ext) - (size_t)e, "; " WS_EXT_CLIENT_MAX_WB "=%u",
+                e += snprintf(ext + e,
+                              sizeof(ext) - (size_t)e,
+                              "; " WS_EXT_CLIENT_MAX_WB "=%u",
                               (unsigned)pmd_offer->client_max_window_bits);
             else
                 e += snprintf(ext + e, sizeof(ext) - (size_t)e, "; " WS_EXT_CLIENT_MAX_WB);
             /* server_max_window_bits: 请求对端窗口上限 (0=不请求) */
             if(pmd_offer->server_max_window_bits)
-                e += snprintf(ext + e, sizeof(ext) - (size_t)e, "; " WS_EXT_SERVER_MAX_WB "=%u",
+                e += snprintf(ext + e,
+                              sizeof(ext) - (size_t)e,
+                              "; " WS_EXT_SERVER_MAX_WB "=%u",
                               (unsigned)pmd_offer->server_max_window_bits);
             /* no_context_takeover: 自我承诺/请求对端每条消息重置压缩上下文 */
             if(pmd_offer->client_no_context_takeover)

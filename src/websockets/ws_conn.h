@@ -90,9 +90,9 @@ struct sevent_ws_conn {
 
     /* ---- 压缩 (permessage-deflate) ---- */
     bool                    enable_deflate;
-    sevent_ws_deflate_level deflate_level; /* 发送压缩等级 */
-    bool request_client_no_context_takeover; /* 自我承诺 (offer + 本地生效) */
-    bool request_server_no_context_takeover; /* 请求对端 (offer, 响应同意才生效) */
+    sevent_ws_deflate_level deflate_level;                      /* 发送压缩等级 */
+    bool                    request_client_no_context_takeover; /* 自我承诺 (offer + 本地生效) */
+    bool                    request_server_no_context_takeover; /* 请求对端 (offer, 响应同意才生效) */
     ws_deflate             *deflate;
 
     /* ---- 用户回调 ---- */

@@ -1561,17 +1561,17 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
         strncpy(c->sub_protocol, cfg->sub_protocol, sizeof(c->sub_protocol) - 1);
         c->sub_protocol[sizeof(c->sub_protocol) - 1] = '\0';
     }
-    c->on_open            = cfg->on_open;
-    c->on_message         = cfg->on_message;
-    c->on_close           = cfg->on_close;
-    c->on_error           = cfg->on_error;
-    c->on_http_response   = cfg->on_http_response;
-    c->on_pong            = cfg->on_pong;
-    c->user_data          = cfg->user_data;
-    c->connect_timeout_ms = cfg->connect_timeout_ms;
-    c->ping_interval_ms   = cfg->ping_interval_ms;
-    c->enable_deflate                 = cfg->enable_deflate;
-    c->deflate_level                  = cfg->deflate_level;
+    c->on_open                            = cfg->on_open;
+    c->on_message                         = cfg->on_message;
+    c->on_close                           = cfg->on_close;
+    c->on_error                           = cfg->on_error;
+    c->on_http_response                   = cfg->on_http_response;
+    c->on_pong                            = cfg->on_pong;
+    c->user_data                          = cfg->user_data;
+    c->connect_timeout_ms                 = cfg->connect_timeout_ms;
+    c->ping_interval_ms                   = cfg->ping_interval_ms;
+    c->enable_deflate                     = cfg->enable_deflate;
+    c->deflate_level                      = cfg->deflate_level;
     c->request_client_no_context_takeover = cfg->request_client_no_context_takeover;
     c->request_server_no_context_takeover = cfg->request_server_no_context_takeover;
 
