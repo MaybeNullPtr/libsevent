@@ -408,6 +408,15 @@ static void on_write_ready(void *data);
 /* 单批解压输出缓冲: 固定大小, 堆分配 (嵌入式栈小, 不上栈) */
 #define SEVENT_WS_DECOMP_BATCH 4096
 
+/* 三个解压函数 (chunk/end/oneshot) 共享同一循环骨架: next_out/avail_out →
+ * inflate(flush) → 错误处理 → 分批 on_message → destroyed 检查 → 退出.
+ * 差异点 (修改任一函数须同步另两处; 曾因三处细节不一致出过两次 bug):
+ *   - flush 模式: chunk 用 Z_NO_FLUSH (等下一块输入),
+ *     end/oneshot 用 Z_SYNC_FLUSH (必须到 sync 点)
+ *   - 错误接受集: end/oneshot 额外接受 Z_STREAM_END
+ *   - 退出条件: chunk 要求输入消费完 (avail_in==0),
+ *     end/oneshot 只要求输出有空 (avail_out>0) */
+
 /* 固定缓冲循环 inflate: 返回 0=OK, 协议错误=SEVENT_WS_ERR_PROTOCOL */
 static int decompress_stream_chunk(struct sevent_ws_conn *c, const uint8_t *data, size_t len, bool is_bin) {
 #ifdef SEVENT_WS_DEFLATE
