@@ -1416,7 +1416,10 @@ static void on_handshake_data(void *data) {
             }
             /* 无值 (';'/','/结尾): 合法, 不限制 (保持 15) */
         }
-        p.compression_level = c->deflate_level;
+        /* 自我承诺的 no_context_takeover 本地直接生效 (不依赖服务器响应);
+         * server 侧 (request_server_no_context_takeover) 已在上面响应解析处理 */
+        p.client_no_context_takeover = c->request_client_no_context_takeover;
+        p.compression_level          = c->deflate_level;
         ws_deflate_create(&c->deflate, &p);
     }
 
@@ -1481,6 +1484,12 @@ static void on_connect_ready(void *data) {
         return;
     }
     ws_gen_key(c->sec_ws_key);
+    /* 压缩 offer 参数 (仅 request_* 字段; window_bits 留待降窗功能) */
+    ws_deflate_params pmd_offer = {0};
+    if(c->enable_deflate) {
+        pmd_offer.client_no_context_takeover = c->request_client_no_context_takeover;
+        pmd_offer.server_no_context_takeover = c->request_server_no_context_takeover;
+    }
     char req[1024];
     int  req_len = ws_build_request(req,
                                    sizeof(req),
@@ -1489,7 +1498,8 @@ static void on_connect_ready(void *data) {
                                    c->path,
                                    c->sec_ws_key,
                                    c->sub_protocol[0] ? c->sub_protocol : NULL,
-                                   c->enable_deflate);
+                                   c->enable_deflate,
+                                   c->enable_deflate ? &pmd_offer : NULL);
     if(req_len < 0) {
         WS_UNLOCK(c);
         ws_fatal(c, SEVENT_ERR_NOMEM);
@@ -1560,8 +1570,10 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->user_data          = cfg->user_data;
     c->connect_timeout_ms = cfg->connect_timeout_ms;
     c->ping_interval_ms   = cfg->ping_interval_ms;
-    c->enable_deflate     = cfg->enable_deflate;
-    c->deflate_level      = cfg->deflate_level;
+    c->enable_deflate                 = cfg->enable_deflate;
+    c->deflate_level                  = cfg->deflate_level;
+    c->request_client_no_context_takeover = cfg->request_client_no_context_takeover;
+    c->request_server_no_context_takeover = cfg->request_server_no_context_takeover;
 
     /* 固定大小接收/分片缓冲区.
      * recv_buf 同时用于 HTTP 握手响应读取, 至少 SEVENT_WS_RECV_MIN. */

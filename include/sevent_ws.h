@@ -103,6 +103,9 @@ typedef struct sevent_ws_config {
     size_t                  recv_buf_size;      /* 接收缓冲区初始大小, 0=默认 4096 */
     bool                    enable_deflate;     /* 启用 permessage-deflate 压缩 (RFC 7692) */
     sevent_ws_deflate_level deflate_level;      /* 发送压缩等级, 默认 DEFAULT(6) */
+    bool request_client_no_context_takeover;    /* 自我承诺: 每条消息重置本端压缩上下文
+                                                 * (错误隔离: 单条消息损坏不影响后续) */
+    bool request_server_no_context_takeover;    /* 请求对端每条消息重置 (服务器同意才生效) */
 
     /* ---- 用户回调 ---- */
     sevent_ws_on_open_fn          on_open;

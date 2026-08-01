@@ -14,6 +14,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ws_deflate.h" /* ws_deflate_params (pmd_offer) */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -37,6 +39,7 @@ extern "C" {
 #define WS_EXT_PMD "permessage-deflate"
 #define WS_EXT_SERVER_NO_CTX "server_no_context_takeover"
 #define WS_EXT_CLIENT_NO_CTX "client_no_context_takeover"
+#define WS_EXT_SERVER_MAX_WB "server_max_window_bits"
 #define WS_EXT_CLIENT_MAX_WB "client_max_window_bits"
 
 /* HTTP 响应头名 (小写, 解析用 ci_eq 比较) */
@@ -65,16 +68,19 @@ void ws_gen_key(char key[WS_KEY_BASE64_LEN]);
  *
  * 构建完整 GET 请求到 buf. 返回写入字节数 (含 \r\n 结尾).
  * sub_protocol 为 NULL 表示不请求子协议.
+ * pmd_offer 为 NULL 表示默认 offer (permessage-deflate; client_max_window_bits),
+ * 非 NULL 时按字段拼接 (RFC 7692 §7.1.2).
  * <0 表示 buf 容量不足.
  */
-int ws_build_request(char       *buf,
-                     size_t      cap,
-                     const char *host,
-                     uint16_t    port,
-                     const char *path,
-                     const char *key,
-                     const char *sub_protocol,
-                     bool        enable_deflate);
+int ws_build_request(char                   *buf,
+                     size_t                  cap,
+                     const char             *host,
+                     uint16_t                port,
+                     const char             *path,
+                     const char             *key,
+                     const char             *sub_protocol,
+                     bool                    enable_deflate,
+                     const ws_deflate_params *pmd_offer);
 
 /* ===== 解析 HTTP 升级响应 =====
  *

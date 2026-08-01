@@ -287,6 +287,48 @@ static void test_errors(void) {
     PASS();
 }
 
+/* 消息独立性: 用全新 inflate 流解压缩流, 返回 0=成功, 非 0=失败.
+ * 数据构造: msg1 = R(4096) + 'X'*4096, msg2 = 'X'*4096 + R(4096).
+ * 连续上下文下 msg2 会引用 msg1 的窗口 (距离 4096) → 独立流解压报错;
+ * no_context_takeover (deflateReset) 后 msg2 独立 → 独立流可解. */
+#ifdef SEVENT_WS_DEFLATE
+static int decompress_fresh(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_cap, size_t *out_used) {
+    uint8_t *buf = (uint8_t *)malloc(in_len + 4);
+    if(!buf)
+        return -1;
+    memcpy(buf, in, in_len);
+    memcpy(buf + in_len, "\x00\x00\xff\xff", 4); /* RFC 7692 §7.2.2 tail */
+
+    z_stream zi;
+    memset(&zi, 0, sizeof(zi));
+    if(inflateInit2(&zi, -15) != Z_OK) {
+        free(buf);
+        return -1;
+    }
+    zi.next_in  = buf;
+    zi.avail_in = (uInt)(in_len + 4);
+    size_t used = 0;
+    int    rc   = Z_OK;
+    for(;;) {
+        if(used >= out_cap) {
+            rc = Z_BUF_ERROR;
+            break;
+        }
+        zi.next_out  = out + used;
+        zi.avail_out = (uInt)(out_cap - used);
+        size_t before = zi.avail_out; /* 本轮可用输出 */
+        rc            = inflate(&zi, Z_SYNC_FLUSH);
+        used += before - zi.avail_out; /* 本轮消耗 */
+        if(rc != Z_OK || zi.avail_out > 0)
+            break;
+    }
+    inflateEnd(&zi);
+    free(buf);
+    *out_used = used;
+    return (rc == Z_OK) ? 0 : -1;
+}
+#endif /* SEVENT_WS_DEFLATE */
+
 /* ====================================================================
  *  测试: 带参数的创建 (no_context_takeover)
  * ==================================================================== */
@@ -365,6 +407,104 @@ static void test_params(void) {
     ws_deflate_destroy(df);
 #else
     TEST("params (stub)");
+    PASS();
+#endif
+}
+
+/* no_context_takeover 消息独立性: 每条消息必须能被全新 inflate 流解压.
+ * 对照: 不带 nct 时 msg2 引用 msg1 窗口 → 独立流必须失败 (验证构造有效). */
+static void test_nct_independence(void) {
+#ifdef SEVENT_WS_DEFLATE
+    TEST("nct: 消息独立性 (独立 inflate 流)");
+    uint8_t *r = (uint8_t *)malloc(4096);
+    if(!r) {
+        FAIL("malloc");
+        return;
+    }
+    /* 确定性伪随机 (可复现) */
+    unsigned int seed = 12345;
+    for(size_t i = 0; i < 4096; i++) {
+        seed = seed * 1103515245u + 12345u;
+        r[i] = (uint8_t)(seed >> 24);
+    }
+    char msg1[8192], msg2[8192];
+    memcpy(msg1, r, 4096);
+    memset(msg1 + 4096, 'X', 4096);
+    memset(msg2, 'X', 4096);
+    memcpy(msg2 + 4096, r, 4096);
+
+    ws_deflate       *df  = NULL;
+    ws_deflate_params p   = {.client_no_context_takeover = true};
+    if(!ws_deflate_create(&df, &p)) {
+        FAIL("create");
+        free(r);
+        return;
+    }
+    size_t   cmax = ws_deflate_compress_maxlen(df, sizeof(msg2));
+    uint8_t *c2   = (uint8_t *)malloc(cmax);
+    uint8_t *c2b  = (uint8_t *)malloc(cmax);
+    if(!c2 || !c2b) {
+        FAIL("malloc");
+        goto out;
+    }
+    /* 压缩两条消息 (nct: 每条独立) */
+    size_t c1l = cmax;
+    if(!ws_deflate_compress(df, (const uint8_t *)msg1, sizeof(msg1), c2, &c1l)) {
+        FAIL("compress msg1");
+        goto out;
+    }
+    size_t c2l = cmax;
+    if(!ws_deflate_compress(df, (const uint8_t *)msg2, sizeof(msg2), c2b, &c2l)) {
+        FAIL("compress msg2");
+        goto out;
+    }
+    /* 独立流解 msg2 → 必须成功 (消息独立) */
+    uint8_t dec[8192 + 64];
+    size_t  used = 0;
+    if(decompress_fresh(c2b, c2l, dec, sizeof(dec), &used) != 0 || used != sizeof(msg2) ||
+       memcmp(dec, msg2, sizeof(msg2)) != 0) {
+        FAIL("msg2 独立流解压失败 (上下文未重置?)");
+        goto out;
+    }
+    /* 对照: 不带 nct 的 df 压缩同样两条 → 独立流解 msg2 必须失败
+     * (证明构造确实触发跨消息引用; 若对照也成功, 本测试无效) */
+    {
+        ws_deflate       *df2  = NULL;
+        ws_deflate_params p2   = {0};
+        if(!ws_deflate_create(&df2, &p2)) {
+            FAIL("create (对照)");
+                goto out;
+        }
+        uint8_t *a2 = (uint8_t *)malloc(cmax);
+        uint8_t *b2 = (uint8_t *)malloc(cmax);
+        if(!a2 || !b2) {
+            FAIL("malloc (对照)");
+            free(a2);
+            free(b2);
+            ws_deflate_destroy(df2);
+                goto out;
+        }
+        size_t a1l = cmax, a2l = cmax;
+        ws_deflate_compress(df2, (const uint8_t *)msg1, sizeof(msg1), a2, &a1l);
+        ws_deflate_compress(df2, (const uint8_t *)msg2, sizeof(msg2), b2, &a2l);
+        size_t u2 = 0;
+        int    r2 = decompress_fresh(b2, a2l, dec, sizeof(dec), &u2);
+        free(a2);
+        free(b2);
+        ws_deflate_destroy(df2);
+        if(r2 == 0) {
+            FAIL("对照: 无 nct 时独立流也应失败 (构造未触发跨消息引用)");
+                goto out;
+        }
+    }
+    PASS();
+out:
+    free(c2);
+    free(c2b);
+    ws_deflate_destroy(df);
+    free(r);
+#else
+    TEST("nct independence (stub)");
     PASS();
 #endif
 }
@@ -642,6 +782,7 @@ int main(void) {
     test_compressible();
     test_errors();
     test_params();
+    test_nct_independence();
     test_stream_roundtrip();
     test_stream_chunked();
     test_stream_compression();

@@ -578,7 +578,7 @@ TEST(handshake_build_request_basic) {
     char key[WS_KEY_BASE64_LEN];
     ws_gen_key(key);
 
-    int n = ws_build_request(buf, sizeof(buf), "example.com", 80, "/ws", key, NULL, false);
+    int n = ws_build_request(buf, sizeof(buf), "example.com", 80, "/ws", key, NULL, false, NULL);
     ASSERT_GT(n, 0);
     ASSERT_LT((size_t)n, sizeof(buf));
 
@@ -603,7 +603,7 @@ TEST(handshake_build_request_with_protocol) {
     char key[WS_KEY_BASE64_LEN];
     ws_gen_key(key);
 
-    int n = ws_build_request(buf, sizeof(buf), "chat.example.com", 9000, "/chat", key, "myprotocol", false);
+    int n = ws_build_request(buf, sizeof(buf), "chat.example.com", 9000, "/chat", key, "myprotocol", false, NULL);
     ASSERT_GT(n, 0);
 
     ASSERT(strstr(buf, "Sec-WebSocket-Protocol: myprotocol\r\n") != NULL);
@@ -612,8 +612,37 @@ TEST(handshake_build_request_with_protocol) {
 TEST(handshake_build_request_buffer_too_small) {
     char buf[10];
     char key[WS_KEY_BASE64_LEN] = "dGhlIHNhbXBsZSBub25jZQ==";
-    int  n                      = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL, false);
+    int  n                      = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL, false, NULL);
     ASSERT_EQ(-1, n);
+}
+
+TEST(handshake_build_request_pmd_offer) {
+#ifdef SEVENT_WS_DEFLATE
+    char buf[512];
+    char key[WS_KEY_BASE64_LEN];
+    ws_gen_key(key);
+
+    /* 默认 offer (pmd_offer=NULL): 无值 client_max_window_bits */
+    int n = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL, true, NULL);
+    ASSERT_GT(n, 0);
+    ASSERT(strstr(buf, "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n") != NULL);
+
+    /* 请求 no_context_takeover (client 自我承诺 + server 请求) */
+    ws_deflate_params p = {0};
+    p.client_no_context_takeover = true;
+    p.server_no_context_takeover = true;
+    n = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL, true, &p);
+    ASSERT_GT(n, 0);
+    ASSERT(strstr(buf, "permessage-deflate; client_max_window_bits; "
+                       "client_no_context_takeover; server_no_context_takeover\r\n") != NULL);
+
+    /* 带值 client_max_window_bits (降窗功能预留) */
+    p.client_max_window_bits = 9;
+    n = ws_build_request(buf, sizeof(buf), "h", 1, "/", key, NULL, true, &p);
+    ASSERT_GT(n, 0);
+    ASSERT(strstr(buf, "client_max_window_bits=9; client_no_context_takeover; "
+                       "server_no_context_takeover\r\n") != NULL);
+#endif
 }
 
 /* ---- 响应解析 ---- */
@@ -810,6 +839,7 @@ TEST(handshake_full_roundtrip) {
     T(handshake_build_request_basic)                                                                                   \
     T(handshake_build_request_with_protocol)                                                                           \
     T(handshake_build_request_buffer_too_small)                                                                        \
+    T(handshake_build_request_pmd_offer)                                                                               \
     T(handshake_parse_101_basic)                                                                                       \
     T(handshake_parse_101_no_protocol)                                                                                 \
     T(handshake_parse_non_101)                                                                                         \

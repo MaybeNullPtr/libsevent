@@ -1995,6 +1995,50 @@ static int t_deflate_create(void) {
     return 0;
 }
 
+static int t_nct_config(void) {
+    /* request_client_no_context_takeover=true: 自我承诺本地生效 —
+     * 服务器响应不带该参数也应生效 (offer 字符串由 test_ws.c 单测覆盖);
+     * request_server_no_context_takeover=true: 服务器未同意则不生效. */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host                                  = "127.0.0.1";
+    cfg.path                                  = "/";
+    cfg.enable_deflate                        = true;
+    cfg.request_client_no_context_takeover    = true;
+    cfg.request_server_no_context_takeover    = true;
+    cfg.on_open                               = ev_open;
+    g_ev                                      = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake_deflate(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+    if(!ws->deflate)
+        return 1;
+    /* 自我承诺: 服务器响应未带 client_no_context_takeover 也应生效 */
+    if(!ws->deflate->client_no_context_takeover)
+        return 1;
+    /* 请求: 服务器响应未带 server_no_context_takeover → 不生效 */
+    if(ws->deflate->server_no_context_takeover)
+        return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    sevent_destroy(ctx);
+    return 0;
+}
+
 static int t_deflate_no_create(void) {
     /* enable_deflate=false 时不应创建 deflate */
     sevent_context *ctx = sevent_create();
@@ -2634,6 +2678,7 @@ int main(void) {
                  {"pipelined_proto_error", t_pipelined_proto_error},
                  {"eof_stream_trailing_close", t_eof_stream_trailing_close},
                  {"deflate_create", t_deflate_create},
+                 {"nct_config", t_nct_config},
                  {"deflate_no_create", t_deflate_no_create},
                  {"deflate_recv", t_deflate_recv},
                  {"deflate_recv_large", t_deflate_recv_large},

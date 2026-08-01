@@ -63,15 +63,17 @@ void ws_gen_key(char key[WS_KEY_BASE64_LEN]) {
     ws_base64_encode(raw, sizeof(raw), key, WS_KEY_BASE64_LEN);
 }
 
-int ws_build_request(char       *buf,
-                     size_t      cap,
-                     const char *host,
-                     uint16_t    port,
-                     const char *path,
-                     const char *key,
-                     const char *sub_protocol,
-                     bool        enable_deflate) {
+int ws_build_request(char                   *buf,
+                     size_t                  cap,
+                     const char             *host,
+                     uint16_t                port,
+                     const char             *path,
+                     const char             *key,
+                     const char             *sub_protocol,
+                     bool                    enable_deflate,
+                     const ws_deflate_params *pmd_offer) {
     (void)enable_deflate;
+    (void)pmd_offer;
     /* 固定头部 (不含子协议行和最后的空行) */
     int n = snprintf(buf,
                      cap,
@@ -97,10 +99,35 @@ int ws_build_request(char       *buf,
     }
 
 #ifdef SEVENT_WS_DEFLATE
-    /* permessage-deflate 压缩扩展协商 */
+    /* permessage-deflate 压缩扩展协商 (RFC 7692 §7.1.2) */
     if(enable_deflate) {
-        int m = snprintf(
-                buf + n, cap - (size_t)n, "Sec-WebSocket-Extensions: " WS_EXT_PMD "; " WS_EXT_CLIENT_MAX_WB "\r\n");
+        char ext[192];
+        int  e = snprintf(ext, sizeof(ext), WS_EXT_PMD);
+        if(e < 0 || (size_t)e >= sizeof(ext))
+            return -1;
+        if(pmd_offer) {
+            /* client_max_window_bits: 自我承诺发送窗口上限 (0=无值 offer) */
+            if(pmd_offer->client_max_window_bits)
+                e += snprintf(ext + e, sizeof(ext) - (size_t)e, "; " WS_EXT_CLIENT_MAX_WB "=%u",
+                              (unsigned)pmd_offer->client_max_window_bits);
+            else
+                e += snprintf(ext + e, sizeof(ext) - (size_t)e, "; " WS_EXT_CLIENT_MAX_WB);
+            /* server_max_window_bits: 请求对端窗口上限 (0=不请求) */
+            if(pmd_offer->server_max_window_bits)
+                e += snprintf(ext + e, sizeof(ext) - (size_t)e, "; " WS_EXT_SERVER_MAX_WB "=%u",
+                              (unsigned)pmd_offer->server_max_window_bits);
+            /* no_context_takeover: 自我承诺/请求对端每条消息重置压缩上下文 */
+            if(pmd_offer->client_no_context_takeover)
+                e += snprintf(ext + e, sizeof(ext) - (size_t)e, "; " WS_EXT_CLIENT_NO_CTX);
+            if(pmd_offer->server_no_context_takeover)
+                e += snprintf(ext + e, sizeof(ext) - (size_t)e, "; " WS_EXT_SERVER_NO_CTX);
+        } else {
+            /* 默认 offer: 无值 client_max_window_bits (向后兼容) */
+            e += snprintf(ext + e, sizeof(ext) - (size_t)e, "; " WS_EXT_CLIENT_MAX_WB);
+        }
+        if(e < 0 || (size_t)e >= sizeof(ext))
+            return -1;
+        int m = snprintf(buf + n, cap - (size_t)n, "Sec-WebSocket-Extensions: %s\r\n", ext);
         if(m < 0 || (size_t)m >= cap - (size_t)n)
             return -1;
         n += m;
