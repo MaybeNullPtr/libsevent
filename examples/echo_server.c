@@ -1,125 +1,73 @@
 /**
- *  echo_server.c — TCP Echo Server
+ *  echo_server.c — TCP Echo Server (tcp_acceptor + tcp_conn)
  *
  *  功能: 监听 7777 端口，收到数据原样返回
  *  用法: make example-echo-server && ./example-echo-server
  *        telnet 127.0.0.1 7777  (另一个终端)
  *
- *  类似 libuv 的 tcp-echo-server 示例 / libevent 的 hello-world
+ *  演示点:
+ *    - tcp_acceptor 封装服务端样板 (listen + accept 循环 + 分发)
+ *    - tcp_conn 纯回调模型: on_data 推送 / write 返回"已接受" (异步 flush)
+ *    - 回调内 destroy 安全 (free 推迟到 run_posts)
  */
 
 #include "sevent.h"
+#include "sevent_tcp_conn.h"
+#include "sevent_tcp_acceptor.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
 #define PORT 7777
 
-/* ---- 每个客户端连接的状态 ---- */
+static sevent_context *g_ctx;
 
-struct client {
-    int        fd;   /* 客户端 socket fd */
-    sevent_io *h_io; /* 自己的注册句柄，断连时用于注销 */
-    char       buf[4096];
-};
+/* ---- 连接回调 (user_data = tcp_conn) ---- */
 
-static sevent_context *g_ctx; /* 所有回调共享 ctx */
-
-/* ---- 客户端可读回调 ---- */
-
-static void on_client_read(void *data) {
-    struct client *c = (struct client *)data;
-
-    ssize_t n = read(c->fd, c->buf, sizeof(c->buf) - 1);
-    if(n <= 0) {
-        /* 断开连接或错误 */
-        if(n == 0)
-            printf("[disconnect] fd=%d\n", c->fd);
-        else
-            perror("read");
-        sevent_io_unregister(g_ctx, c->h_io);
-        close(c->fd);
-        free(c);
-        return;
-    }
-
-    /* Echo 回显 */
-    c->buf[n] = '\0';
-
-    /* 直接写回 (小数据，非阻塞 socket 下通常一次写完) */
-    size_t written = 0;
-    while(written < (size_t)n) {
-        ssize_t w = write(c->fd, c->buf + written, (size_t)(n - written));
-        if(w > 0) {
-            written += (size_t)w;
-        } else if(errno != EAGAIN && errno != EINTR) {
-            perror("write");
-            sevent_io_unregister(g_ctx, c->h_io);
-            close(c->fd);
-            free(c);
-            return;
-        }
-    }
-
-    /* 去掉换行符后打印收到的内容 */
-    c->buf[n] = '\0';
-    if(c->buf[n - 1] == '\n')
-        c->buf[n - 1] = '\0';
-    printf("[echo] fd=%d: %s\n", c->fd, c->buf);
+static void on_open(void *d) {
+    (void)d;
+    printf("[connect]\n");
 }
 
-/* ---- 监听 socket 可读 = 有新连接 ---- */
+static void on_data(void *d, const uint8_t *data, size_t len) {
+    sevent_tcp_conn *c  = (sevent_tcp_conn *)d;
+    /* 回显: write 拷贝进写队列, 异步自动 flush, 调用方 buffer 可随即复用 */
+    int              rc = sevent_tcp_conn_write(c, data, len);
+    if(rc != 0)
+        printf("[write] failed: %d\n", rc);
+    /* 去掉换行符后打印收到的内容 */
+    if(len > 0 && data[len - 1] == '\n')
+        len--;
+    printf("[echo] %.*s\n", (int)len, (const char *)data);
+}
 
-static void on_accept(void *data) {
-    int listen_fd = *(int *)data;
+static void on_close(void *d) {
+    sevent_tcp_conn *c = (sevent_tcp_conn *)d;
+    printf("[disconnect]\n");
+    sevent_tcp_conn_destroy(c); /* 回调内 destroy: 延迟释放, 栈安全 */
+}
 
-    struct sockaddr_in addr;
-    socklen_t          addrlen = sizeof(addr);
+static void on_error(void *d, int err) {
+    sevent_tcp_conn *c = (sevent_tcp_conn *)d;
+    printf("[error] %d\n", err);
+    sevent_tcp_conn_destroy(c);
+}
 
-    int cfd = accept(listen_fd, (struct sockaddr *)&addr, &addrlen);
+/* ---- acceptor 分发: fd 已 accept (非阻塞), 包装成 tcp_conn ---- */
 
-    if(cfd < 0) {
-        if(errno != EAGAIN && errno != EINTR)
-            perror("accept");
-        return;
-    }
-
-    /* 设置非阻塞 */
-    int flags = fcntl(cfd, F_GETFL);
-    if(flags < 0) {
-        close(cfd);
-        return;
-    }
-    fcntl(cfd, F_SETFL, flags | O_NONBLOCK);
-
-    /* 分配客户端状态 */
-    struct client *c = (struct client *)malloc(sizeof(*c));
+static void on_accept(void *d, int fd) {
+    (void)d;
+    sevent_tcp_conn *c = sevent_tcp_conn_create(g_ctx);
     if(!c) {
-        close(cfd);
+        close(fd);
         return;
     }
-    c->fd = cfd;
-
-    /* 注册客户端 fd */
-    sevent_io_handler h = {
-            .fd      = cfd,
-            .io_read = on_client_read,
-            .data    = c,
-    };
-    c->h_io = sevent_io_register(g_ctx, &h);
-    if(!c->h_io) {
-        free(c);
-        close(cfd);
-        return;
-    }
-
-    printf("[accept] fd=%d from %s:%d\n", cfd, inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
+    printf("[accept] fd=%d\n", fd);
+    sevent_stream_conn_init init = {
+            .user_data = c, .on_open = on_open, .on_data = on_data, .on_close = on_close, .on_error = on_error};
+    if(sevent_tcp_conn_accept(c, fd, &init) < 0)
+        sevent_tcp_conn_destroy(c); /* 失败: fd 已由本层关闭 */
 }
 
 /* ---- main ---- */
@@ -132,44 +80,11 @@ int main(void) {
     }
     sevent_ignore_sigpipe();
 
-    /* ---- 创建 listen socket ---- */
-
-    int listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    if(listen_fd < 0) {
-        perror("socket");
+    sevent_tcp_acceptor *acc = sevent_tcp_acceptor_create(g_ctx);
+    if(!acc)
         return 1;
-    }
-
-    int optval = 1;
-    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
-
-    struct sockaddr_in addr = {
-            .sin_family = AF_INET, .sin_port = htons(PORT), .sin_addr.s_addr = htonl(INADDR_LOOPBACK), /* 127.0.0.1 */
-    };
-
-    if(bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind");
-        close(listen_fd);
-        return 1;
-    }
-
-    if(listen(listen_fd, SOMAXCONN) < 0) {
-        perror("listen");
-        close(listen_fd);
-        return 1;
-    }
-
-    /* ---- 注册 listen fd ---- */
-
-    sevent_io_handler h = {
-            .fd      = listen_fd,
-            .io_read = on_accept,
-            .data    = &listen_fd,
-    };
-
-    if(!sevent_io_register(g_ctx, &h)) {
-        fprintf(stderr, "sevent_io_register failed\n");
-        close(listen_fd);
+    if(sevent_tcp_acceptor_listen(acc, "127.0.0.1", PORT, 8, on_accept, NULL) < 0) {
+        fprintf(stderr, "listen %d failed\n", PORT);
         return 1;
     }
 
@@ -178,11 +93,9 @@ int main(void) {
     printf("  or:  nc -t 127.0.0.1 %d\n", PORT);
     printf("  (Ctrl-C to stop)\n\n");
 
-    /* ---- 启动 loop ---- */
     sevent_run(g_ctx);
 
-    /* ---- cleanup ---- */
-    close(listen_fd);
+    sevent_tcp_acceptor_destroy(acc);
     sevent_destroy(g_ctx);
     return 0;
 }

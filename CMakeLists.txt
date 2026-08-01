@@ -182,9 +182,9 @@ add_test(NAME stream_conn_tests COMMAND test-stream-conn)
 
 add_executable(example-echo-server
     examples/echo_server.c
-    ${SEVENT_SOURCES}
 )
 target_include_directories(example-echo-server PRIVATE include)
+target_link_libraries(example-echo-server PRIVATE sevent_ws)
 
 add_executable(example-timer-demo
     examples/timer_demo.c
@@ -255,9 +255,9 @@ endif()
 
 add_executable(example-echo-client
     examples/echo_client.c
-    ${SEVENT_SOURCES}
 )
 target_include_directories(example-echo-client PRIVATE include)
+target_link_libraries(example-echo-client PRIVATE sevent_ws)
 
 add_executable(example-stdin-echo
     examples/stdin_echo.c
@@ -267,15 +267,15 @@ target_include_directories(example-stdin-echo PRIVATE include)
 
 add_executable(example-http-server
     examples/http_server.c
-    ${SEVENT_SOURCES}
 )
 target_include_directories(example-http-server PRIVATE include)
+target_link_libraries(example-http-server PRIVATE sevent_ws)
 
 add_executable(example-chat-server
     examples/chat_server.c
-    ${SEVENT_SOURCES}
 )
 target_include_directories(example-chat-server PRIVATE include)
+target_link_libraries(example-chat-server PRIVATE sevent_ws)
 
 add_executable(example-signal-demo
     examples/signal_demo.c
@@ -326,9 +326,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(example-echo-server-oop
     examples/echo_server_oop.cpp
-    ${SEVENT_SOURCES}
 )
 target_include_directories(example-echo-server-oop PRIVATE include)
+target_link_libraries(example-echo-server-oop PRIVATE sevent_ws Threads::Threads)
 target_link_libraries(example-echo-server-oop PRIVATE Threads::Threads)
 
 add_executable(example-timer-oop
