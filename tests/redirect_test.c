@@ -380,6 +380,16 @@ int main(void) {
     }
     close(g_echo_listen);
     close(g_redir_fd);
+    /* destroy 统一 post 后须推进循环执行延迟 free, 否则 sevent_destroy
+     * 丢弃 post → 对象泄漏 (ASAN 暴露) */
+    for(int i = 0; i < 1000; i++) {
+        int post_count = -1;
+        sevent_get_counts(g_ctx, NULL, NULL, &post_count);
+        if(post_count <= 0)
+            break;
+        sevent_wakeup(g_ctx);
+        sevent_run_once(g_ctx);
+    }
     sevent_destroy(g_ctx);
 
     int ok = (g_pass == 1);
