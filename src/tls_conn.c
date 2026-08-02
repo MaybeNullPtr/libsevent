@@ -474,13 +474,28 @@ static int tls_s_shutdown(sevent_stream_conn *s, int flag) {
     return sevent_tcp_conn_shutdown((sevent_tcp_conn *)((struct tls_conn *)s->impl)->tcp, flag);
 }
 
+/* tls ops: 换回调组 (升级转移 — http server 建连后 ws 接管).
+ * 覆盖 init 副本的回调字段; 内部 tcp 回调 (tcp_cb_*) 绑定 tls_conn 不变 —
+ * 数据仍经 tls 层解密密文后推送给新 on_data. 线程: [loop 线程]. */
+static void tls_op_set_callbacks(sevent_stream_conn *s, const sevent_stream_conn_init *cb) {
+    struct tls_conn *t = (struct tls_conn *)s->impl;
+    if(!t || !cb)
+        return;
+    t->init.user_data = cb->user_data;
+    t->init.on_open   = cb->on_open;
+    t->init.on_data   = cb->on_data;
+    t->init.on_close  = cb->on_close;
+    t->init.on_error  = cb->on_error;
+}
+
 static const sevent_stream_ops tls_stream_ops = {
-        .open     = tls_s_open,
-        .accept   = tls_s_accept,
-        .write    = tls_s_write,
-        .shutdown = tls_s_shutdown,
-        .close    = tls_s_close,
-        .destroy  = tls_s_destroy,
+        .open          = tls_s_open,
+        .accept        = tls_s_accept,
+        .write         = tls_s_write,
+        .shutdown      = tls_s_shutdown,
+        .close         = tls_s_close,
+        .destroy       = tls_s_destroy,
+        .set_callbacks = tls_op_set_callbacks,
 };
 
 /* ===== 工厂 (公开 + stream 分发) ===== */

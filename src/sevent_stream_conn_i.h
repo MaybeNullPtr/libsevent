@@ -24,6 +24,11 @@ typedef struct sevent_stream_ops {
     void (*close)(sevent_stream_conn *s);
     void (*destroy)(sevent_stream_conn *s);
     void (*set_no_delay)(sevent_stream_conn *s, bool on); /* 按需 TCP_NODELAY (tcp 直接/tls 转发) */
+    /* 换回调组 (内部契约): 已建连 stream 的 on_data/on_close/on_error 重绑 —
+     * 升级转移用 (http server 建连后 ws 接管, 见 http_server_i.h 同类).
+     * 仅覆盖回调字段, 连接配置 (recv_buf_size/connect_timeout) 忽略 — 已建连,
+     * 无意义. 约束: 连接建立后 (OPEN 起) 调用, 与 open/accept 同线程. */
+    void (*set_callbacks)(sevent_stream_conn *s, const sevent_stream_conn_init *cb);
 } sevent_stream_ops;
 
 /* 统一壳: ops 表 + 具体实现指针 (tcp_conn / tls_conn) */

@@ -75,3 +75,10 @@ void sevent_stream_set_no_delay(sevent_stream_conn *s, bool on) {
         return;
     s->ops->set_no_delay(s, on);
 }
+
+/* 内部接口 (升级转移用, 见 sevent_stream_conn_i.h): 换回调组 */
+void sevent_stream_conn_i_set_callbacks(sevent_stream_conn *s, const sevent_stream_conn_init *cb) {
+    if(!s || !s->ops || !s->ops->set_callbacks)
+        return;
+    s->ops->set_callbacks(s, cb);
+}

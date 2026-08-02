@@ -505,6 +505,19 @@ static void tcp_op_set_no_delay(sevent_stream_conn *s, bool on) {
     sevent_tcp_conn_set_no_delay((sevent_tcp_conn *)s->impl, on);
 }
 
+/* tcp ops: 换回调组 (升级转移 — http server 建连后 ws 接管).
+ * 覆盖回调字段; 连接配置忽略 (已建连). 线程: [loop 线程] (open/accept 同). */
+static void tcp_op_set_callbacks(sevent_stream_conn *s, const sevent_stream_conn_init *cb) {
+    struct tcp_conn *t = (struct tcp_conn *)s->impl;
+    if(!t || !cb)
+        return;
+    t->user_data = cb->user_data;
+    t->on_open   = cb->on_open;
+    t->on_data   = cb->on_data;
+    t->on_close  = cb->on_close;
+    t->on_error  = cb->on_error;
+}
+
 int sevent_tcp_conn_accept(sevent_tcp_conn *c, int fd, const sevent_stream_conn_init *init) {
     struct tcp_conn *t = (struct tcp_conn *)c;
     if(fd < 0 || !init || !init->on_open || !init->on_data || t->state != TCP_STATE_IDLE)
@@ -688,7 +701,8 @@ static const sevent_stream_ops tcp_ops = {
         .shutdown     = tcp_shutdown,
         .close        = tcp_close,
         .destroy      = tcp_destroy,
-        .set_no_delay = tcp_op_set_no_delay,
+        .set_no_delay  = tcp_op_set_no_delay,
+        .set_callbacks = tcp_op_set_callbacks,
 };
 
 /* 供 stream_conn.c 工厂分发: 创建 TCP 实现 + 包壳挂接 ops */
