@@ -318,6 +318,26 @@ if(SEVENT_WS_TLS)
         target_link_libraries(test-tls-conn PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     endif()
     add_test(NAME tls_conn_tests COMMAND test-tls-conn)
+
+    # wss 端到端 (ws 层 enable_tls → stream TLS 链路; tls_conn 回显服务端)
+    add_executable(test-wss
+        tests/test_ws_wss.c
+    )
+    target_include_directories(test-wss PRIVATE include ${CMAKE_SOURCE_DIR}/src)
+    target_compile_definitions(test-wss PRIVATE
+        SEVENT_WS_TLS TEST_CERTS_DIR="${CMAKE_SOURCE_DIR}/tests/certs")
+    target_link_libraries(test-wss PRIVATE sevent_ws)
+    add_custom_command(TARGET test-wss POST_BUILD
+        COMMAND bash ${CMAKE_SOURCE_DIR}/tests/gen_certs.sh)
+    if(SEVENT_WS_TLS_BACKEND STREQUAL "MBEDTLS")
+        target_include_directories(test-wss PRIVATE ${MBEDTLS_INCLUDE_DIR})
+        target_link_libraries(test-wss PRIVATE
+            ${MBEDTLS_LIBRARY} ${MBEDX509_LIBRARY} ${MBEDCRYPTO_LIBRARY})
+    elseif(SEVENT_WS_TLS_BACKEND STREQUAL "OPENSSL")
+        target_include_directories(test-wss PRIVATE ${OPENSSL_INCLUDE_DIR})
+        target_link_libraries(test-wss PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    add_test(NAME wss_tests COMMAND test-wss)
 endif()
 
 add_executable(test-deflate
@@ -377,9 +397,11 @@ target_link_libraries(example-thread-worker PRIVATE Threads::Threads)
 
 # ---------- WebSocket example ----------
 
+# ws_conn 已组合 stream_conn: 需含 TRANSPORT_SOURCES (tcp_conn/stream_conn)
 add_executable(example-ws-client
     examples/ws_client.c
     ${WEBSOCKET_SOURCES}
+    ${TRANSPORT_SOURCES}
     ${SEVENT_SOURCES}
 )
 target_include_directories(example-ws-client PRIVATE include)

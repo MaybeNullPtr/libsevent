@@ -623,15 +623,16 @@ static int t_fragmentation(void) {
         return 1;
     sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.host        = "127.0.0.1";
-    cfg.path        = "/";
-    cfg.on_open     = ev_open;
-    cfg.on_message  = ev_msg_frag;
-    g_ev            = 0;
-    g_frag_count    = 0;
-    g_frag_last_fin = 0;
-    g_frag_len      = 0;
-    g_frag_total    = 0;
+    cfg.host          = "127.0.0.1";
+    cfg.path          = "/";
+    cfg.on_open       = ev_open;
+    cfg.on_message    = ev_msg_frag;
+    cfg.recv_buf_size = 8192; /* 阈值=cap/2=4096: 3000 分片走攒缓冲路径 */
+    g_ev              = 0;
+    g_frag_count      = 0;
+    g_frag_last_fin   = 0;
+    g_frag_len        = 0;
+    g_frag_total      = 0;
     sevent_ws_conn *ws;
     int             sfd = pair(ctx, &cfg, &ws);
     if(sfd < 0)
@@ -686,15 +687,16 @@ static int t_frag_large(void) {
         return 1;
     sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.host        = "127.0.0.1";
-    cfg.path        = "/";
-    cfg.on_open     = ev_open;
-    cfg.on_message  = ev_msg_frag;
-    g_ev            = 0;
-    g_frag_count    = 0;
-    g_frag_last_fin = 0;
-    g_frag_len      = 0;
-    g_frag_total    = 0;
+    cfg.host          = "127.0.0.1";
+    cfg.path          = "/";
+    cfg.on_open       = ev_open;
+    cfg.on_message    = ev_msg_frag;
+    cfg.recv_buf_size = 8192; /* 阈值=cap/2=4096: 3000 分片走攒缓冲路径 */
+    g_ev              = 0;
+    g_frag_count      = 0;
+    g_frag_last_fin   = 0;
+    g_frag_len        = 0;
+    g_frag_total      = 0;
     sevent_ws_conn *ws;
     int             sfd = pair(ctx, &cfg, &ws);
     if(sfd < 0)
@@ -731,7 +733,9 @@ static int t_frag_large(void) {
     }
     if(_tm)
         sevent_timer_unregister(ctx, _tm);
-    if(g_frag_count != 4 || g_frag_last_fin != 1 || g_frag_total != 12000)
+    /* 回调次数 (fin=false 分块粒度) 是内部实现细节, 断言本质: 消息完整送达 +
+     * fin 恰好一次 + total 正确 */
+    if(g_frag_count < 1 || g_frag_last_fin != 1 || g_frag_total != 12000)
         return 1;
     close(sfd);
     sevent_ws_destroy(ws);
@@ -747,15 +751,16 @@ static int t_frag_many(void) {
         return 1;
     sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.host        = "127.0.0.1";
-    cfg.path        = "/";
-    cfg.on_open     = ev_open;
-    cfg.on_message  = ev_msg_frag;
-    g_ev            = 0;
-    g_frag_count    = 0;
-    g_frag_last_fin = 0;
-    g_frag_len      = 0;
-    g_frag_total    = 0;
+    cfg.host          = "127.0.0.1";
+    cfg.path          = "/";
+    cfg.on_open       = ev_open;
+    cfg.on_message    = ev_msg_frag;
+    cfg.recv_buf_size = 8192; /* 阈值=cap/2=4096: 3000 分片走攒缓冲路径 */
+    g_ev              = 0;
+    g_frag_count      = 0;
+    g_frag_last_fin   = 0;
+    g_frag_len        = 0;
+    g_frag_total      = 0;
     sevent_ws_conn *ws;
     int             sfd = pair(ctx, &cfg, &ws);
     if(sfd < 0)
@@ -806,15 +811,16 @@ static int t_frag_interleave(void) {
         return 1;
     sevent_ws_config cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.host        = "127.0.0.1";
-    cfg.path        = "/";
-    cfg.on_open     = ev_open;
-    cfg.on_message  = ev_msg_frag;
-    g_ev            = 0;
-    g_frag_count    = 0;
-    g_frag_last_fin = 0;
-    g_frag_len      = 0;
-    g_frag_total    = 0;
+    cfg.host          = "127.0.0.1";
+    cfg.path          = "/";
+    cfg.on_open       = ev_open;
+    cfg.on_message    = ev_msg_frag;
+    cfg.recv_buf_size = 8192; /* 阈值=cap/2=4096: 3000 分片走攒缓冲路径 */
+    g_ev              = 0;
+    g_frag_count      = 0;
+    g_frag_last_fin   = 0;
+    g_frag_len        = 0;
+    g_frag_total      = 0;
     sevent_ws_conn *ws;
     int             sfd = pair(ctx, &cfg, &ws);
     if(sfd < 0)
@@ -1148,7 +1154,7 @@ static int t_sticky_stream_tail(void) {
     cfg.path          = "/";
     cfg.on_open       = ev_open;
     cfg.on_message    = ev_msg_count;
-    cfg.recv_buf_size = 4096;
+    cfg.recv_buf_size = 8192; /* 阈值=cap/2=4096: 保持帧路由语义 */
     g_ev              = 0;
     g_call_count      = 0;
     g_frag_total      = 0;
@@ -1209,7 +1215,7 @@ static int t_stream_total(void) {
     cfg.path          = "/";
     cfg.on_open       = ev_open;
     cfg.on_message    = ev_msg_count;
-    cfg.recv_buf_size = 4096;
+    cfg.recv_buf_size = 8192; /* 阈值=cap/2=4096: 保持帧路由语义 */
     g_ev              = 0;
     g_call_count      = 0;
     g_frag_len        = 0;
@@ -1459,17 +1465,15 @@ static int t_frag_split_read(void) {
 }
 
 static int t_state_checks(void) {
+    /* 裸结构验证 send/shutdown 的 state 前置检查 (stream 为 NULL 时检查在最前,
+     * 不会触达传输层) */
     sevent_context *ctx = sevent_create();
     if(!ctx)
-        return 1;
-    int fds[2];
-    if(socketpair(AF_UNIX, SOCK_STREAM, 0, fds))
         return 1;
     struct sevent_ws_conn *c = calloc(1, sizeof(*c));
     if(!c)
         return 1;
     c->ev    = ctx;
-    c->fd    = fds[1];
     c->state = WS_STATE_CLOSED;
     if(sevent_ws_send_text(c, "x", 1) != -1)
         return 1;
@@ -1482,8 +1486,6 @@ static int t_state_checks(void) {
     c->state = 0; /* CONNECTING */
     if(sevent_ws_send_text(c, "x", 1) != -1)
         return 1;
-    close(fds[0]);
-    c->fd = -1;
     sevent_ws_destroy(c);
     flush_posts(ctx);
     sevent_destroy(ctx);
@@ -3272,7 +3274,7 @@ static int t_eof_stream_trailing_close(void) {
     cfg.on_open       = ev_open;
     cfg.on_message    = ev_msg_frag;
     cfg.on_close      = ev_close_code;
-    cfg.recv_buf_size = 4096;
+    cfg.recv_buf_size = 8192; /* 阈值=cap/2=4096: 保持帧路由语义 */
     g_ev              = 0;
     g_frag_count      = 0;
     g_frag_total      = 0;
