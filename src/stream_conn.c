@@ -14,7 +14,7 @@
 /* tcp_conn.c / tls_conn.c: 创建具体实现并包壳挂接 ops */
 sevent_stream_conn *tcp_stream_create(sevent_context *ev);
 #ifdef SEVENT_WS_TLS
-sevent_stream_conn *sevent_tls_conn_create(sevent_context *ev, const sevent_stream_conn_config *cfg);
+sevent_stream_conn *tls_stream_create(sevent_context *ev, const sevent_stream_conn_config *cfg);
 #endif
 
 /* ===== 工厂: enable_tls 分发 ===== */
@@ -24,7 +24,7 @@ sevent_stream_conn *sevent_stream_create(sevent_context *ev, const sevent_stream
         return NULL;
     if(cfg->enable_tls) {
 #ifdef SEVENT_WS_TLS
-        return sevent_tls_conn_create(ev, cfg);
+        return tls_stream_create(ev, cfg);
 #else
         return NULL; /* 未编译 TLS 支持 (SEVENT_WS_TLS=OFF) */
 #endif

@@ -58,12 +58,16 @@ typedef struct sevent_stream_conn sevent_stream_conn;
 typedef struct sevent_stream_conn_config {
     bool        enable_tls; /* false=tcp_conn, true=tls_conn (sevent_stream_create 分发用) */
     /* --- TLS 配置 (tls_conn 用; tcp_conn 忽略) --- */
-    const char *ca_path;         /* CA 证书路径, NULL=系统默认信任库 */
-    const char *cert_path;       /* 本端证书 (服务端必填; 客户端 mTLS 可选) */
-    const char *key_path;        /* 本端私钥 */
-    bool        verify_peer;     /* 客户端: 校验服务器证书链 (默认 true);
-                                  * 服务端: 要求客户端证书 mTLS (默认 false) */
-    bool        verify_hostname; /* 校验主机名 (SNI), 默认 true (客户端) */
+    const char *ca_path;                /* CA 证书路径, NULL=系统默认信任库 */
+    const char *cert_path;              /* 本端证书 (服务端必填; 客户端 mTLS 可选) */
+    const char *key_path;               /* 本端私钥 */
+    bool        enable_peer_verify;     /* 客户端: 校验服务器证书链 (默认 true);
+                                         * 服务端: 要求客户端证书 mTLS (默认 false) */
+    bool        enable_hostname_verify; /* 校验对端证书名开关, 两端通用, 默认 true */
+    const char *tls_hostname;           /* D2: 本端期望的对端证书名 (与开关同处, 对象级)
+                                         *   客户端: SNI+校验名 (NULL=用 open 的 host, 校验连接目标)
+                                         *   服务端: 校验客户端证书名 (mTLS 时, NULL=不校验名)
+                                         * 应用负责 DNS — TCP 目标 (open 的 host) 传 IP, 域名校验名经此字段 */
 } sevent_stream_conn_config;
 
 /* ===== 回调类型 (唯一一套: tcp_conn/tls_conn 复用, 不重复定义) ===== */

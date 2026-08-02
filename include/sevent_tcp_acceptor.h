@@ -19,6 +19,7 @@
 #define SEVENT_TCP_ACCEPTOR_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include "sevent.h"
 
 #ifdef __cplusplus

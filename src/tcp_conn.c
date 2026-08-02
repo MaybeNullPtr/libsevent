@@ -248,7 +248,9 @@ static int tcp_flush(struct tcp_conn *t) {
 /* ---- 连接建立 ---- */
 
 /* 非阻塞 connect, EINPROGRESS 容忍 (从 ws_tcp_connect 删改).
- * 注: ws 版带 SO_REUSEADDR (对 bind 才有意义) — 客户端不 bind, 已删. */
+ * 注: ws 版带 SO_REUSEADDR (对 bind 才有意义) — 客户端不 bind, 已删.
+ * 注: 传输层不解析域名 (DNS 是应用层工作) — host 必须是 IP 字面量
+ *     (IPv4; 域名解析由调用方经 sevent_dns_resolve 或自有 DNS 完成). */
 static int tcp_socket_connect(const char *host, uint16_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if(fd < 0)
