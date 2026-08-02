@@ -112,6 +112,7 @@ static void on_first_ready(void *data);
 static bool tcp_update_io(struct tcp_conn *t);
 static void tcp_close_io(struct tcp_conn *t);
 static void tcp_queue_clear(struct tcp_conn *t);
+static void tcp_maybe_shutdown_wr(struct tcp_conn *t);
 
 /* ---- 内部辅助 ---- */
 
@@ -414,8 +415,12 @@ static void on_write_ready(void *data) {
         TCP_UNLOCK(t);
         return;
     }
-    if(!t->write_head)
-        tcp_update_io(t); /* 队列空 → 撤写兴趣 (保持可读) */
+    if(!t->write_head) {
+        /* 队列排空: 执行待办的 SHUT_WR (半关语义 — shutdown 在队列非空时
+         * 只标记 pending, 排空后必须在此执行, 否则 FIN 永不发出) */
+        tcp_maybe_shutdown_wr(t);
+        tcp_update_io(t); /* 撤写兴趣 (保持可读) */
+    }
     TCP_UNLOCK(t);
 }
 
