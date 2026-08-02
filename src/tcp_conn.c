@@ -2,7 +2,7 @@
  *  tcp_conn.c — TCP 传输实现 (公开层 sevent_tcp_conn + stream_conn 适配)
  *
  *  纯回调推送模型 (与 sevent_ws 同风格):
- *   - IO 骨架 (recv_buf 游标/写队列 flush/update_io/connect SO_ERROR 检查/
+ *   - IO 骨架 (recv_buf 读入/写队列 flush/update_io/connect SO_ERROR 检查/
  *     deferred free/destroyed 守卫) 从 ws_conn.c 拷贝, 删除 WebSocket 协议
  *     部分 (握手/帧解析/Close/PING/deflate/UTF-8/重定向) 所得
  *   - 数据经 on_data 推送 (本层持有 recv_buf), 不提供 read API
@@ -86,10 +86,8 @@ struct tcp_conn {
     sevent_timer *connect_timer;
 
     /* ---- 接收缓冲 (固定大小, on_data 推送即消费) ---- */
-    uint8_t *recv_buf;
+    uint8_t *recv_buf; /* 接收缓冲 (read 直接写入, 推送后复用) */
     size_t   recv_cap;
-    size_t   recv_len;
-    size_t   recv_pos;
 
     /* ---- 写队列 (FIFO; 数据入队即拷贝, 调用方 buffer 可随即复用) ---- */
     struct tcp_write_node *write_head;
@@ -365,24 +363,10 @@ static void on_first_ready(void *data) {
 
 /* ---- IO 回调: on_readable (读就绪, 驱动接收) ---- */
 
-/* 读进 recv_buf (compact + read, 从 ws_conn recv_read 原样搬移).
- * 本层 on_data 推送即消费 (推送后 recv_pos==recv_len), 每轮 compact 后
- * space 必 > 0 — space==0 保护与 ws 对齐, 防御未来推送逻辑变化. */
+/* 读进 recv_buf: 推送模型无残留 (上轮 on_data 已把缓冲全部移交上层,
+ * 上层自行拷贝), 缓冲从头复用 — 读多少推多少 */
 static int recv_read(struct tcp_conn *t) {
-    /* 先 compact: 搬移未消费数据到头部 */
-    if(t->recv_pos > 0) {
-        size_t rem = t->recv_len - t->recv_pos;
-        if(rem > 0)
-            memmove(t->recv_buf, t->recv_buf + t->recv_pos, rem);
-        t->recv_len = rem;
-        t->recv_pos = 0;
-    }
-    size_t space = t->recv_cap - t->recv_len;
-    if(space == 0)
-        return 0;
-    ssize_t n = read(t->fd, t->recv_buf + t->recv_len, space);
-    if(n > 0)
-        t->recv_len += (size_t)n;
+    ssize_t n = read(t->fd, t->recv_buf, t->recv_cap);
     return (int)n;
 }
 
@@ -409,10 +393,9 @@ static void on_readable(void *data) {
         TCP_UNLOCK(t);
         return; /* EAGAIN: 等下一次就绪 */
     }
-    /* 推送: 上轮 compact 已保证 pos==0, 推送即消费 (下轮 recv_read compact) */
-    t->recv_pos = t->recv_len;
-    t->on_data(t->user_data, t->recv_buf, t->recv_len);
-    /* on_data 中可能 close/destroy — 之后不再访问 t (锁在 cleanup 前释放) */
+    /* 推送: 读多少推多少 (上层自行拷贝, 缓冲随即复用);
+     * on_data 中可能 close/destroy — 之后不再访问 t (锁在 cleanup 前释放) */
+    t->on_data(t->user_data, t->recv_buf, (size_t)n);
     TCP_UNLOCK(t);
 }
 

@@ -38,6 +38,9 @@
 
 #ifdef SEVENT_WS_TLS
 
+/* 读明文缓冲默认大小 (与 tcp_conn 同规格: on_data 单次推送上限) */
+#define SEVENT_TLS_RECV_DEFAULT 4096
+
 /* ===== 内部结构 ===== */
 
 struct tls_conn {
@@ -52,6 +55,14 @@ struct tls_conn {
     bool                    destroyed;
     char                   *hostname; /* 客户端 SNI/校验 (sevent_i_malloc 拷贝; accept=NULL) */
     sevent_stream_conn_init init;     /* 回调组 + 连接配置 (每轮建立重置) */
+    /* 缓冲 (堆分配 — 嵌入式栈小, 不上栈):
+     *   recv_buf — 读明文缓冲, 按 init.recv_buf_size 分配 (0=默认 4096);
+     *              单次 on_data 推送 ≤ recv_cap (recv_buf_size 约定)
+     *   send_buf — 密文搬运缓冲 (drain 循环复用, create 时分配 16KB) */
+    uint8_t                *recv_buf;
+    size_t                  recv_cap;
+    uint8_t                *send_buf;
+    size_t                  send_cap;
     /* pending 明文写 (SSL WANT_READ 时暂存, tcp on_data 续写) */
     uint8_t                *pending_buf;
     size_t                  pending_len, pending_cap;
@@ -108,10 +119,9 @@ static void tls_notify_close(struct tls_conn *t) {
 static int tls_send_cipher(struct tls_conn *t) {
     if(!t->ssl)
         return 1; /* 用户回调内已 close: 连接已终结, 同 tcp 收尾语义 */
-    uint8_t buf[16384];
     ssize_t n;
-    while((n = sevent_ssl_drain(t->ssl, buf, sizeof(buf))) > 0) {
-        int wrc = sevent_tcp_conn_write(t->tcp, buf, (size_t)n);
+    while((n = sevent_ssl_drain(t->ssl, t->send_buf, t->send_cap)) > 0) {
+        int wrc = sevent_tcp_conn_write(t->tcp, t->send_buf, (size_t)n);
         if(wrc == SEVENT_ERR_INVAL)
             return 1; /* tcp 已收尾, 密文丢弃 */
         if(wrc != 0) {
@@ -125,18 +135,19 @@ static int tls_send_cipher(struct tls_conn *t) {
 /* ===== 读明文推用户 (直到 WANT 或 EOF/错误) ===== */
 
 static void tls_read_plain(struct tls_conn *t) {
-    uint8_t buf[16384];
     for(;;) {
         /* 用户回调 (on_data) 内可能 close/destroy — ssl 已释放则停止 */
         if(t->destroyed || !t->ssl)
             return;
-        ssize_t r = sevent_ssl_read(t->ssl, buf, sizeof(buf));
+        ssize_t r = sevent_ssl_read(t->ssl, t->recv_buf, t->recv_cap);
         if(tls_send_cipher(t) < 0) /* read 也可能产出密文 (TLS1.3 key update 等);
                                     * ==1 (tcp 已收尾) 继续走 EOF 流程 */
             return;
         if(r > 0) {
+            /* 流式: 读多少推多少 — 单次 ≤ recv_cap (recv_buf_size 约定,
+             * 上层缓冲数学依赖推送 ≤ 其缓冲上限) */
             if(t->init.on_data)
-                t->init.on_data(t->init.user_data, buf, (size_t)r);
+                t->init.on_data(t->init.user_data, t->recv_buf, (size_t)r);
             continue; /* 循环开头检查 ssl */
         }
         if(r == 0) {
@@ -289,15 +300,33 @@ static const sevent_stream_conn_init tcp_cb_init(void) {
     return i;
 }
 
+/* 按 init.recv_buf_size 分配读明文缓冲 (0=默认; 重开时尺寸变化则重建) */
+static int tls_setup_recv(struct tls_conn *t, size_t recv_buf_size) {
+    size_t cap = recv_buf_size ? recv_buf_size : SEVENT_TLS_RECV_DEFAULT;
+    if(t->recv_buf && t->recv_cap == cap)
+        return 0;
+    uint8_t *nb = (uint8_t *)sevent_i_malloc(cap);
+    if(!nb)
+        return -1;
+    sevent_i_free(t->recv_buf);
+    t->recv_buf = nb;
+    t->recv_cap = cap;
+    return 0;
+}
+
 /* ===== 公开 API (stream ops) ===== */
 
 int sevent_tls_conn_open(sevent_tls_conn *c, const char *host, uint16_t port, const sevent_stream_conn_init *init) {
     struct tls_conn *t = (struct tls_conn *)c;
     if(!t || !host || !init || !init->on_open || !init->on_data || t->established || t->destroyed)
         return SEVENT_ERR_INVAL;
-    t->is_server            = false;
-    t->established          = true;
-    t->init                 = *init; /* 回调组 + 超时/缓冲配置拷贝 */
+    t->is_server   = false;
+    t->established = true;
+    t->init        = *init; /* 回调组 + 超时/缓冲配置拷贝 */
+    if(tls_setup_recv(t, init->recv_buf_size) != 0) {
+        tls_reset_after_term(t); /* 同步失败回 IDLE, 可重试 */
+        return SEVENT_ERR_NOMEM;
+    }
     /* 校验名 (对象级, create 时定): t->hostname ?: open 的 host — TCP 目标与
      * 校验名分离 (DNS 应用层做); NULL=用 host (默认校验连接目标) */
     const char *verify_name = t->hostname ? t->hostname : host;
@@ -324,9 +353,13 @@ int sevent_tls_conn_accept(sevent_tls_conn *c, int fd, const sevent_stream_conn_
     struct tls_conn *t = (struct tls_conn *)c;
     if(!t || !init || !init->on_open || !init->on_data || t->established || t->destroyed || fd < 0)
         return SEVENT_ERR_INVAL;
-    t->is_server                = true;
-    t->established              = true;
-    t->init                     = *init;
+    t->is_server   = true;
+    t->established = true;
+    t->init        = *init;
+    if(tls_setup_recv(t, init->recv_buf_size) != 0) {
+        tls_reset_after_term(t);
+        return SEVENT_ERR_NOMEM;
+    }
     /* 服务端期望名已在 create 时存入 t->hostname (config) */
     sevent_stream_conn_init tci = tcp_cb_init();
     tci.user_data               = t;
@@ -396,6 +429,8 @@ static void tls_cleanup(void *d) {
     struct tls_conn *t = (struct tls_conn *)d;
     sevent_tcp_conn_destroy(t->tcp); /* 其内部再 post, 队列顺序保证安全 */
     sevent_ssl_ctx_free(t->ssl_ctx);
+    sevent_i_free(t->recv_buf);
+    sevent_i_free(t->send_buf);
     sevent_i_free(t->hostname);
     sevent_i_free(t);
 }
@@ -453,6 +488,11 @@ sevent_tls_conn *sevent_tls_conn_create(sevent_context *ev, const sevent_stream_
     t->tcp = sevent_tcp_conn_create(ev);
     if(!t->tcp)
         goto fail;
+    /* 密文搬运缓冲 (堆分配, 16KB 覆盖最大 TLS 记录) */
+    t->send_cap = 16 * 1024;
+    t->send_buf = (uint8_t *)sevent_i_malloc(t->send_cap);
+    if(!t->send_buf)
+        goto fail;
     /* stream_conn_config 的 TLS 字段 → ssl config (U6 后含 PEM 三件套) */
     sevent_ssl_config scfg;
     memset(&scfg, 0, sizeof(scfg));
@@ -482,6 +522,7 @@ fail:
         sevent_tcp_conn_destroy(t->tcp);
     if(t->ssl_ctx)
         sevent_ssl_ctx_free(t->ssl_ctx);
+    sevent_i_free(t->send_buf);
     sevent_i_free(t);
     return NULL;
 }
