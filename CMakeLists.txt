@@ -22,7 +22,7 @@ set_property(CACHE SEVENT_WS_TLS_BACKEND PROPERTY STRINGS MBEDTLS OPENSSL)
 
 option(SEVENT_ASAN "Build with AddressSanitizer (memory/leak detection)" OFF)
 option(SEVENT_TSAN "Build with ThreadSanitizer (data race detection)" OFF)
-option(SEVENT_FUZZ "Build HTTP fuzz target (fuzz-http-parse)" OFF)
+option(SEVENT_FUZZ "Build fuzz targets (fuzz-http-parse / fuzz-ws-handshake)" OFF)
 
 if(SEVENT_ASAN AND SEVENT_TSAN)
     message(FATAL_ERROR "ASan and TSan are incompatible, enable only one at a time")
@@ -265,7 +265,7 @@ if(SEVENT_WS_DEFLATE)
 endif()
 
 # ---------- fuzz ----------
-# 语法层变异 fuzzer (零外部依赖: gcc + ASAN 可跑; SEVENT_ASAN=ON 时效果最佳)
+# 变异 fuzzer (零外部依赖: gcc + ASAN 可跑; SEVENT_ASAN=ON 时效果最佳)
 if(SEVENT_FUZZ)
     add_executable(fuzz-http-parse
         tests/fuzz/fuzz_http_parse.c
@@ -274,6 +274,13 @@ if(SEVENT_FUZZ)
     target_link_libraries(fuzz-http-parse PRIVATE sevent_ws)
     # 常规回归: 固定小规模 (1ms 级) — 完整 fuzz 手动跑大迭代数
     add_test(NAME http_parse_fuzz_smoke COMMAND fuzz-http-parse 100000)
+
+    add_executable(fuzz-ws-handshake
+        tests/fuzz/fuzz_ws_handshake.c
+    )
+    target_include_directories(fuzz-ws-handshake PRIVATE include src/websockets)
+    target_link_libraries(fuzz-ws-handshake PRIVATE sevent_ws)
+    add_test(NAME ws_handshake_fuzz_smoke COMMAND fuzz-ws-handshake 100000)
 endif()
 
 # ---------- examples ----------

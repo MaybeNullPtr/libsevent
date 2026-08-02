@@ -128,15 +128,12 @@ int ws_build_request(char                    *buf,
 }
 
 int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *resp) {
+    /* 全量清零: 纯函数确定性 (fuzz 断言同输入同输出) + 防调用方误读垃圾 */
+    memset(resp, 0, sizeof(*resp));
+
     /* 最小长度: "HTTP/1.1 XXX\r\n" = 14 字节 */
     if(len < 14)
         return 0;
-
-    resp->status_code   = 0;
-    resp->accept[0]     = '\0';
-    resp->protocol[0]   = '\0';
-    resp->location[0]   = '\0';
-    resp->extensions[0] = '\0';
 
     /* 语法解析交给 sevent_http_parse (行/头/半包语义一致) */
     sevent_http_msg m;
