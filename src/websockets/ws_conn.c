@@ -19,6 +19,7 @@
 #include <arpa/inet.h>
 
 #include "sevent_i.h"
+#include "sevent_http_parse.h" /* ws_server_handshake_fail 的 400/426 响应构建 */
 #include "ws_conn.h"
 #include "ws_frame.h"
 #include "ws_handshake.h"
@@ -1194,9 +1195,97 @@ static void ws_frame_data(struct sevent_ws_conn *c) {
  *   3. on_http_response 回调 / accept 校验 (非 101 或 accept 不匹配 → 收尾)
  *   4. deflate 协商 + 设 OPEN + on_open + 粘包残留帧处理
  * 若将来拆分, 协商段 (4) 可独立为 ws_negotiate_deflate(). */
-/* 握手响应处理 (锁由调用方持有): 数据已由 stream 推送攒入; 对端关闭经
- * ws_stream_on_close 通知 (握手期 → HANDSHAKE 错误) */
+/* 服务端握手失败: 回 400/426 + 半关 (队列 flush 后 FIN) + on_error(HANDSHAKE).
+ * 不能用立即 close — 写队列未 flush 会丢响应; shutdown(WR) 保证响应发出.
+ * 调用方已解锁 (与 ws_fatal 同约定); 之后对端 EOF → on_close (CLOSING 态收尾).
+ * 版本错 (426) 附 Sec-WebSocket-Version: 13 (RFC 6455 §4.4). */
+static void ws_server_handshake_fail(struct sevent_ws_conn *c, int status) {
+    char resp[256];
+    int  n = sevent_http_build_response(resp,
+                                       sizeof(resp),
+                                       status,
+                                       (status == 426) ? "Upgrade Required" : NULL,
+                                       (status == 426) ? "Connection: close\r\nSec-WebSocket-Version: 13\r\n"
+                                                        : "Connection: close\r\n");
+    if(n > 0)
+        (void)sevent_stream_write(c->stream, resp, (size_t)n);
+    (void)sevent_stream_shutdown(c->stream, SEVENT_SHUT_WR); /* 发完 + FIN */
+    c->state = WS_STATE_CLOSING;
+    if(c->on_error)
+        c->on_error(c->user_data, SEVENT_WS_ERR_HANDSHAKE);
+    /* on_error 后不再访问 c (用户可能在其中 destroy) */
+}
+
+/* 服务端握手 (accept 入口): 解析升级请求 → 101 (+deflate) / 400 / 426.
+ * 与 client 101 模式对称: 跳过请求 + 粘包残留帧处理. 锁由调用方持有. */
+static void ws_handshake_data_server(struct sevent_ws_conn *c) {
+    ws_handshake_request req;
+    int                  ret = ws_parse_request(c->recv_buf, c->recv_len, &req);
+    if(ret == 0)
+        return; /* 数据不足, 等更多 (锁由调用方持有) */
+    if(ret < 0 || req.status != 0) {
+        /* 语法错/非法请求 → 400; 版本不支持 → 426 (RFC 6455 §4.4) */
+        int status = (ret > 0 && req.status == 426) ? 426 : 400;
+        WS_UNLOCK(c);
+        ws_server_handshake_fail(c, status);
+        return;
+    }
+    /* deflate 协商 (A 方案): offer 声明先于响应确认 — 创建失败则不确认
+     * PMD, 否则客户端按压缩发送而本端无 deflate → 1002 */
+    bool confirm_pmd = false;
+    if(c->enable_deflate && req.deflate_offered) {
+        ws_deflate_params p          = {0};
+        p.client_no_context_takeover = req.client_no_context_takeover; /* 解压方向按 offer 声明 */
+        p.compression_level          = c->deflate_level;
+        if(ws_deflate_create(&c->deflate, &p))
+            confirm_pmd = true;
+    }
+    char resp[512];
+    int  n = ws_build_response(resp, sizeof(resp), req.key, confirm_pmd);
+    if(n < 0) {
+        WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_ERR_NOMEM);
+        return;
+    }
+    if(sevent_stream_write(c->stream, resp, (size_t)n) != 0) {
+        WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_WS_ERR_WRITE);
+        return;
+    }
+    c->recv_pos = (size_t)ret; /* 跳过 HTTP 请求, 保留可能的粘包 WS 帧 */
+    c->state    = WS_STATE_OPEN;
+    if(c->on_open)
+        c->on_open(c->user_data);
+    if(c->destroyed) {
+        WS_UNLOCK(c);
+        return;
+    }
+    /* 启动 PING 心跳定时器 */
+    if(c->ping_interval_ms > 0 && !c->ping_timer)
+        c->ping_timer = sevent_timer_register(c->ev, (unsigned int)c->ping_interval_ms, on_ping_timer, c);
+    /* 升级请求 + WS 帧粘包: 立即处理残留帧 */
+    if(c->recv_len > c->recv_pos) {
+        int err = process_frames(c);
+        if(err > 0) {
+            WS_UNLOCK(c);
+            ws_fatal(c, err);
+            return;
+        }
+    }
+    if(c->destroyed) {
+        WS_UNLOCK(c);
+        return;
+    }
+    WS_UNLOCK(c);
+}
+
+/* 握手数据分发: 按角色走 server (accept 入口) / client (connect 入口) 处理.
+ * 锁由调用方持有; 对端关闭经 ws_stream_on_close 通知 (握手期 → HANDSHAKE 错误) */
 static void ws_handshake_data(struct sevent_ws_conn *c) {
+    if(!c->is_client) {
+        ws_handshake_data_server(c);
+        return;
+    }
     ws_handshake_response resp;
     int                   ret = ws_parse_response(c->recv_buf, c->recv_len, &resp);
     if(ret == 0) {
@@ -1357,6 +1446,13 @@ static void ws_handshake_data(struct sevent_ws_conn *c) {
 static void ws_stream_on_open(void *d) {
     struct sevent_ws_conn *c = (struct sevent_ws_conn *)d;
     WS_LOCK(c);
+    if(!c->is_client) {
+        /* 服务端 (accept 入口): 不写升级请求 — 置 HANDSHAKE 等客户端请求.
+         * key 无需生成 (key 来自请求的 Sec-WebSocket-Key); 无重定向语义 */
+        c->state = WS_STATE_HANDSHAKE;
+        WS_UNLOCK(c);
+        return;
+    }
     ws_gen_key(c->sec_ws_key);
     /* 压缩 offer 参数: nct 承诺 + 降窗请求 */
     ws_deflate_params pmd_offer = {0};
@@ -1398,21 +1494,13 @@ static void ws_stream_on_open(void *d) {
  *  公开 API
  * ==================================================================== */
 
-/* stream_cfg 字符串字段释放 (自有拷贝, 见 sevent_ws_connect 所有权纪律) */
-static void ws_stream_cfg_free(sevent_stream_conn_config *scfg) {
-    sevent_i_free((void *)scfg->ca_path);
-    sevent_i_free((void *)scfg->ca_pem);
-    sevent_i_free((void *)scfg->cert_path);
-    sevent_i_free((void *)scfg->cert_pem);
-    sevent_i_free((void *)scfg->key_path);
-    sevent_i_free((void *)scfg->key_pem);
-    sevent_i_free((void *)scfg->tls_hostname);
-    memset(scfg, 0, sizeof(*scfg));
-}
-
-sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cfg) {
-    if(!ev || !cfg || !cfg->host || !cfg->path || (!cfg->on_open && !cfg->on_error))
-        return NULL;
+/* 三入口 (connect/accept/upgrade) 共用初始化骨架:
+ * 分配 c + 锁 + 角色 + 配置字段拷贝 (host/path/回调/超时/deflate 参数) +
+ * stream_cfg 副本. 不含缓冲分配与 stream 创建 — 各入口按建连方式处理:
+ *   connect/accept: ws_conn_alloc_bufs + stream_create + open/accept
+ *   upgrade:        注入移交的 stream + 缓冲 (见 sevent_ws_upgrade).
+ * 失败返回 NULL (内部已清理; 锁 init 失败已 free). */
+static struct sevent_ws_conn *ws_conn_new(sevent_context *ev, const sevent_ws_config *cfg, bool is_client) {
     struct sevent_ws_conn *c = SEVENT_I_NEW0(c);
     if(!c)
         return NULL;
@@ -1424,16 +1512,20 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
 #endif
     c->ev        = ev;
     c->state     = WS_STATE_CONNECTING;
-    c->is_client = true; /* 角色: connect=客户端 (发送 mask); accept/upgrade=服务端 */
+    c->is_client = is_client; /* 角色: connect=客户端 (发送 mask); accept/upgrade=服务端 */
     {
         /* 用地址+时间+PID 播种 per-connection mask 序列 */
         c->mask_seed = (uint32_t)((uintptr_t)c ^ (unsigned int)time(NULL) ^ ((unsigned int)getpid() << 16));
     }
-    strncpy(c->host, cfg->host, sizeof(c->host) - 1);
-    c->host[sizeof(c->host) - 1] = '\0';
-    c->port                      = cfg->port;
-    strncpy(c->path, cfg->path, sizeof(c->path) - 1);
-    c->path[sizeof(c->path) - 1] = '\0';
+    if(cfg->host) { /* accept/upgrade 入口 host/path 忽略 (连接已建立) */
+        strncpy(c->host, cfg->host, sizeof(c->host) - 1);
+        c->host[sizeof(c->host) - 1] = '\0';
+    }
+    c->port = cfg->port;
+    if(cfg->path) {
+        strncpy(c->path, cfg->path, sizeof(c->path) - 1);
+        c->path[sizeof(c->path) - 1] = '\0';
+    }
     if(cfg->sub_protocol) {
         strncpy(c->sub_protocol, cfg->sub_protocol, sizeof(c->sub_protocol) - 1);
         c->sub_protocol[sizeof(c->sub_protocol) - 1] = '\0';
@@ -1454,9 +1546,25 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->request_client_max_window_bits     = cfg->request_client_max_window_bits;
     c->request_server_max_window_bits     = cfg->request_server_max_window_bits;
 
-    /* 固定大小接收/分片缓冲区.
-     * recv_buf 同时用于 HTTP 握手响应读取, 至少 SEVENT_WS_RECV_MIN. */
-    size_t bufsz = cfg->recv_buf_size;
+    /* stream 配置 (TLS 字段透传; enable_tls=false 行为与现状一致) */
+    memset(&c->stream_cfg, 0, sizeof(c->stream_cfg));
+    c->stream_cfg.enable_tls             = cfg->enable_tls;
+    c->stream_cfg.ca_path                = cfg->ca_path;
+    c->stream_cfg.ca_pem                 = cfg->ca_pem;
+    c->stream_cfg.cert_path              = cfg->cert_path;
+    c->stream_cfg.cert_pem               = cfg->cert_pem;
+    c->stream_cfg.key_path               = cfg->key_path;
+    c->stream_cfg.key_pem                = cfg->key_pem;
+    c->stream_cfg.enable_peer_verify     = cfg->enable_peer_verify;
+    c->stream_cfg.enable_hostname_verify = cfg->enable_hostname_verify;
+    c->stream_cfg.tls_hostname           = cfg->tls_hostname;
+    return c;
+}
+
+/* 缓冲分配 (connect/accept 共用): 固定大小接收/分片缓冲区.
+ * recv_buf 同时用于 HTTP 握手响应读取, 至少 SEVENT_WS_RECV_MIN. */
+static int ws_conn_alloc_bufs(struct sevent_ws_conn *c, size_t cfg_bufsz) {
+    size_t bufsz = cfg_bufsz;
     if(bufsz == 0)
         bufsz = SEVENT_WS_RECV_DEFAULT;
     if(bufsz < SEVENT_WS_RECV_MIN)
@@ -1464,51 +1572,46 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     c->recv_buf = (uint8_t *)sevent_i_malloc(bufsz);
     c->frag_buf = (uint8_t *)sevent_i_malloc(bufsz);
     if(!c->recv_buf || !c->frag_buf)
-        goto cleanup;
+        return SEVENT_ERR_NOMEM;
     c->recv_cap = bufsz;
+    return 0;
+}
 
-    /* stream 配置 (TLS 字段透传; enable_tls=false 行为与现状一致).
-     * 字符串字段自有拷贝 (sevent_i_strdup): 调用方 cfg 生命周期不保证 —
-     * redirect 重连复用 stream_cfg 时外部指针已悬垂 (UAF), 外部输入指针
-     * 严禁存储引用 (所有权纪律). 借用语义字段 (布尔开关) 直接复制. */
-    memset(&c->stream_cfg, 0, sizeof(c->stream_cfg));
-    c->stream_cfg.enable_tls             = cfg->enable_tls;
-    c->stream_cfg.ca_path                = sevent_i_strdup(cfg->ca_path);
-    c->stream_cfg.ca_pem                 = sevent_i_strdup(cfg->ca_pem);
-    c->stream_cfg.cert_path              = sevent_i_strdup(cfg->cert_path);
-    c->stream_cfg.cert_pem               = sevent_i_strdup(cfg->cert_pem);
-    c->stream_cfg.key_path               = sevent_i_strdup(cfg->key_path);
-    c->stream_cfg.key_pem                = sevent_i_strdup(cfg->key_pem);
-    c->stream_cfg.enable_peer_verify     = cfg->enable_peer_verify;
-    c->stream_cfg.enable_hostname_verify = cfg->enable_hostname_verify;
-    c->stream_cfg.tls_hostname           = sevent_i_strdup(cfg->tls_hostname);
-    /* 拷贝失败 (OOM): 释放已拷贝字段走清理 */
-    if((cfg->ca_path && !c->stream_cfg.ca_path) || (cfg->ca_pem && !c->stream_cfg.ca_pem) ||
-       (cfg->cert_path && !c->stream_cfg.cert_path) || (cfg->cert_pem && !c->stream_cfg.cert_pem) ||
-       (cfg->key_path && !c->stream_cfg.key_path) || (cfg->key_pem && !c->stream_cfg.key_pem) ||
-       (cfg->tls_hostname && !c->stream_cfg.tls_hostname))
-        goto cleanup;
-    c->stream = sevent_stream_create(ev, &c->stream_cfg);
-    if(!c->stream)
-        goto cleanup;
-
-    c->state                     = WS_STATE_CONNECTING;
-    sevent_stream_conn_init init = ws_stream_init(c);
-    if(sevent_stream_open(c->stream, c->host, c->port, &init) < 0)
-        goto cleanup;
-    return c;
-
-cleanup:
+/* 失败清理 (connect/accept 入口): stream + 缓冲 + 锁 + 壳 */
+static void ws_conn_abort(struct sevent_ws_conn *c) {
     if(c->stream)
         sevent_stream_destroy(c->stream);
     sevent_i_free(c->recv_buf);
     sevent_i_free(c->frag_buf);
-    ws_stream_cfg_free(&c->stream_cfg); /* stream_cfg 字符串自有拷贝 */
 #ifdef SEVENT_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif
     sevent_i_free(c);
-    return NULL;
+}
+
+sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cfg) {
+    if(!ev || !cfg || !cfg->host || !cfg->path || (!cfg->on_open && !cfg->on_error))
+        return NULL;
+    struct sevent_ws_conn *c = ws_conn_new(ev, cfg, true);
+    if(!c)
+        return NULL;
+    if(ws_conn_alloc_bufs(c, cfg->recv_buf_size) != 0) {
+        ws_conn_abort(c);
+        return NULL;
+    }
+    c->stream = sevent_stream_create(ev, &c->stream_cfg);
+    if(!c->stream) {
+        ws_conn_abort(c);
+        return NULL;
+    }
+
+    c->state                     = WS_STATE_CONNECTING;
+    sevent_stream_conn_init init = ws_stream_init(c);
+    if(sevent_stream_open(c->stream, c->host, c->port, &init) < 0) {
+        ws_conn_abort(c);
+        return NULL;
+    }
+    return c;
 }
 
 int sevent_ws_send_text(sevent_ws_conn *c, const void *data, size_t len) {
@@ -1611,7 +1714,6 @@ static void ws_cleanup_conn(void *data) {
         sevent_stream_destroy(c->stream); /* 内部再 post 延迟释放 (tcp/tls cleanup) */
         c->stream = NULL;
     }
-    ws_stream_cfg_free(&c->stream_cfg); /* stream_cfg 字符串自有拷贝 */
 #ifdef SEVENT_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif
