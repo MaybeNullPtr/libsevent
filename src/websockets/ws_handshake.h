@@ -1,10 +1,11 @@
 /* =========================================================================
  *  ws_handshake.h — WebSocket HTTP Upgrade 握手 (RFC 6455 §4)
  *
- *  职责:
- *    - 生成随机 Sec-WebSocket-Key
- *    - 构建客户端 Upgrade 请求
- *    - 解析服务端 101 响应并验证 Accept
+ *  职责 (双端, 纯函数无连接状态 — 语法层由 sevent_http_parse 提供):
+ *    客户端: 生成随机 Sec-WebSocket-Key / 构建 Upgrade 请求 /
+ *            解析 101 响应并验证 Accept
+ *    服务端: 解析客户端升级请求 (校验链: GET/Upgrade/Connection/Key/Version) /
+ *            构建 101 响应 (计算 accept)
  *  ========================================================================= */
 
 #ifndef SEVENT_WS_HANDSHAKE_H
@@ -47,6 +48,7 @@ extern "C" {
 #define WS_HDR_PROTOCOL "sec-websocket-protocol"
 #define WS_HDR_ACCEPT "sec-websocket-accept"
 #define WS_HDR_LOCATION "location"
+#define WS_HDR_KEY "sec-websocket-key" /* 服务端解析请求用 */
 
 /* ===== 握手响应解析结果 ===== */
 typedef struct {
@@ -97,6 +99,31 @@ int ws_parse_response(const uint8_t *buf, size_t len, ws_handshake_response *res
  * 返回: 0 = 匹配, <0 = 不匹配.
  */
 int ws_verify_accept(const char *key, const char *accept);
+
+/* ===== 服务端握手 (ws_accept / ws_upgrade 用) ===== */
+
+/* 服务端握手解析结果 (ws_parse_request 输出) */
+typedef struct {
+    int  status;    /* 0=可升级 / 400=普通非法 / 426=版本不支持 (RFC 6455 §4.4) */
+    char key[WS_KEY_BASE64_LEN];     /* Sec-WebSocket-Key (可升级时必有) */
+    bool deflate_offered;            /* offer 含 permessage-deflate */
+    bool client_no_context_takeover; /* offer 声明 (server 解压方向参数,
+                                      * RFC 7692 §7.1.1.1 — 单方面承诺, 不依赖响应确认) */
+} ws_handshake_request;
+
+/* 解析客户端升级请求 (语法交给 sevent_http_parse; token 比较大小写不敏感).
+ * 校验: 请求行 method==GET / Upgrade: websocket / Connection 含 upgrade /
+ *       Sec-WebSocket-Key 存在 / Sec-WebSocket-Version==13.
+ * 返回: >0 = 完整请求已消费字节数 (req->status 判定可升级性);
+ *       0 = 数据不足; <0 = 语法错误 (HTTP 解析失败/收到响应行). */
+int ws_parse_request(const uint8_t *buf, size_t len, ws_handshake_request *req);
+
+/* 构建 101 响应: 状态行 + Upgrade/Connection/Sec-WebSocket-Accept
+ * (accept = base64(sha1(key+GUID))); enable_deflate=true 时确认
+ * permessage-deflate (A 方案: 无参数 — RFC 7692 §4.2 省略 = 默认值
+ * 15/有 takeover, offer 参数未确认不得假设生效).
+ * 返回: 写入字节数; <0 = 容量不足. */
+int ws_build_response(char *buf, size_t cap, const char *key, bool enable_deflate);
 
 #ifdef __cplusplus
 }
