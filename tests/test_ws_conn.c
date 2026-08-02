@@ -1791,6 +1791,66 @@ static int t_recv_invalid_control_payload(void) {
     return 0;
 }
 
+static int t_recv_masked_frame(void) {
+    /* 模拟对端 (服务器) 发 mask 帧 → client 必须拒绝 (RFC 6455 §5.1:
+     * 服务器帧不得 mask, 客户端收到 mask 帧 = 协议错误 → 1002/on_error) */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host     = "127.0.0.1";
+    cfg.path     = "/";
+    cfg.on_open  = ev_open;
+    cfg.on_error = ev_error;
+    g_ev         = 0;
+    sevent_ws_conn *ws;
+    int             sfd = pair(ctx, &cfg, &ws);
+    if(sfd < 0)
+        return 1;
+    sevent_run_once(ctx);
+    if(shake(sfd) < 0)
+        return 1;
+    for(int i = 0; i < 200; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 1)
+            break;
+    }
+    if(g_ev != 1)
+        return 1;
+
+    /* 构造违规帧: mask_key 非 NULL = mask 帧 (服务器帧不得 mask) */
+    uint8_t key[4] = {1, 2, 3, 4};
+    uint8_t pay[]  = {'a', 'b', 'c'};
+    uint8_t hdr[16];
+    int     hl = ws_frame_build_header(hdr, 1, 0, WS_OPCODE_TEXT, key, sizeof(pay));
+    if(hl < 0)
+        return 1;
+    uint8_t *raw = malloc((size_t)hl + sizeof(pay));
+    memcpy(raw, hdr, (size_t)hl);
+    memcpy(raw + hl, pay, sizeof(pay));
+    ws_frame_apply_mask(raw + hl, sizeof(pay), key); /* payload 也按掩码发送 */
+    write_all(sfd, raw, (size_t)hl + sizeof(pay));
+    free(raw);
+
+    g_ev              = 0;
+    sevent_timer *_tm = sevent_timer_register(ctx, 1, ev_tick, NULL);
+    for(int i = 0; i < 100; i++) {
+        sevent_run_once(ctx);
+        if(g_ev == 3)
+            break; /* on_error (PROTOCOL) 触发 */
+    }
+    if(_tm)
+        sevent_timer_unregister(ctx, _tm);
+    if(g_ev != 3)
+        return 1;
+    close(sfd);
+    sevent_ws_destroy(ws);
+    flush_posts(ctx);
+    sevent_destroy(ctx);
+    return 0;
+}
+
 static int t_recv_invalid_close_code(void) {
     /* 模拟对端发送非法 Close 码 → on_error 触发 */
     sevent_context *ctx = sevent_create();
@@ -3336,6 +3396,7 @@ int main(void) {
                  {"connect_timeout_not_reached", t_connect_timeout_not_reached},
                  {"connect_timeout_disabled", t_connect_timeout_disabled},
                  {"recv_invalid_control_payload", t_recv_invalid_control_payload},
+                 {"recv_masked_frame", t_recv_masked_frame},
                  {"recv_invalid_close_code", t_recv_invalid_close_code},
                  {"invalid_ping_payload", t_invalid_ping_payload},
                  {"invalid_close_code", t_invalid_close_code},

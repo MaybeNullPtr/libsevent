@@ -276,6 +276,11 @@ static void stream_consume(struct sevent_ws_conn *c) {
             chunk = (size_t)c->stream_remaining;
         bool last = (chunk == c->stream_remaining) && c->stream_fin;
 
+        /* 掩码: 客户端大帧 (服务端接收) — chunk 是 payload 片段, XOR 周期
+         * 按帧内偏移游标推进 (key[(off+i)&3]) */
+        if(c->stream_mask)
+            ws_frame_apply_mask_offset(c->recv_buf + c->recv_pos, chunk, c->stream_mask_key, c->stream_mask_off);
+
         if(c->msg.compressed) {
             /* 压缩流: 不在此发 fin, 由 decompress_stream_end 统一发 */
             if(decompress_stream_chunk(c, c->recv_buf + c->recv_pos, chunk, is_bin) != 0)
@@ -293,6 +298,7 @@ static void stream_consume(struct sevent_ws_conn *c) {
 
         c->recv_pos         += chunk;
         c->stream_remaining -= chunk;
+        c->stream_mask_off  += chunk;
     }
     if(c->stream_remaining == 0) {
         if(c->stream_fin) {
@@ -526,10 +532,14 @@ static int send_frame_raw(struct sevent_ws_conn *c, uint8_t opcode, const void *
     if(c->state != WS_STATE_OPEN && c->state != WS_STATE_CLOSING)
         return SEVENT_ERR_INVAL;
 
-    uint8_t mask_key[4];
-    gen_mask_key(c, mask_key);
+    /* 掩码方向 (RFC 6455 §5.1): 客户端帧必须 mask, 服务器帧必须不 mask.
+     * build_header 的 mask_key 参数本身是开关 (NULL = 不 mask, 无 4 字节 key) */
+    uint8_t mask_key[4] = {0, 0, 0, 0};
+    if(c->is_client)
+        gen_mask_key(c, mask_key);
     uint8_t hdr[16];
-    int     hdr_len = ws_frame_build_header(hdr, 1, (flags & WS_SEND_RSV1) ? 1 : 0, opcode, mask_key, len);
+    int     hdr_len = ws_frame_build_header(
+            hdr, 1, (flags & WS_SEND_RSV1) ? 1 : 0, opcode, c->is_client ? mask_key : NULL, len);
     if(hdr_len < 0)
         return SEVENT_ERR_INVAL;
 
@@ -540,7 +550,8 @@ static int send_frame_raw(struct sevent_ws_conn *c, uint8_t opcode, const void *
     memcpy(buf, hdr, (size_t)hdr_len);
     if(len > 0 && payload) {
         memcpy(buf + hdr_len, payload, len);
-        ws_frame_apply_mask(buf + hdr_len, len, mask_key);
+        if(c->is_client)
+            ws_frame_apply_mask(buf + hdr_len, len, mask_key);
     }
 
     /* RFC 6455 §5.5: 控制帧 payload 不得超过 125 */
@@ -926,6 +937,11 @@ static int process_frames(struct sevent_ws_conn *c) {
                 if(hdr.rsv1 && hdr.opcode == WS_OPCODE_CONT) {
                     return SEVENT_WS_ERR_PROTOCOL;
                 }
+                /* 掩码方向 (同正常路径): 大帧边收边消费前必须校验 —
+                 * 未校验则客户端 mask 帧的 payload 会当明文消费 */
+                if(hdr.mask == c->is_client) {
+                    return SEVENT_WS_ERR_PROTOCOL;
+                }
                 if(c->msg.mode == WS_MSG_STREAM || c->msg.mode == WS_MSG_FRAG) {
                     /* [状态机] 消息进行中 (FRAG/STREAM): 只允许 CONT 续帧
                      * (RFC 6455 §5.4: 消息未完成时的新数据帧是协议违规) */
@@ -956,6 +972,11 @@ static int process_frames(struct sevent_ws_conn *c) {
                 }
                 c->stream_remaining = hdr.payload_len; /* 帧级剩余, 消息状态保持 */
                 c->stream_fin       = hdr.fin;
+                /* 掩码状态帧级保存 (客户端大帧: stream_consume 消费 chunk 前解掩码) */
+                c->stream_mask      = hdr.mask;
+                if(hdr.mask)
+                    memcpy(c->stream_mask_key, hdr.mask_key, 4);
+                c->stream_mask_off  = 0; /* 帧级偏移游标重置 */
                 c->msg.total        += hdr.payload_len; /* 消息总长累积 (压缩时为压缩字节) */
                 c->recv_pos         += (size_t)n;       /* 消费帧头 */
                 stream_consume(c);
@@ -963,6 +984,11 @@ static int process_frames(struct sevent_ws_conn *c) {
             break;
         }
         uint8_t *payload = (uint8_t *)p + n;
+        /* 掩码方向校验 (RFC 6455 §5.1): 客户端帧必须 mask, 服务器帧必须
+         * 不 mask — 违反即协议错误 (1002). 双向合一: server 要求 mask==1,
+         * client 要求 mask==0. */
+        if(hdr.mask == c->is_client)
+            return SEVENT_WS_ERR_PROTOCOL;
         if(hdr.mask)
             ws_frame_apply_mask(payload, hdr.payload_len, hdr.mask_key);
 
@@ -1384,8 +1410,9 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
         return NULL;
     }
 #endif
-    c->ev    = ev;
-    c->state = WS_STATE_CONNECTING;
+    c->ev       = ev;
+    c->state    = WS_STATE_CONNECTING;
+    c->is_client = true; /* 角色: connect=客户端 (发送 mask); accept/upgrade=服务端 */
     {
         /* 用地址+时间+PID 播种 per-connection mask 序列 */
         c->mask_seed = (uint32_t)((uintptr_t)c ^ (unsigned int)time(NULL) ^ ((unsigned int)getpid() << 16));

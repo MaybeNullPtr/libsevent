@@ -62,6 +62,9 @@ struct sevent_ws_conn {
     /* ---- 状态 ---- */
     int  state;     /* enum ws_state */
     bool destroyed; /* 回调重入守卫: on_error/on_close 中 destroy 后不再访问 */
+    bool is_client; /* 角色: true=客户端 (connect) / false=服务端 (accept/upgrade).
+                     * 掩码方向 (RFC 6455 §5.1): 客户端帧必须 mask, 服务器帧必须
+                     * 不 mask — 发送 mask 标志 + 接收校验均按此角色. */
 #ifdef SEVENT_THREAD_SAFE
     sevent_mutex_t lock; /* 跨线程锁 (递归) */
 #endif
@@ -107,8 +110,12 @@ struct sevent_ws_conn {
     struct ws_msg_state msg;
 
     /* ---- 大帧流式读取 (帧级状态, 单帧 > recv_cap 时分块) ---- */
-    uint64_t stream_remaining; /* 当前流式帧剩余未消费字节 */
-    bool     stream_fin;       /* 当前流式帧 FIN 位 */
+    uint64_t stream_remaining;   /* 当前流式帧剩余未消费字节 */
+    bool     stream_fin;         /* 当前流式帧 FIN 位 */
+    bool     stream_mask;        /* 当前流式帧是否 mask (客户端帧, 消费前解掩码) */
+    uint8_t  stream_mask_key[4]; /* 当前流式帧掩码密钥 */
+    uint64_t stream_mask_off;    /* 当前流式帧掩码偏移游标 (chunk 在 payload 内
+                                  * 的起始偏移 — 解掩码 XOR 周期按此推进) */
 
     /* ---- 分片累积 (RFC 6455 §5.4, frag_buf 大小 = recv_cap) ---- */
     uint8_t *frag_buf;
