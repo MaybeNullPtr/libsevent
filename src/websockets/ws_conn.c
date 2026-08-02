@@ -538,8 +538,8 @@ static int send_frame_raw(struct sevent_ws_conn *c, uint8_t opcode, const void *
     if(c->is_client)
         gen_mask_key(c, mask_key);
     uint8_t hdr[16];
-    int     hdr_len = ws_frame_build_header(
-            hdr, 1, (flags & WS_SEND_RSV1) ? 1 : 0, opcode, c->is_client ? mask_key : NULL, len);
+    int     hdr_len =
+            ws_frame_build_header(hdr, 1, (flags & WS_SEND_RSV1) ? 1 : 0, opcode, c->is_client ? mask_key : NULL, len);
     if(hdr_len < 0)
         return SEVENT_ERR_INVAL;
 
@@ -976,9 +976,9 @@ static int process_frames(struct sevent_ws_conn *c) {
                 c->stream_mask      = hdr.mask;
                 if(hdr.mask)
                     memcpy(c->stream_mask_key, hdr.mask_key, 4);
-                c->stream_mask_off  = 0; /* 帧级偏移游标重置 */
-                c->msg.total        += hdr.payload_len; /* 消息总长累积 (压缩时为压缩字节) */
-                c->recv_pos         += (size_t)n;       /* 消费帧头 */
+                c->stream_mask_off = 0;                /* 帧级偏移游标重置 */
+                c->msg.total       += hdr.payload_len; /* 消息总长累积 (压缩时为压缩字节) */
+                c->recv_pos        += (size_t)n;       /* 消费帧头 */
                 stream_consume(c);
             }
             break;
@@ -1410,8 +1410,8 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
         return NULL;
     }
 #endif
-    c->ev       = ev;
-    c->state    = WS_STATE_CONNECTING;
+    c->ev        = ev;
+    c->state     = WS_STATE_CONNECTING;
     c->is_client = true; /* 角色: connect=客户端 (发送 mask); accept/upgrade=服务端 */
     {
         /* 用地址+时间+PID 播种 per-connection mask 序列 */

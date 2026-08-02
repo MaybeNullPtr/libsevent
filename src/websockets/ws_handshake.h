@@ -104,7 +104,7 @@ int ws_verify_accept(const char *key, const char *accept);
 
 /* 服务端握手解析结果 (ws_parse_request 输出) */
 typedef struct {
-    int  status;    /* 0=可升级 / 400=普通非法 / 426=版本不支持 (RFC 6455 §4.4) */
+    int  status;                     /* 0=可升级 / 400=普通非法 / 426=版本不支持 (RFC 6455 §4.4) */
     char key[WS_KEY_BASE64_LEN];     /* Sec-WebSocket-Key (可升级时必有) */
     bool deflate_offered;            /* offer 含 permessage-deflate */
     bool client_no_context_takeover; /* offer 声明 (server 解压方向参数,

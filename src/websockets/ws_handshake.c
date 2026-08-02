@@ -374,7 +374,7 @@ int ws_parse_request(const uint8_t *buf, size_t len, ws_handshake_request *req) 
 }
 
 int ws_build_response(char *buf, size_t cap, const char *key, bool enable_deflate) {
-    char   accept[WS_ACCEPT_BASE64_LEN];
+    char accept[WS_ACCEPT_BASE64_LEN];
     ws_compute_accept(key, accept);
     char   extra[256];
     size_t n = (size_t)snprintf(extra,
@@ -387,9 +387,7 @@ int ws_build_response(char *buf, size_t cap, const char *key, bool enable_deflat
         return -1;
 #ifdef SEVENT_WS_DEFLATE
     if(enable_deflate) {
-        int m = snprintf(extra + n,
-                         sizeof(extra) - n,
-                         "Sec-WebSocket-Extensions: " WS_EXT_PMD "\r\n");
+        int m = snprintf(extra + n, sizeof(extra) - n, "Sec-WebSocket-Extensions: " WS_EXT_PMD "\r\n");
         if(m < 0 || (size_t)m >= sizeof(extra) - n)
             return -1;
         n += (size_t)m;

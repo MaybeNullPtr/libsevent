@@ -695,12 +695,12 @@ static int tcp_shutdown(sevent_stream_conn *s, int flag) {
 }
 
 static const sevent_stream_ops tcp_ops = {
-        .open         = tcp_open,
-        .accept       = tcp_accept,
-        .write        = tcp_write,
-        .shutdown     = tcp_shutdown,
-        .close        = tcp_close,
-        .destroy      = tcp_destroy,
+        .open          = tcp_open,
+        .accept        = tcp_accept,
+        .write         = tcp_write,
+        .shutdown      = tcp_shutdown,
+        .close         = tcp_close,
+        .destroy       = tcp_destroy,
         .set_no_delay  = tcp_op_set_no_delay,
         .set_callbacks = tcp_op_set_callbacks,
 };

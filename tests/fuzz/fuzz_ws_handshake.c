@@ -228,14 +228,14 @@ static int verify_resp(const uint8_t *buf, size_t len, int r, const ws_handshake
 static int roundtrip_response(uint64_t iter) {
     char key[WS_KEY_BASE64_LEN];
     ws_gen_key(key);
-    char   buf[1024];
-    int    r = ws_build_response(buf, sizeof(buf), key, true);
+    char buf[1024];
+    int  r = ws_build_response(buf, sizeof(buf), key, true);
     if(r <= 0) {
         printf("iter %llu: build_response 失败 (r=%d)\n", (unsigned long long)iter, r);
         return -1;
     }
     ws_handshake_response resp;
-    int rp = ws_parse_response((const uint8_t *)buf, (size_t)r, &resp);
+    int                   rp = ws_parse_response((const uint8_t *)buf, (size_t)r, &resp);
     if(rp != r) {
         printf("iter %llu: roundtrip 解析长度不匹配 (%d != %d)\n", (unsigned long long)iter, rp, r);
         return -1;
@@ -263,7 +263,7 @@ static int roundtrip_request(uint64_t iter) {
     char key[WS_KEY_BASE64_LEN];
     ws_gen_key(key);
     char              buf[1024];
-    ws_deflate_params pmd = {0};
+    ws_deflate_params pmd          = {0};
     pmd.client_no_context_takeover = true;
     pmd.server_max_window_bits     = 10;
     int r = ws_build_request(buf, sizeof(buf), "server.example.com", 8080, "/chat", key, NULL, true, &pmd);
@@ -272,13 +272,9 @@ static int roundtrip_request(uint64_t iter) {
         return -1;
     }
     ws_handshake_request req;
-    int rp = ws_parse_request((const uint8_t *)buf, (size_t)r, &req);
+    int                  rp = ws_parse_request((const uint8_t *)buf, (size_t)r, &req);
     if(rp != r || req.status != 0) {
-        printf("iter %llu: roundtrip 请求不可升级 (r=%d/%d, status=%d)\n",
-               (unsigned long long)iter,
-               rp,
-               r,
-               req.status);
+        printf("iter %llu: roundtrip 请求不可升级 (r=%d/%d, status=%d)\n", (unsigned long long)iter, rp, r, req.status);
         return -1;
     }
     if(strcmp(req.key, key) != 0) {
@@ -308,7 +304,7 @@ int main(int argc, char **argv) {
         switch(rng_below(4)) {
         case 0: { /* 服务端解析请求 */
             ws_handshake_request req;
-            int r = ws_parse_request(buf, len, &req);
+            int                  r = ws_parse_request(buf, len, &req);
             if(verify_req(buf, len, r, &req, iter) != 0)
                 return 1;
             if(check_deterministic_req(buf, len, iter) != 0)
@@ -316,7 +312,7 @@ int main(int argc, char **argv) {
         } break;
         case 1: { /* 客户端解析响应 */
             ws_handshake_response resp;
-            int r = ws_parse_response(buf, len, &resp);
+            int                   r = ws_parse_response(buf, len, &resp);
             if(verify_resp(buf, len, r, &resp, iter) != 0)
                 return 1;
             if(check_deterministic_resp(buf, len, iter) != 0)
