@@ -468,12 +468,19 @@ static void tls_s_destroy(sevent_stream_conn *s) {
     sevent_i_free(s); /* 壳立即释放: destroy 后对象作废 */
 }
 
+static int tls_s_shutdown(sevent_stream_conn *s, int flag) {
+    /* 透传 tcp (密文走 tcp 写队列, tcp 层 flush 后 shutdown);
+     * pending_buf 极端场景 (TLS WANT_READ 暂存明文) 不等待 — 与 close 同语义 */
+    return sevent_tcp_conn_shutdown((sevent_tcp_conn *)((struct tls_conn *)s->impl)->tcp, flag);
+}
+
 static const sevent_stream_ops tls_stream_ops = {
-        .open    = tls_s_open,
-        .accept  = tls_s_accept,
-        .write   = tls_s_write,
-        .close   = tls_s_close,
-        .destroy = tls_s_destroy,
+        .open     = tls_s_open,
+        .accept   = tls_s_accept,
+        .write    = tls_s_write,
+        .shutdown = tls_s_shutdown,
+        .close    = tls_s_close,
+        .destroy  = tls_s_destroy,
 };
 
 /* ===== 工厂 (公开 + stream 分发) ===== */

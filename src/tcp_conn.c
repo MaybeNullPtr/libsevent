@@ -84,6 +84,7 @@ struct tcp_conn {
     /* ---- 连接超时 (0=默认, <0=禁用) ---- */
     int           connect_timeout_ms;
     sevent_timer *connect_timer;
+    bool          shutdown_wr_pending; /* SHUT_WR 待执行: 写队列 flush 完成后 shutdown */
 
     /* ---- 接收缓冲 (固定大小, on_data 推送即消费) ---- */
     uint8_t *recv_buf; /* 接收缓冲 (read 直接写入, 推送后复用) */
@@ -504,6 +505,37 @@ int sevent_tcp_conn_accept(sevent_tcp_conn *c, int fd, const sevent_stream_conn_
     return 0;
 }
 
+/* 半关: SHUT_WR 时先 flush 用户空间队列 (内核保证已入队数据发完 + FIN);
+ * 队列非空 → 标记待执行 (on_write_ready flush 完成后执行). */
+int sevent_tcp_conn_shutdown(sevent_tcp_conn *c, int flag) {
+    if(!c)
+        return SEVENT_ERR_INVAL;
+    struct tcp_conn *t = (struct tcp_conn *)c;
+    TCP_LOCK(t);
+    if(t->destroyed || t->state != TCP_STATE_OPEN) {
+        TCP_UNLOCK(t);
+        return SEVENT_ERR_INVAL;
+    }
+    if(flag & SEVENT_SHUT_WR) {
+        if(t->write_head)
+            t->shutdown_wr_pending = true;
+        else
+            shutdown(t->fd, SHUT_WR);
+    }
+    if(flag & SEVENT_SHUT_RD)
+        shutdown(t->fd, SHUT_RD);
+    TCP_UNLOCK(t);
+    return 0;
+}
+
+/* flush 后写队列空 → 执行待办的 SHUT_WR (回调内调用点, 无用户回调) */
+static void tcp_maybe_shutdown_wr(struct tcp_conn *t) {
+    if(t->shutdown_wr_pending && !t->write_head) {
+        t->shutdown_wr_pending = false;
+        shutdown(t->fd, SHUT_WR);
+    }
+}
+
 int sevent_tcp_conn_write(sevent_tcp_conn *c, const void *data, size_t len) {
     struct tcp_conn *t = (struct tcp_conn *)c;
     TCP_LOCK(t);
@@ -537,6 +569,8 @@ int sevent_tcp_conn_write(sevent_tcp_conn *c, const void *data, size_t len) {
     }
     if(t->write_head)
         tcp_update_io(t); /* 有积压 → 注册写兴趣; 队列空 → io 已是 (on_readable, NULL) */
+    else
+        tcp_maybe_shutdown_wr(t);
     TCP_UNLOCK(t);
     return 0;
 }
@@ -609,12 +643,17 @@ static void tcp_destroy(sevent_stream_conn *s) {
     sevent_i_free(s); /* 壳立即释放: destroy 后对象作废, 不再访问 s */
 }
 
+static int tcp_shutdown(sevent_stream_conn *s, int flag) {
+    return sevent_tcp_conn_shutdown((sevent_tcp_conn *)s->impl, flag);
+}
+
 static const sevent_stream_ops tcp_ops = {
-        .open    = tcp_open,
-        .accept  = tcp_accept,
-        .write   = tcp_write,
-        .close   = tcp_close,
-        .destroy = tcp_destroy,
+        .open     = tcp_open,
+        .accept   = tcp_accept,
+        .write    = tcp_write,
+        .shutdown = tcp_shutdown,
+        .close    = tcp_close,
+        .destroy  = tcp_destroy,
 };
 
 /* 供 stream_conn.c 工厂分发: 创建 TCP 实现 + 包壳挂接 ops */

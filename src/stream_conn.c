@@ -52,6 +52,12 @@ int sevent_stream_write(sevent_stream_conn *s, const void *data, size_t len) {
     return s->ops->write(s, data, len);
 }
 
+int sevent_stream_shutdown(sevent_stream_conn *s, int flag) {
+    if(!s || !s->ops || !s->ops->shutdown)
+        return SEVENT_ERR_INVAL;
+    return s->ops->shutdown(s, flag);
+}
+
 void sevent_stream_close(sevent_stream_conn *s) {
     if(!s || !s->ops)
         return;

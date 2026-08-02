@@ -126,6 +126,20 @@ int sevent_stream_write(sevent_stream_conn *s, const void *data, size_t len);
  * 不触发 on_close; 关闭后可重新 open/accept. */
 void sevent_stream_close(sevent_stream_conn *s);
 
+/* ===== 半关 (shutdown) ===== */
+#define SEVENT_SHUT_RD 0x1 /* 关闭读方向 (后续读 → EOF) */
+#define SEVENT_SHUT_WR 0x2 /* 关闭写方向 (发完数据 + FIN; 后续写报错) */
+
+/* 半关连接: shutdown(fd, flag).
+ * SHUT_WR 语义: 本层写队列先 flush 进内核 (内核保证已入队数据发完 + FIN),
+ *               队列非空时标记待执行 — flush 完成后自动执行. 之后写报错.
+ * 用途: http server 响应后优雅关闭 (响应 close=true → shutdown(WR) →
+ *       发完响应 + FIN → 等对端 EOF). 半关后读方向继续 (可读对端剩余数据).
+ * flag: SEVENT_SHUT_RD / SEVENT_SHUT_WR / 两者.
+ * 返回: 0=已执行或已标记; <0=SEVENT_ERR_INVAL (未 OPEN/参数非法).
+ * 线程: 同 write. */
+int sevent_stream_shutdown(sevent_stream_conn *s, int flag);
+
 /* 释放对象. free 一律推迟到事件循环 run_posts 阶段 (sevent_post, 不区分
  * sevent_run/run_once 模式), 回调栈安全展开 — 回调内可安全调用.
  * 约束: 调用后对象作废 — 不得再对 s 调用任何 API (含再次 destroy),

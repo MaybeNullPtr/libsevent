@@ -20,6 +20,7 @@ typedef struct sevent_stream_ops {
     int (*open)(sevent_stream_conn *s, const char *host, uint16_t port, const sevent_stream_conn_init *cb);
     int (*accept)(sevent_stream_conn *s, int fd, const sevent_stream_conn_init *cb);
     int (*write)(sevent_stream_conn *s, const void *data, size_t len);
+    int (*shutdown)(sevent_stream_conn *s, int flag); /* 半关: 队列 flush 后 shutdown(fd, flag) */
     void (*close)(sevent_stream_conn *s);
     void (*destroy)(sevent_stream_conn *s);
 } sevent_stream_ops;

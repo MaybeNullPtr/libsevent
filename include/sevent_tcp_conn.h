@@ -108,6 +108,15 @@ int sevent_tcp_conn_accept(sevent_tcp_conn *c, int fd, const sevent_stream_conn_
 int sevent_tcp_conn_write(sevent_tcp_conn *c, const void *data, size_t len);
 
 /*
+ * 半关连接: shutdown(fd, flag) — SHUT_WR 先 flush 本层写队列 (内核保证
+ * 已入队数据发完 + FIN), 队列非空标记待执行 (flush 完成后自动执行).
+ * 之后写报错; 读方向继续. flag: SEVENT_SHUT_RD / SEVENT_SHUT_WR.
+ * 返回: 0=已执行或已标记; <0=SEVENT_ERR_INVAL (未 OPEN/参数非法).
+ * 线程: 同 write.
+ */
+int sevent_tcp_conn_shutdown(sevent_tcp_conn *c, int flag);
+
+/*
  * 关闭底层连接 (TCP close, 不等待对端).
  * 行为:     摘除事件 + 关闭 fd + 清写队列 + 状态回 IDLE; 对象可重新 open/accept.
  *           不触发 on_close (主动关闭, 上层状态已知).
