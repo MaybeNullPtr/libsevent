@@ -26,6 +26,25 @@
 #endif
 #define CERT_DIR TEST_CERTS_DIR
 
+/* 证书 PEM 文件读取 (PEM 内存通道用例) */
+static char *read_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if(!f)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)sz + 1);
+    if(fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        fclose(f);
+        free(buf);
+        return NULL;
+    }
+    fclose(f);
+    buf[sz] = '\0';
+    return buf;
+}
+
 /* ---- 全局状态 ---- */
 static int    g_ev_open;
 static int    g_ev_data;
@@ -35,7 +54,10 @@ static int    g_ev_error;
 static int    g_ev_error_code;
 static int    g_srv_close_after_recv; /* server 收到数据后立即关闭 (EOF 用例) */
 static int    g_srv_mtls;             /* 服务端 enable_peer_verify (mTLS 用例) */
-static int    g_srv_error;            /* 服务端 on_error 记录 (mTLS 拒绝断言) */
+static int    g_srv_pem;              /* 服务端证书走 PEM 内存通道 (t_pem_config) */
+static char  *g_srv_cert_pem;
+static char  *g_srv_key_pem;
+static int    g_srv_error; /* 服务端 on_error 记录 (mTLS 拒绝断言) */
 static int    g_srv_error_code;
 static char   g_recv[512];
 static size_t g_rlen;
@@ -76,10 +98,15 @@ static void on_accept(void *d, int fd) {
     (void)d;
     sevent_stream_conn_config cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.enable_tls         = true;
-    cfg.ca_path            = CERT_DIR "/ca.pem";
-    cfg.cert_path          = CERT_DIR "/server.pem";
-    cfg.key_path           = CERT_DIR "/server.key";
+    cfg.enable_tls = true;
+    cfg.ca_path    = CERT_DIR "/ca.pem";
+    if(g_srv_pem) { /* PEM 内存通道 (D3) */
+        cfg.cert_pem = g_srv_cert_pem;
+        cfg.key_pem  = g_srv_key_pem;
+    } else {
+        cfg.cert_path = CERT_DIR "/server.pem";
+        cfg.key_path  = CERT_DIR "/server.key";
+    }
     cfg.enable_peer_verify = g_srv_mtls; /* 服务端: true=mTLS (要求客户端证书) */
     sevent_tls_conn *c     = sevent_tls_conn_create(g_ev, &cfg);
     if(!c) {
@@ -603,6 +630,140 @@ static int t_close_reopen(void) {
     return ok ? 0 : 1;
 }
 
+/* ---- path/PEM 双通道 (D3) 用例 ---- */
+static int t_pem_config(void) {
+    /* 客户端 ca_pem / 服务端 cert+key PEM 各验证一例;
+     * 互斥 (path+PEM 同给 / cert 缺 key) → create 失败 */
+    char *ca_pem     = read_file(CERT_DIR "/ca.pem");
+    char *srv_cert_p = read_file(CERT_DIR "/server.pem");
+    char *srv_key_p  = read_file(CERT_DIR "/server.key");
+    if(!ca_pem || !srv_cert_p || !srv_key_p) {
+        free(ca_pem);
+        free(srv_cert_p);
+        free(srv_key_p);
+        return 1;
+    }
+    int ok = 1;
+
+    /* 互斥/成对校验 (create 即失败, 无对象泄漏) */
+    sevent_context *ev = sevent_create();
+    if(!ev) {
+        free(ca_pem);
+        free(srv_cert_p);
+        free(srv_key_p);
+        return 1;
+    }
+    g_ev = ev;
+    sevent_stream_conn_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.enable_tls = true;
+    cfg.ca_path    = CERT_DIR "/ca.pem";
+    cfg.ca_pem     = ca_pem;
+    if(sevent_tls_conn_create(ev, &cfg) != NULL)
+        ok = 0; /* ca path+PEM 互斥 */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.enable_tls = true;
+    cfg.cert_path  = CERT_DIR "/server.pem";
+    cfg.cert_pem   = srv_cert_p;
+    if(sevent_tls_conn_create(ev, &cfg) != NULL)
+        ok = 0; /* cert path+PEM 互斥 */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.enable_tls = true;
+    cfg.cert_path  = CERT_DIR "/server.pem";
+    if(sevent_tls_conn_create(ev, &cfg) != NULL)
+        ok = 0;           /* cert 缺 key (成对) */
+    g_srv_conn_count = 0; /* 本段无 acceptor */
+    flush_posts(ev);
+    sevent_destroy(ev);
+
+    /* 子用例 1: 客户端 ca_pem + 服务端 path → 握手 echo */
+    g_srv_pem              = 0;
+    g_srv_cert_pem         = srv_cert_p;
+    g_srv_key_pem          = srv_key_p;
+    g_srv_close_after_recv = 0;
+    g_srv_mtls             = 0;
+    sevent_context *ev1    = sevent_create();
+    if(!ev1) {
+        ok = 0;
+        goto out;
+    }
+    g_ev     = ev1;
+    int port = start_server(ev1);
+    if(port < 0) {
+        ok = 0;
+        goto out;
+    }
+    g_ev_open = g_ev_data = g_ev_error = 0;
+    g_rlen                             = 0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.enable_tls             = true;
+    cfg.ca_pem                 = ca_pem; /* PEM 内存通道 */
+    cfg.enable_peer_verify     = true;
+    cfg.enable_hostname_verify = true;
+    cfg.tls_hostname           = "localhost";
+    sevent_tls_conn *c         = sevent_tls_conn_create(ev1, &cfg);
+    if(!c) {
+        ok = 0;
+        goto out;
+    }
+    sevent_stream_conn_init cb = {
+            .user_data = c, .on_open = cli_on_open, .on_data = cli_on_data, .on_error = cli_on_error};
+    if(sevent_tls_conn_open(c, "127.0.0.1", (uint16_t)port, &cb) < 0) {
+        ok = 0;
+        goto out;
+    }
+    for(int i = 0; i < 200 && !g_ev_data && !g_ev_error; i++)
+        sevent_run_once(ev1);
+    if(!g_ev_open || !g_ev_data || g_ev_error || g_rlen != 9 || memcmp(g_recv, "hello tls", 9) != 0)
+        ok = 0;
+    sevent_tls_conn_destroy(c);
+    finish_case(ev1);
+
+    /* 子用例 2: 服务端 cert/key PEM + 客户端 ca_path → 握手 echo */
+    g_srv_pem           = 1;
+    sevent_context *ev2 = sevent_create();
+    if(!ev2) {
+        ok = 0;
+        goto out;
+    }
+    g_ev = ev2;
+    port = start_server(ev2);
+    if(port < 0) {
+        ok = 0;
+        goto out;
+    }
+    g_ev_open = g_ev_data = g_ev_error = 0;
+    g_rlen                             = 0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.enable_tls             = true;
+    cfg.ca_path                = CERT_DIR "/ca.pem"; /* 路径通道 */
+    cfg.enable_peer_verify     = true;
+    cfg.enable_hostname_verify = true;
+    cfg.tls_hostname           = "localhost";
+    c                          = sevent_tls_conn_create(ev2, &cfg);
+    if(!c) {
+        ok = 0;
+        goto out;
+    }
+    cb.user_data = c;
+    if(sevent_tls_conn_open(c, "127.0.0.1", (uint16_t)port, &cb) < 0) {
+        ok = 0;
+        goto out;
+    }
+    for(int i = 0; i < 200 && !g_ev_data && !g_ev_error; i++)
+        sevent_run_once(ev2);
+    if(!g_ev_open || !g_ev_data || g_ev_error || g_rlen != 9 || memcmp(g_recv, "hello tls", 9) != 0)
+        ok = 0;
+    sevent_tls_conn_destroy(c);
+    finish_case(ev2);
+out:
+    g_srv_pem = 0;
+    free(ca_pem);
+    free(srv_cert_p);
+    free(srv_key_p);
+    return ok ? 0 : 1;
+}
+
 /* ---- 注册 ---- */
 typedef struct {
     const char *n;
@@ -619,6 +780,7 @@ static const test_entry tests[] = {
         {"tls_handshake_peer_close", t_handshake_peer_close},
         {"tls_inval", t_inval},
         {"tls_close_reopen", t_close_reopen},
+        {"tls_pem_config", t_pem_config},
         {NULL, NULL},
 };
 

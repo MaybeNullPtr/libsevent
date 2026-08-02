@@ -57,10 +57,15 @@ typedef struct sevent_stream_conn sevent_stream_conn;
 /* ===== 配置 (create 时一次性传入) ===== */
 typedef struct sevent_stream_conn_config {
     bool        enable_tls; /* false=tcp_conn, true=tls_conn (sevent_stream_create 分发用) */
-    /* --- TLS 配置 (tls_conn 用; tcp_conn 忽略) --- */
+    /* --- TLS 配置 (tls_conn 用; tcp_conn 忽略) ---
+     * 证书路径与 PEM 内存双通道 (D3), 每对字段互斥 (同时给 → create 失败):
+     *   ca_path/ca_pem, cert_path/cert_pem, key_path/key_pem */
     const char *ca_path;                /* CA 证书路径, NULL=系统默认信任库 */
+    const char *ca_pem;                 /* CA 证书 PEM 内存 (NUL 结尾) */
     const char *cert_path;              /* 本端证书 (服务端必填; 客户端 mTLS 可选) */
-    const char *key_path;               /* 本端私钥 */
+    const char *cert_pem;               /* 本端证书 PEM 内存 (支持链, NUL 结尾) */
+    const char *key_path;               /* 本端私钥 (PEM, 不支持加密) */
+    const char *key_pem;                /* 本端私钥 PEM 内存 */
     bool        enable_peer_verify;     /* 客户端: 校验服务器证书链 (默认 true);
                                          * 服务端: 要求客户端证书 mTLS (默认 false) */
     bool        enable_hostname_verify; /* 校验对端证书名开关, 两端通用, 默认 true */

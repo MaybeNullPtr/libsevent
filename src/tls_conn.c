@@ -456,9 +456,13 @@ sevent_tls_conn *sevent_tls_conn_create(sevent_context *ev, const sevent_stream_
     /* stream_conn_config 的 TLS 字段 → ssl config (U6 后含 PEM 三件套) */
     sevent_ssl_config scfg;
     memset(&scfg, 0, sizeof(scfg));
+    /* path/PEM 双通道 (D3): 全量透传, 互斥校验在 ssl 层 ctx_new */
     scfg.ca_path                = cfg->ca_path;
+    scfg.ca_pem                 = cfg->ca_pem;
     scfg.cert_path              = cfg->cert_path;
+    scfg.cert_pem               = cfg->cert_pem;
     scfg.key_path               = cfg->key_path;
+    scfg.key_pem                = cfg->key_pem;
     scfg.enable_peer_verify     = cfg->enable_peer_verify;
     scfg.enable_hostname_verify = cfg->enable_hostname_verify;
     if(cfg->tls_hostname) { /* 对象级校验名: create 时确定, 存对象 */

@@ -127,6 +127,11 @@ void *sevent_tls_conn_get_ssl(sevent_tls_conn *c); /* 底层 SSL 对象 (特殊�
 用户可直接用本 API（不经过 stream_conn 抽象），用法与 tcp_conn 完全一致（仅 create 多 TLS 配置）；
 ws 模块经 stream_conn 使用（tls_stream_create 包壳，ops 转发到本 API —— 与 tcp 层同构）。
 
+证书三件套（ca/cert/key）**路径 + PEM 内存双通道**（D3）：`ca_path/ca_pem`、
+`cert_path/cert_pem`、`key_path/key_pem`——每对字段互斥（同时给 → create 失败），
+cert/key 必须成对；格式仅 PEM 文本（NUL 结尾），私钥不支持加密。全透传到 ssl 层
+（sevent_ssl_config），互斥/成对校验在 ssl 层 ctx_new 统一做。
+
 **字段归属规则（生命周期维度）**：
 - **对象级（config，create 时）**：跨连接不变——证书/CA/私钥、验证开关、**校验名 tls_hostname**（目标身份）
 - **连接级（init，open/accept 时）**：每轮可变——回调组、超时、缓冲
@@ -193,7 +198,8 @@ ws 模块经 stream_conn 使用（tls_stream_create 包壳，ops 转发到本 AP
 | 6 | tls_conn.c 组合 tcp_conn + tls_hostname（config 对象级）+ 命名定稿 + **公开 API（sevent_tls_conn_create/open/accept/write/close/destroy/get_ssl，与 tcp_conn 对称）** —— 双后端 × ASAN：test-ssl 8/8 + ctest 8/8 + 端到端 PASS 零泄漏 | ✅ |
 | 6.1 | **tls_conn 行为补全（公开 API 独立测试暴露）**：① 终结语义 — EOF/error **及 open/accept 同步失败**后自动回 IDLE 可重开（`tls_reset_after_term`，与 tcp_conn 契约一致；on_error/on_close 回调内可直接 open）；② 回调安全 — 用户回调内 close/destroy 后 ssl 判空（各循环复查）；③ close 复用终结复位（同一套释放不重复）；④ openssl EOF 归一化（见 §7 新增两行）；⑤ 对象级 tls_hostname 归 `tls_cleanup` 释放（close 不清 — 重开校验名保持，分离场景不退化）；⑥ open 前置检查含 host NULL（与 tcp 一致） | ✅ |
 | 6.2 | **公开 API 独立测试**：test-tcp-conn 7 用例 + test-tls-conn 7 用例（握手 echo/验证失败/hostname 不匹配/mTLS 拒绝/EOF+重开/1MB 大包/握手期对端关闭）—— 双后端 × ASAN：ctest 10/10 全绿，零泄漏零警告 | ✅ |
-| 7 | stream_conn_config 加 PEM 字段（D3） | ⬜ |
+| 6.3 | **公开 API 独立测试补全**：tls 加 inval（NULL host/同步失败重试）与 close 后重开（对象级 hostname 保持）—— 暴露并修复 open 缺 host 检查、同步失败 established 残留、close 清 hostname 三缺陷 | ✅ |
+| 7 | stream_conn_config 加 PEM 字段（D3：ca_pem/cert_pem/key_pem，path 互斥透传 ssl 层）—— test-tls-conn 加 t_pem_config（客户端 ca_pem + 服务端 PEM + 互斥/成对校验），双后端 × ASAN：ctest 10/10 全绿 | ✅ |
 | 8 | ws 层接线 + 版本升 minor | ⬜ |
 
 ## 9. 约束（不重复决策）
