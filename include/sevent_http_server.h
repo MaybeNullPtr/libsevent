@@ -29,7 +29,9 @@ extern "C" {
 typedef struct sevent_http_server sevent_http_server;
 typedef struct sevent_http_conn   sevent_http_conn; /* 连接对象: 用户可持有 (回调外有效) */
 
-/* 配置 (create 一次性传入; 与 stream 层同构) */
+/* 配置 (create 一次性传入; 与 stream 层同构).
+ * 生命周期: create 后 config 即可释放 — TLS 字符串字段 (cert/ca/key) 库内部
+ * 自有拷贝, 存到 server 生命周期, 无任何外部引用. */
 typedef struct sevent_http_server_config {
     /* 传输 (stream 同构): wss 时 enable_tls + cert/key 必填 */
     bool        enable_tls;
@@ -82,7 +84,9 @@ typedef enum {
 } sevent_http_conn_state_t;
 
 /* ===== 响应构造 (声明式: 用户填结构体 + 辅助函数, http 层自己构造 + 发送) ===== */
-typedef struct sevent_http_header { /* 头链表节点: 库管理 (堆分配, 无槽位上限) */
+typedef struct sevent_http_header { /* 头链表节点: 库管理 (堆分配, 无槽位上限).
+                                     * name/value 库内部拷贝持有 (自有内存) —
+                                     * set/add 后调用方字符串可自由释放 */
     const char                *name;
     const char                *value;
     struct sevent_http_header *next;

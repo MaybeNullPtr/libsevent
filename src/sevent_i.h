@@ -25,6 +25,9 @@ extern "C" {
 void *sevent_i_malloc(size_t size);
 void  sevent_i_free(void *ptr);
 void *sevent_i_calloc(size_t nmemb, size_t size);
+/* 字符串拷贝 (sevent_i_malloc, 走替换 allocator): 库内部持有外部输入字符串
+ * 的唯一通道 — 外部指针 (cfg 字段等) 严禁直接存储引用, 必须拷贝自有. */
+char *sevent_i_strdup(const char *s);
 
 #ifdef __cplusplus
 }

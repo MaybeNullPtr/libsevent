@@ -11,6 +11,7 @@
 #include "sevent_tls_conn.h"
 #include "websockets/ws_sha1.h"
 #include "websockets/ws_base64.h"
+#include "websockets/ws_frame.h" /* srv_echo_plain 帧重建 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,9 +37,32 @@ static size_t               g_msg_len;
 
 /* ---- TLS 回显服务端 (tls_conn 公开 API) ----
  * 首包是 ws HTTP 升级请求: 解析 Sec-WebSocket-Key → 回 101 响应;
- * 之后的数据是 ws 帧, 原样回显 (回显层不懂 ws 帧, 帧在明文层往返). */
+ * 之后的数据是 ws 帧, 去 mask 后以未 mask 帧回显 (RFC 6455 §5.1:
+ * 服务器帧不得 mask — 原样回显把客户端 mask 帧退回, 客户端按协议
+ * 拒绝 1002; 回显层逐帧重建, 测试消息均为小单帧). */
 static int  g_srv_http_done;
 static void srv_on_open(void *d) { (void)d; }
+
+static void srv_echo_plain(sevent_tls_conn *c, const uint8_t *data, size_t len) {
+    ws_frame_header hdr;
+    int             n = ws_frame_parse_header(data, len, &hdr);
+    if(n <= 0 || (size_t)n + hdr.payload_len != len)
+        return; /* 非完整单帧: 丢弃 (测试消息均为小单帧) */
+    uint8_t *plain = (uint8_t *)malloc(hdr.payload_len ? (size_t)hdr.payload_len : 1);
+    if(!plain)
+        return;
+    memcpy(plain, data + n, (size_t)hdr.payload_len);
+    if(hdr.mask)
+        ws_frame_apply_mask(plain, hdr.payload_len, hdr.mask_key);
+    uint8_t hdrb[16];
+    int     hb = ws_frame_build_header(hdrb, hdr.fin, hdr.rsv1, hdr.opcode, NULL, hdr.payload_len);
+    if(hb > 0) {
+        (void)sevent_tls_conn_write(c, hdrb, (size_t)hb);
+        (void)sevent_tls_conn_write(c, plain, (size_t)hdr.payload_len);
+    }
+    free(plain);
+}
+
 static void srv_on_data(void *d, const uint8_t *data, size_t len) {
     sevent_tls_conn *c = (sevent_tls_conn *)d;
     if(!g_srv_http_done) {
@@ -82,13 +106,13 @@ static void srv_on_data(void *d, const uint8_t *data, size_t len) {
         if(rn > 0)
             (void)sevent_tls_conn_write(c, resp, (size_t)rn);
         g_srv_http_done      = 1;
-        /* 粘包: 请求头后的 ws 帧一并回显 */
+        /* 粘包: 请求头后的 ws 帧一并回显 (同样去 mask 重建) */
         const uint8_t *after = (const uint8_t *)end + 4;
         if(after < data + len)
-            (void)sevent_tls_conn_write(c, after, (size_t)(data + len - after));
+            srv_echo_plain(c, after, (size_t)(data + len - after));
         return;
     }
-    (void)sevent_tls_conn_write(c, data, len); /* 回显 */
+    srv_echo_plain(c, data, len); /* 回显 (未 mask 帧) */
 }
 static void srv_on_close(void *d) { (void)d; }
 static void srv_on_error(void *d, int err) {
@@ -195,6 +219,9 @@ static int t_wss_echo(void) {
     g_ws                       = sevent_ws_connect(ev, &cfg);
     if(!g_ws)
         return 1;
+    /* 所有权契约: 调用方 cfg 已失效 (栈内存清空) — 库已自有拷贝
+     * (stream_cfg 字符串字段), 连接建立不受影响 */
+    memset(&cfg, 0, sizeof(cfg));
     for(int i = 0; i < 500 && !g_ev_msg && !g_ev_error; i++)
         sevent_run_once(ev);
     int ok = g_ev_open && g_ev_msg && !g_ev_error && g_msg_len == 9 && memcmp(g_msg, "hello wss", 9) == 0;

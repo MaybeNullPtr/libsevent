@@ -93,7 +93,9 @@ typedef enum {
     SEVENT_WS_DEFLATE_LEVEL_MAX      = SEVENT_WS_DEFLATE_LEVEL_9,
 } sevent_ws_deflate_level;
 
-/* ===== 配置结构体 ===== */
+/* ===== 配置结构体 =====
+ * 生命周期: 调用 sevent_ws_connect 后 config 即可释放 — 库内部自有拷贝
+ * 所有字符串字段 (host/path/sub_protocol/TLS 系列, 无任何外部引用). */
 typedef struct sevent_ws_config {
     const char             *host;                               /* 服务器 IP 地址 ("127.0.0.1") */
     uint16_t                port;                               /* 端口 (80) */

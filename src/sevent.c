@@ -16,6 +16,7 @@
 #include "sevent.h"
 #include "sevent_i.h"
 #include "sevent_platform.h"
+#include <string.h> /* sevent_i_strdup */
 
 /* ==================== 可替换分配器 ==================== */
 
@@ -50,6 +51,16 @@ void *sevent_i_calloc(size_t nmemb, size_t sz) {
     void  *p     = sev_alloc_fn(total);
     if(p)
         memset(p, 0, total);
+    return p;
+}
+
+char *sevent_i_strdup(const char *s) {
+    if(!s)
+        return NULL;
+    size_t n = strlen(s) + 1;
+    char  *p = (char *)sevent_i_malloc(n);
+    if(p)
+        memcpy(p, s, n);
     return p;
 }
 

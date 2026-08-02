@@ -34,6 +34,17 @@ static size_t   g_frag_total; /* 实际累计字节数(无限制) */
 static uint64_t g_last_total; /* 最近一次 on_message 的 total 参数 */
 
 
+/* ---- 分配失败注入 (sevent_set_allocator): connect 失败清理路径 (ws_conn_abort) ---- */
+static int   fail_after; /* 第 fail_after 次 malloc 失败 (0=不失败) */
+static int   fail_calls;
+static void *fail_malloc(size_t sz) {
+    fail_calls++;
+    if(fail_after > 0 && fail_calls >= fail_after)
+        return NULL;
+    return malloc(sz);
+}
+static void fail_free(void *p) { free(p); }
+
 /* 跑完 pending post: destroy 统一 post 后, 延迟 free 由 run_posts 执行 —
  * sevent_destroy 丢弃未执行的 post (不执行回调), 销毁 ev 前必须推进循环 */
 static void flush_posts(sevent_context *ctx) {
@@ -1851,6 +1862,89 @@ static int t_recv_masked_frame(void) {
     return 0;
 }
 
+static int t_connect_invalid_cfg(void) {
+    /* 参数校验: 缺 host/path/回调组 → NULL (connect 入口首行) */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host    = "127.0.0.1";
+    cfg.path    = "/";
+    cfg.on_open = ev_open;
+
+    sevent_ws_config c2;
+    c2      = cfg;
+    c2.host = NULL;
+    if(sevent_ws_connect(ctx, &c2) != NULL) {
+        sevent_destroy(ctx);
+        return 1; /* 缺 host 应拒绝 */
+    }
+    c2      = cfg;
+    c2.path = NULL;
+    if(sevent_ws_connect(ctx, &c2) != NULL) {
+        sevent_destroy(ctx);
+        return 1; /* 缺 path 应拒绝 */
+    }
+    c2          = cfg;
+    c2.on_open  = NULL;
+    c2.on_error = NULL;
+    if(sevent_ws_connect(ctx, &c2) != NULL) {
+        sevent_destroy(ctx);
+        return 1; /* 无回调组应拒绝 */
+    }
+    if(sevent_ws_connect(ctx, NULL) != NULL || sevent_ws_connect(NULL, &cfg) != NULL) {
+        sevent_destroy(ctx);
+        return 1; /* NULL 参数应拒绝 */
+    }
+    sevent_destroy(ctx);
+    return 0;
+}
+
+static int t_connect_alloc_fail(void) {
+    /* 分配失败 → NULL + ws_conn_abort 清理 (无崩溃; 泄漏由 ASAN/LSAN 构建验证).
+     * 分配顺序: c(NEW0) → recv_buf → frag_buf → stream_create 内部 */
+    sevent_context *ctx = sevent_create();
+    if(!ctx)
+        return 1;
+    sevent_ws_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.host    = "127.0.0.1";
+    cfg.path    = "/";
+    cfg.on_open = ev_open;
+    if(sevent_set_allocator(fail_malloc, fail_free) != SEVENT_SUCCESS) {
+        sevent_destroy(ctx);
+        return 1;
+    }
+    fail_after = 1; /* c 本体分配失败: ws_conn_new 内失败 (未分配其余, 无清理) */
+    fail_calls = 0;
+    if(sevent_ws_connect(ctx, &cfg) != NULL) {
+        sevent_set_allocator(NULL, NULL);
+        sevent_destroy(ctx);
+        return 1;
+    }
+    fail_after = 2; /* recv_buf 失败: ws_conn_abort (stream NULL, free recv/frag/锁/c) */
+    fail_calls = 0;
+    if(sevent_ws_connect(ctx, &cfg) != NULL) {
+        sevent_set_allocator(NULL, NULL);
+        sevent_destroy(ctx);
+        return 1;
+    }
+    fail_after = 3; /* frag_buf 失败: abort 内释放已分配的 recv_buf */
+    fail_calls = 0;
+    if(sevent_ws_connect(ctx, &cfg) != NULL) {
+        sevent_set_allocator(NULL, NULL);
+        sevent_destroy(ctx);
+        return 1;
+    }
+    if(sevent_set_allocator(NULL, NULL) != SEVENT_SUCCESS) {
+        sevent_destroy(ctx);
+        return 1;
+    }
+    sevent_destroy(ctx);
+    return 0;
+}
+
 static int t_recv_invalid_close_code(void) {
     /* 模拟对端发送非法 Close 码 → on_error 触发 */
     sevent_context *ctx = sevent_create();
@@ -3398,6 +3492,8 @@ int main(void) {
                  {"recv_invalid_control_payload", t_recv_invalid_control_payload},
                  {"recv_masked_frame", t_recv_masked_frame},
                  {"recv_invalid_close_code", t_recv_invalid_close_code},
+                 {"connect_invalid_cfg", t_connect_invalid_cfg},
+                 {"connect_alloc_fail", t_connect_alloc_fail},
                  {"invalid_ping_payload", t_invalid_ping_payload},
                  {"invalid_close_code", t_invalid_close_code},
                  {"lifecycle", t_lifecycle},

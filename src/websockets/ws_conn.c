@@ -1398,6 +1398,18 @@ static void ws_stream_on_open(void *d) {
  *  公开 API
  * ==================================================================== */
 
+/* stream_cfg 字符串字段释放 (自有拷贝, 见 sevent_ws_connect 所有权纪律) */
+static void ws_stream_cfg_free(sevent_stream_conn_config *scfg) {
+    sevent_i_free((void *)scfg->ca_path);
+    sevent_i_free((void *)scfg->ca_pem);
+    sevent_i_free((void *)scfg->cert_path);
+    sevent_i_free((void *)scfg->cert_pem);
+    sevent_i_free((void *)scfg->key_path);
+    sevent_i_free((void *)scfg->key_pem);
+    sevent_i_free((void *)scfg->tls_hostname);
+    memset(scfg, 0, sizeof(*scfg));
+}
+
 sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cfg) {
     if(!ev || !cfg || !cfg->host || !cfg->path || (!cfg->on_open && !cfg->on_error))
         return NULL;
@@ -1455,19 +1467,28 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
         goto cleanup;
     c->recv_cap = bufsz;
 
-    /* stream 配置 (TLS 字段透传; enable_tls=false 行为与现状一致) */
+    /* stream 配置 (TLS 字段透传; enable_tls=false 行为与现状一致).
+     * 字符串字段自有拷贝 (sevent_i_strdup): 调用方 cfg 生命周期不保证 —
+     * redirect 重连复用 stream_cfg 时外部指针已悬垂 (UAF), 外部输入指针
+     * 严禁存储引用 (所有权纪律). 借用语义字段 (布尔开关) 直接复制. */
     memset(&c->stream_cfg, 0, sizeof(c->stream_cfg));
     c->stream_cfg.enable_tls             = cfg->enable_tls;
-    c->stream_cfg.ca_path                = cfg->ca_path;
-    c->stream_cfg.ca_pem                 = cfg->ca_pem;
-    c->stream_cfg.cert_path              = cfg->cert_path;
-    c->stream_cfg.cert_pem               = cfg->cert_pem;
-    c->stream_cfg.key_path               = cfg->key_path;
-    c->stream_cfg.key_pem                = cfg->key_pem;
+    c->stream_cfg.ca_path                = sevent_i_strdup(cfg->ca_path);
+    c->stream_cfg.ca_pem                 = sevent_i_strdup(cfg->ca_pem);
+    c->stream_cfg.cert_path              = sevent_i_strdup(cfg->cert_path);
+    c->stream_cfg.cert_pem               = sevent_i_strdup(cfg->cert_pem);
+    c->stream_cfg.key_path               = sevent_i_strdup(cfg->key_path);
+    c->stream_cfg.key_pem                = sevent_i_strdup(cfg->key_pem);
     c->stream_cfg.enable_peer_verify     = cfg->enable_peer_verify;
     c->stream_cfg.enable_hostname_verify = cfg->enable_hostname_verify;
-    c->stream_cfg.tls_hostname           = cfg->tls_hostname;
-    c->stream                            = sevent_stream_create(ev, &c->stream_cfg);
+    c->stream_cfg.tls_hostname           = sevent_i_strdup(cfg->tls_hostname);
+    /* 拷贝失败 (OOM): 释放已拷贝字段走清理 */
+    if((cfg->ca_path && !c->stream_cfg.ca_path) || (cfg->ca_pem && !c->stream_cfg.ca_pem) ||
+       (cfg->cert_path && !c->stream_cfg.cert_path) || (cfg->cert_pem && !c->stream_cfg.cert_pem) ||
+       (cfg->key_path && !c->stream_cfg.key_path) || (cfg->key_pem && !c->stream_cfg.key_pem) ||
+       (cfg->tls_hostname && !c->stream_cfg.tls_hostname))
+        goto cleanup;
+    c->stream = sevent_stream_create(ev, &c->stream_cfg);
     if(!c->stream)
         goto cleanup;
 
@@ -1482,6 +1503,7 @@ cleanup:
         sevent_stream_destroy(c->stream);
     sevent_i_free(c->recv_buf);
     sevent_i_free(c->frag_buf);
+    ws_stream_cfg_free(&c->stream_cfg); /* stream_cfg 字符串自有拷贝 */
 #ifdef SEVENT_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif
@@ -1589,6 +1611,7 @@ static void ws_cleanup_conn(void *data) {
         sevent_stream_destroy(c->stream); /* 内部再 post 延迟释放 (tcp/tls cleanup) */
         c->stream = NULL;
     }
+    ws_stream_cfg_free(&c->stream_cfg); /* stream_cfg 字符串自有拷贝 */
 #ifdef SEVENT_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif

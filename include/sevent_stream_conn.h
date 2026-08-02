@@ -56,7 +56,9 @@ typedef struct sevent_stream_conn sevent_stream_conn;
 
 /* ===== 配置 (create 时一次性传入) =====
  * 注: TCP_NODELAY 不做配置项 — 连接建立后 (on_open 回调内) 按需
- * sevent_stream_set_no_delay 设置 (见下). */
+ * sevent_stream_set_no_delay 设置 (见下).
+ * 生命周期: create 后 config 即可释放 — TLS 字符串字段 (ca/cert/key/
+ * tls_hostname) 库内部自有拷贝 (tls_conn 同步装载或 strdup), 无外部引用. */
 typedef struct sevent_stream_conn_config {
     bool        enable_tls; /* false=tcp_conn, true=tls_conn (sevent_stream_create 分发用) */
     /* --- TLS 配置 (tls_conn 用; tcp_conn 忽略) ---

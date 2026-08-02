@@ -632,22 +632,37 @@ void sevent_http_response_init(sevent_http_response *resp) { memset(resp, 0, siz
 static int response_header_add_node(sevent_http_response *resp, const char *name, const char *value, bool dedup) {
     if(!resp || !name || !value)
         return SEVENT_ERR_INVAL;
+    /* name/value 自有拷贝 (sevent_i_strdup): 节点归库管理 — 异步 respond
+     * (回调外) 场景调用方字符串可能已释放. 所有权纪律: 库管理的对象内
+     * 不得引用外部内存; 拷贝随节点生命周期, del/clear 统一释放. */
+    char *name_copy  = sevent_i_strdup(name);
+    char *value_copy = sevent_i_strdup(value);
+    if(!name_copy || !value_copy) {
+        sevent_i_free(name_copy);
+        sevent_i_free(value_copy);
+        return SEVENT_ERR_NOMEM;
+    }
     if(dedup) {
-        /* 查重: 同名覆盖 (后一个生效) */
+        /* 查重: 同名覆盖 (后一个生效) — 释放旧值 (名相同, 名可复用) */
         sevent_http_header **pp = &resp->headers;
         while(*pp) {
             if(strcmp((*pp)->name, name) == 0) {
-                (*pp)->value = value;
+                sevent_i_free((void *)(*pp)->value);
+                (*pp)->value = value_copy;
+                sevent_i_free(name_copy);
                 return 0;
             }
             pp = &(*pp)->next;
         }
     }
     sevent_http_header *h = (sevent_http_header *)sevent_i_malloc(sizeof(*h));
-    if(!h)
+    if(!h) {
+        sevent_i_free(name_copy);
+        sevent_i_free(value_copy);
         return SEVENT_ERR_NOMEM;
-    h->name       = name;
-    h->value      = value;
+    }
+    h->name       = name_copy;
+    h->value      = value_copy;
     h->next       = resp->headers;
     resp->headers = h;
     return 0;
@@ -670,6 +685,8 @@ int sevent_http_response_header_del(sevent_http_response *resp, const char *name
         if(strcmp((*pp)->name, name) == 0) {
             sevent_http_header *dead = *pp;
             *pp                      = dead->next;
+            sevent_i_free((void *)dead->name); /* 自有拷贝 (见 add_node) */
+            sevent_i_free((void *)dead->value);
             sevent_i_free(dead);
             count++;
         } else {
@@ -686,6 +703,8 @@ void sevent_http_response_clear(sevent_http_response *resp) {
     while(h) {
         sevent_http_header *dead = h;
         h                        = h->next;
+        sevent_i_free((void *)dead->name); /* 自有拷贝 (见 add_node) */
+        sevent_i_free((void *)dead->value);
         sevent_i_free(dead);
     }
     resp->headers = NULL;
@@ -748,16 +767,43 @@ static void srv_on_accept(void *d, int fd) {
     s->conns = c;
 }
 
+/* server config 字符串字段释放 (自有拷贝, 见 create 所有权纪律) */
+static void http_cfg_free(sevent_http_server_config *cfg) {
+    sevent_i_free((void *)cfg->cert_path);
+    sevent_i_free((void *)cfg->cert_pem);
+    sevent_i_free((void *)cfg->key_path);
+    sevent_i_free((void *)cfg->key_pem);
+    sevent_i_free((void *)cfg->ca_path);
+    sevent_i_free((void *)cfg->ca_pem);
+    memset(cfg, 0, sizeof(*cfg));
+}
+
 sevent_http_server *sevent_http_server_create(sevent_context *ev, const sevent_http_server_config *cfg) {
     if(!ev || !cfg)
         return NULL;
     struct http_server *s = (struct http_server *)sevent_i_calloc(1, sizeof(*s));
     if(!s)
         return NULL;
-    s->ev       = ev;
-    s->cfg      = *cfg;
+    s->ev            = ev;
+    s->cfg           = *cfg;
+    /* TLS 字符串字段自有拷贝 (sevent_i_strdup): 调用方 cfg 生命周期不保证 —
+     * s->cfg 存到 server 生命周期, 每次 accept 延迟使用, 外部指针必悬垂 (UAF) */
+    s->cfg.cert_path = sevent_i_strdup(cfg->cert_path);
+    s->cfg.cert_pem  = sevent_i_strdup(cfg->cert_pem);
+    s->cfg.key_path  = sevent_i_strdup(cfg->key_path);
+    s->cfg.key_pem   = sevent_i_strdup(cfg->key_pem);
+    s->cfg.ca_path   = sevent_i_strdup(cfg->ca_path);
+    s->cfg.ca_pem    = sevent_i_strdup(cfg->ca_pem);
+    if((cfg->cert_path && !s->cfg.cert_path) || (cfg->cert_pem && !s->cfg.cert_pem) ||
+       (cfg->key_path && !s->cfg.key_path) || (cfg->key_pem && !s->cfg.key_pem) || (cfg->ca_path && !s->cfg.ca_path) ||
+       (cfg->ca_pem && !s->cfg.ca_pem)) {
+        http_cfg_free(&s->cfg);
+        sevent_i_free(s);
+        return NULL;
+    }
     s->acceptor = sevent_tcp_acceptor_create(ev);
     if(!s->acceptor) {
+        http_cfg_free(&s->cfg);
         sevent_i_free(s);
         return NULL;
     }
@@ -816,6 +862,7 @@ static void srv_cleanup(void *data) {
     }
     s->conns = NULL;
     sevent_tcp_acceptor_destroy(s->acceptor);
+    http_cfg_free(&s->cfg); /* config 字符串自有拷贝 */
     sevent_i_free(s);
 }
 
