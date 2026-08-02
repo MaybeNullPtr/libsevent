@@ -113,6 +113,21 @@ typedef struct sevent_ws_config {
     uint8_t request_server_max_window_bits;     /* 0=不请求; 8-15=请求服务器压缩窗口 ≤N
                                                  * (省接收侧内存, 服务器拒绝则保持默认) */
 
+    /* ---- TLS (wss; enable_tls=false 行为与现状完全一致) ----
+     * 证书路径与 PEM 内存双通道 (D3), 每对字段互斥 (同时给 → connect 失败):
+     *   ca_path/ca_pem, cert_path/cert_pem, key_path/key_pem */
+    bool        enable_tls;             /* false=ws, true=wss (TLS 握手在传输层完成) */
+    const char *ca_path;                /* CA 证书路径, NULL=系统默认信任库 */
+    const char *ca_pem;                 /* CA 证书 PEM 内存 (NUL 结尾) */
+    const char *cert_path;              /* 本端证书 (客户端 mTLS 可选) */
+    const char *cert_pem;               /* 本端证书 PEM 内存 (支持链, NUL 结尾) */
+    const char *key_path;               /* 本端私钥 (PEM, 不支持加密) */
+    const char *key_pem;                /* 本端私钥 PEM 内存 */
+    bool        enable_peer_verify;     /* 校验服务器证书链, 默认 true */
+    bool        enable_hostname_verify; /* 校验对端证书名, 默认 true */
+    const char *tls_hostname;           /* 校验名 (NULL=用连接 host; 应用负责 DNS —
+                                         * host 传 IP, 域名校验名经此字段) */
+
     /* ---- 用户回调 ---- */
     sevent_ws_on_open_fn          on_open;
     sevent_ws_on_message_fn       on_message;

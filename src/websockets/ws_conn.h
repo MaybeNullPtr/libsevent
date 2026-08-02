@@ -8,13 +8,11 @@
 #define SEVENT_WS_CONN_H
 
 #include "../../include/sevent_ws.h"
+#include "../../include/sevent_stream_conn.h"
 #include <stdbool.h>
 #include <stdint.h>
 
 #include "ws_deflate.h"
-
-/* 无效 socket 标记 */
-#define SEVENT_INVALID_SOCKET (-1)
 
 #ifdef SEVENT_THREAD_SAFE
 #include "../../include/sevent_platform.h"
@@ -32,15 +30,6 @@ enum ws_state {
     WS_STATE_CLOSING,
     WS_STATE_CLOSED
 };
-
-/* 写缓冲节点 (Round 5 启用) */
-typedef struct ws_write_node {
-    struct ws_write_node *next;
-    uint8_t              *data;    /* 完整帧 (含帧头) */
-    size_t                len;     /* 总长度 */
-    size_t                offset;  /* 已写入偏移 */
-    bool                  is_ctrl; /* 控制帧, 优先发送 */
-} ws_write_node;
 
 /* ---- 消息接收状态机 (RFC 6455 §5.4 分片 + 大帧流式) ----
  * 消息级状态跨帧保持, 状态转换:
@@ -66,9 +55,9 @@ struct ws_msg_state {
 struct sevent_ws_conn {
     sevent_context *ev;
 
-    /* ---- socket ---- */
-    int        fd;
-    sevent_io *io_handle;
+    /* ---- 传输层 (stream_conn: tcp_conn 或 tls_conn, enable_tls 分发) ---- */
+    sevent_stream_conn       *stream;     /* 底层字节流 (组合) */
+    sevent_stream_conn_config stream_cfg; /* stream 配置副本 (建连/重定向复用) */
 
     /* ---- 状态 ---- */
     int  state;     /* enum ws_state */
@@ -84,8 +73,7 @@ struct sevent_ws_conn {
     int           redirect_count; /* 已跟随重定向次数, 超限报错 */
     char          sub_protocol[64];
     int           ping_interval_ms;
-    int           connect_timeout_ms;
-    sevent_timer *connect_timer;
+    int           connect_timeout_ms; /* 传给 stream init (连接超时) */
     sevent_timer *ping_timer;
 
     /* ---- 压缩 (permessage-deflate) ---- */
@@ -126,11 +114,7 @@ struct sevent_ws_conn {
     uint8_t *frag_buf;
     size_t   frag_len;
 
-    /* ---- 写队列 (Round 5 启用) ---- */
-    ws_write_node *write_head;
-    ws_write_node *write_tail;
-    int            write_count;
-    uint32_t       mask_seed; /* gen_mask_key 用, 连接初始化时播种 */
+    uint32_t mask_seed; /* gen_mask_key 用, 连接初始化时播种 */
 };
 
 #ifdef __cplusplus

@@ -71,11 +71,13 @@ static void msg_end(struct sevent_ws_conn *c, bool is_bin); /* 消息结束统�
 static int  decompress_stream_chunk(struct sevent_ws_conn *c, const uint8_t *data, size_t len, bool is_bin);
 static int  decompress_stream_end(struct sevent_ws_conn *c, bool is_bin);
 static int  decompress_oneshot(struct sevent_ws_conn *c, const uint8_t *in, size_t in_len, bool is_bin);
-static void on_write_ready(void *data);
-static void on_data(void *data);
-static void on_handshake_data(void *data);
-static void on_connect_ready(void *data);
-static void on_connect_timeout(void *data);
+static void ws_frame_data(struct sevent_ws_conn *c);
+static void ws_handshake_data(struct sevent_ws_conn *c);
+static void ws_stream_on_open(void *d);
+static void ws_stream_on_data(void *d, const uint8_t *data, size_t len);
+static void ws_stream_on_close(void *d);
+static void ws_stream_on_error(void *d, int err);
+static sevent_stream_conn_init ws_stream_init(struct sevent_ws_conn *c);
 
 /* ====================================================================
  *  内部辅助
@@ -211,14 +213,8 @@ static bool ws_close_code_valid(uint16_t code) {
 }
 
 static void ws_close_socket(struct sevent_ws_conn *c) {
-    if(c->io_handle) {
-        sevent_io_unregister(c->ev, c->io_handle);
-        c->io_handle = NULL;
-    }
-    if(c->fd >= 0) {
-        close(c->fd);
-        c->fd = SEVENT_INVALID_SOCKET;
-    }
+    if(c->stream)
+        sevent_stream_close(c->stream); /* 幂等: 摘事件 + 关底层连接 */
 }
 
 static void ws_enter_closed(struct sevent_ws_conn *c, uint16_t code, const char *reason, size_t reason_len) {
@@ -252,10 +248,6 @@ static void ws_fatal(struct sevent_ws_conn *c, int err) {
     }
 
     c->state = WS_STATE_CLOSED;
-    if(c->connect_timer) {
-        sevent_timer_unregister(c->ev, c->connect_timer);
-        c->connect_timer = NULL;
-    }
     if(c->ping_timer) {
         sevent_timer_unregister(c->ev, c->ping_timer);
         c->ping_timer = NULL;
@@ -269,25 +261,6 @@ static void ws_fatal(struct sevent_ws_conn *c, int err) {
 /* ====================================================================
  *  接收缓冲
  * ==================================================================== */
-
-/* 统一读 socket (固定 buffer, 无 realloc) */
-static int recv_read(struct sevent_ws_conn *c) {
-    /* 先 compact: 搬移未消费数据到头部 */
-    if(c->recv_pos > 0) {
-        size_t rem = c->recv_len - c->recv_pos;
-        if(rem > 0)
-            memmove(c->recv_buf, c->recv_buf + c->recv_pos, rem);
-        c->recv_len = rem;
-        c->recv_pos = 0;
-    }
-    size_t space = c->recv_cap - c->recv_len;
-    if(space == 0)
-        return 0;
-    ssize_t n = read(c->fd, c->recv_buf + c->recv_len, space);
-    if(n > 0)
-        c->recv_len += (size_t)n;
-    return (int)n;
-}
 
 /* 大帧流式读取: 从 recv_buf 分块回调 payload (MSG_STREAM 路径) */
 static void stream_consume(struct sevent_ws_conn *c) {
@@ -330,116 +303,6 @@ static void stream_consume(struct sevent_ws_conn *c) {
         /* fin=0: 当前流式帧消费完, 保持 MSG_STREAM 等下一帧 */
     }
 }
-
-/* ====================================================================
- *  异步写队列
- *
- *  模块边界: 纯数据流逻辑, 零协议依赖 (不碰消息状态机/压缩).
- *  语义约定 (修改时注意):
- *    - 节点持有 data 所有权 (入队即转移, 须为堆分配; OOM 时 free 调用者 data)
- *    - 部分写由 io_write 回调 (on_write_ready) 驱动续写
- *    - 控制帧 (is_ctrl) 插队首优先发送
- *  若其他模块需要类似 queue: 抽为独立 ws_writeq.c 并补部分写续写单测.
- * ==================================================================== */
-
-static int ws_enqueue(struct sevent_ws_conn *c, uint8_t *data, size_t len, bool is_ctrl) {
-    ws_write_node *n = SEVENT_I_NEW(n);
-    if(!n) {
-        sevent_i_free(data);
-        return -1;
-    }
-    n->data    = data;
-    n->len     = len;
-    n->offset  = 0;
-    n->is_ctrl = is_ctrl;
-    n->next    = NULL;
-
-    if(is_ctrl && c->write_head) {
-        /* 控制帧插入队首 */
-        n->next       = c->write_head;
-        c->write_head = n;
-    } else {
-        /* 数据帧追加队尾 */
-        if(c->write_tail)
-            c->write_tail->next = n;
-        else
-            c->write_head = n;
-        c->write_tail = n;
-    }
-    c->write_count++;
-    return 0;
-}
-
-/* 清空写队列 (释放所有节点); 用于连接关闭与重定向 (残留节点不得写到新连接) */
-static void ws_queue_clear(struct sevent_ws_conn *c) {
-    ws_write_node *wn = c->write_head;
-    while(wn) {
-        ws_write_node *n = wn->next;
-        sevent_i_free(wn->data);
-        sevent_i_free(wn);
-        wn = n;
-    }
-    c->write_head  = NULL;
-    c->write_tail  = NULL;
-    c->write_count = 0;
-}
-
-/* 尝试写队列中的数据; 返回 0=写完, >0=剩余节点数, <0=致命写错误 */
-static int ws_flush(struct sevent_ws_conn *c) {
-    while(c->write_head) {
-        ws_write_node *n = c->write_head;
-        ssize_t        w = write(c->fd, n->data + n->offset, n->len - n->offset);
-        if(w > 0) {
-            n->offset += (size_t)w;
-            if(n->offset < n->len)
-                return (int)c->write_count; /* 部分写入, 停止本轮 flush */
-            /* 节点写完, 释放 */
-            c->write_head = n->next;
-            if(!c->write_head)
-                c->write_tail = NULL;
-            c->write_count--;
-            sevent_i_free(n->data);
-            sevent_i_free(n);
-        } else if(w < 0) {
-            if(errno == EAGAIN || errno == EINTR)
-                return (int)c->write_count;
-            /* 致命写错误 — 清理当前节点, 返回 -1 由调用者调 ws_fatal */
-            c->write_head = n->next;
-            if(!c->write_head)
-                c->write_tail = NULL;
-            c->write_count--;
-            sevent_i_free(n->data);
-            sevent_i_free(n);
-            return -1;
-        } else {
-            /* write 返回 0 (不可能在 TCP 上发生) */
-            c->write_head = n->next;
-            if(!c->write_head)
-                c->write_tail = NULL;
-            c->write_count--;
-            sevent_i_free(n->data);
-            sevent_i_free(n);
-        }
-    }
-    return 0;
-}
-
-/* 根据是否有待写数据更新 io_write 注册 */
-static void ws_update_io(struct sevent_ws_conn *c, void (*read_cb)(void *)) {
-    sevent_io_handler h;
-    h.fd       = c->fd;
-    h.io_read  = read_cb;
-    h.io_write = c->write_head ? on_write_ready : NULL;
-    h.data     = c;
-    if(c->io_handle)
-        sevent_io_unregister(c->ev, c->io_handle);
-    c->io_handle = sevent_io_register(c->ev, &h);
-    if(!c->io_handle)
-        ws_enter_closed(c, 0, "", 0);
-}
-
-/* 前向声明 */
-static void on_write_ready(void *data);
 
 /* ---- 解压: 协议层直接操作 zlib (分批输出, 见 doc/deflate-decompress-fix.md) ----
  * RFC 7692 §7.2.1/§7.2.2: 发送端压缩消息后剥掉尾部 00 00 FF FF 再发送,
@@ -695,16 +558,11 @@ static int send_frame_raw(struct sevent_ws_conn *c, uint8_t opcode, const void *
         }
     }
 
-    if(ws_enqueue(c, buf, total, is_ctrl) != 0)
-        return SEVENT_ERR_NOMEM;
-    if(ws_flush(c) < 0)
-        return SEVENT_WS_ERR_WRITE;
-
-    /* 队列非空则注册可写回调 (flush 可能在 io_write 回调内驱动) */
-    if(c->write_head) {
-        void (*rcb)(void *) = (c->state == WS_STATE_OPEN) ? on_data : NULL;
-        ws_update_io(c, rcb);
-    }
+    /* 数据入 stream 写队列 (内部自动 flush + 写兴趣续写; 调用方缓冲随即复用) */
+    int rc = sevent_stream_write(c->stream, buf, total);
+    sevent_i_free(buf);
+    if(rc != 0)
+        return (rc == SEVENT_ERR_NOMEM) ? SEVENT_ERR_NOMEM : SEVENT_WS_ERR_WRITE;
 
     return SEVENT_SUCCESS;
 }
@@ -759,39 +617,6 @@ static int ws_redirect_parse(struct sevent_ws_conn *c, const char *loc) {
     return 0;
 }
 
-/* ---- 创建 nonblock TCP socket + connect (EINPROGRESS 也算成功) ---- */
-static int ws_tcp_connect(const char *host, uint16_t port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if(fd < 0)
-        return -1;
-        /* 最佳尝试 SO_REUSEADDR — 失败不影响建连 */
-#ifdef SO_REUSEADDR
-    {
-        int on = 1;
-        (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-    }
-#endif
-    int fl = fcntl(fd, F_GETFL);
-    if(fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) {
-        close(fd);
-        return -1;
-    }
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-    if(inet_pton(AF_INET, host, &addr.sin_addr) <= 0) {
-        close(fd);
-        return -1;
-    }
-    int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-    if(rc < 0 && errno != EINPROGRESS) {
-        close(fd);
-        return -1;
-    }
-    return fd;
-}
-
 /* ---- PING 定时器: 按 interval 发空 PING ---- */
 static void on_ping_timer(void *data) {
     struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
@@ -804,35 +629,8 @@ static void on_ping_timer(void *data) {
     WS_UNLOCK(c);
 }
 
-/* ---- 为已连接的 fd 注册 IO 回调 + 连接超时定时器 ---- */
-static bool ws_register_connect_io(struct sevent_ws_conn *c, int fd) {
-    c->io_handle = sevent_io_register(c->ev, &(sevent_io_handler){.fd = fd, .io_write = on_connect_ready, .data = c});
-    if(!c->io_handle) {
-        close(fd);
-        return false;
-    }
-    c->fd    = fd;
-    c->state = WS_STATE_CONNECTING;
-    int t_ms = c->connect_timeout_ms;
-    if(t_ms == 0)
-        t_ms = SEVENT_WS_CONNECT_TIMEOUT_MS;
-    if(t_ms > 0) {
-        c->connect_timer = sevent_timer_register(c->ev, (unsigned int)t_ms, on_connect_timeout, c);
-        if(!c->connect_timer) {
-            ws_close_socket(c);
-            return false;
-        }
-    }
-    return true;
-}
-
-/* 重连: 关闭旧 socket, 创建新 TCP 连接, 注册 on_connect_ready */
+/* 重连: 关闭旧 stream, 用同一对象重新 open (TLS 模式自动重新握手) */
 static bool ws_redirect_reconnect(struct sevent_ws_conn *c) {
-    /* 清理旧连接 */
-    if(c->connect_timer) {
-        sevent_timer_unregister(c->ev, c->connect_timer);
-        c->connect_timer = NULL;
-    }
     ws_close_socket(c);
     c->recv_len = 0;
     c->recv_pos = 0;
@@ -846,48 +644,11 @@ static bool ws_redirect_reconnect(struct sevent_ws_conn *c) {
     c->stream_remaining = 0;
     c->stream_fin       = false;
 
-    /* 清写队列: 旧连接残留的握手请求节点 (部分写) 不得写到新连接 */
-    ws_queue_clear(c);
-
-    int fd = ws_tcp_connect(c->host, c->port);
-    if(fd < 0)
+    c->state                     = WS_STATE_CONNECTING;
+    sevent_stream_conn_init init = ws_stream_init(c);
+    if(sevent_stream_open(c->stream, c->host, c->port, &init) < 0)
         return false;
-    return ws_register_connect_io(c, fd);
-}
-
-/* ====================================================================
- *  IO 回调: on_write_ready (可写, 驱动写队列)
- * ==================================================================== */
-
-static void on_write_ready(void *data) {
-    struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
-    WS_LOCK(c);
-    int remain = ws_flush(c);
-    if(remain < 0) {
-        WS_UNLOCK(c);
-        ws_fatal(c, SEVENT_WS_ERR_WRITE);
-        return;
-    }
-    if(remain == 0) {
-        /* 队列已空, 注销可写回调 (保持可读).
-         * HANDSHAKE 阶段 (握手请求部分写续写完成) 读回调是 on_handshake_data. */
-        /* FIXME(close-handshake): CLOSING 状态下 rcb=NULL → ws_update_io(NULL)
-         * → sevent_io_register 拒绝无回调注册 → ws_enter_closed(0) 误触发:
-         * shutdown 后写队列 flush 完成时提前 on_close + 强关 socket, 对端 CLOSE
-         * 未收到, 关闭握手不完整 (RFC 6455 §7.1.2 "both sent and received" 才
-         * clean close; §7.1.1 对端 MUST 回 CLOSE).
-         * 修复方案: CLOSING 时 rcb=on_data (继续读等对端 CLOSE) + close_timer
-         * 超时兜底 (RFC 6455 未规定关闭握手超时, 5s 是业界常用实现选择).
-         * 待后续处理, 当前不动. */
-        void (*rcb)(void *) = NULL;
-        if(c->state == WS_STATE_OPEN)
-            rcb = on_data;
-        else if(c->state == WS_STATE_HANDSHAKE)
-            rcb = on_handshake_data;
-        ws_update_io(c, rcb);
-    }
-    /* 否则继续等下一次可写事件 */
-    WS_UNLOCK(c);
+    return true;
 }
 
 /* ====================================================================
@@ -1151,20 +912,26 @@ static int process_frames(struct sevent_ws_conn *c) {
         }
         size_t frame_size = (size_t)n + (size_t)hdr.payload_len;
         if(avail < frame_size) {
-            /* 单帧 > recv_cap 时进入流式读取, 边收边消费 (控制 recv_buf 内存) */
-            if(frame_size > c->recv_cap) {
+            /* 流式阈值 = recv_cap/2: 推送模型下非流式帧 ≤ cap/2, 残留 (帧前缀)
+             * ≤ cap/2 + 每轮推送 ≤ cap/2 (stream recv_buf_size = cap/2) → 缓冲
+             * 恒不溢出; 更大帧走流式边收边消费 (控制 recv_buf 内存) */
+            if(frame_size > c->recv_cap / 2) {
                 /* ---- 流式分支协议检查 (与正常路径 RSV 验证对齐) ---- */
-                if(hdr.rsv2 || hdr.rsv3)
+                if(hdr.rsv2 || hdr.rsv3) {
                     return SEVENT_WS_ERR_PROTOCOL;
-                if(hdr.rsv1 && !c->deflate)
+                }
+                if(hdr.rsv1 && !c->deflate) {
                     return SEVENT_WS_ERR_PROTOCOL;
-                if(hdr.rsv1 && hdr.opcode == WS_OPCODE_CONT)
-                    return SEVENT_WS_ERR_PROTOCOL; /* RFC 7692 §7.2.3: CONT 帧 RSV1 必须 0 */
+                }
+                if(hdr.rsv1 && hdr.opcode == WS_OPCODE_CONT) {
+                    return SEVENT_WS_ERR_PROTOCOL;
+                }
                 if(c->msg.mode == WS_MSG_STREAM || c->msg.mode == WS_MSG_FRAG) {
                     /* [状态机] 消息进行中 (FRAG/STREAM): 只允许 CONT 续帧
                      * (RFC 6455 §5.4: 消息未完成时的新数据帧是协议违规) */
-                    if(hdr.opcode != WS_OPCODE_CONT)
+                    if(hdr.opcode != WS_OPCODE_CONT) {
                         return SEVENT_WS_ERR_PROTOCOL;
+                    }
                     if(c->msg.mode == WS_MSG_FRAG) {
                         /* FRAG → STREAM 切换: 先刷 frag 积压 (fin=0)
                          * 保持数据顺序, 再转流式续帧 */
@@ -1200,15 +967,19 @@ static int process_frames(struct sevent_ws_conn *c) {
             ws_frame_apply_mask(payload, hdr.payload_len, hdr.mask_key);
 
         /* ---- RSV 位验证 (RFC 7692) ---- */
-        if(hdr.rsv2 || hdr.rsv3)
+        if(hdr.rsv2 || hdr.rsv3) {
             return SEVENT_WS_ERR_PROTOCOL;
-        if(hdr.rsv1 && (hdr.opcode & 0x08))
+        }
+        if(hdr.rsv1 && (hdr.opcode & 0x08)) {
             return SEVENT_WS_ERR_PROTOCOL;
-        if(hdr.rsv1 && !c->deflate)
+        }
+        if(hdr.rsv1 && !c->deflate) {
             return SEVENT_WS_ERR_PROTOCOL;
-        if(hdr.rsv1 && hdr.opcode == WS_OPCODE_CONT)
+        }
+        if(hdr.rsv1 && hdr.opcode == WS_OPCODE_CONT) {
             return SEVENT_WS_ERR_PROTOCOL; /* RFC 7692 §7.2.3: 分片压缩消息的
                                             * CONT 帧 RSV1 必须为 0 (仅首帧置 1) */
+        }
 
         /* ---- RSV1: 一次性解压 or 分片标记 ---- */
         if(hdr.rsv1 && hdr.fin && hdr.opcode != WS_OPCODE_CONT) {
@@ -1270,29 +1041,96 @@ static int process_frames(struct sevent_ws_conn *c) {
     return 0;
 }
 
-static void on_data(void *data) {
-    struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
+/* ====================================================================
+ *  stream 回调组 (传输层推送: tcp_conn/tls_conn 统一入口)
+ * ==================================================================== */
+
+/* stream 连接参数: 回调组 + 超时 + 缓冲.
+ * recv_buf_size = recv_cap/2 — 推送模型缓冲数学 (见 ws_stream_on_data 注释) */
+static sevent_stream_conn_init ws_stream_init(struct sevent_ws_conn *c) {
+    sevent_stream_conn_init init;
+    memset(&init, 0, sizeof(init));
+    init.user_data          = c;
+    init.on_open            = ws_stream_on_open;
+    init.on_data            = ws_stream_on_data;
+    init.on_close           = ws_stream_on_close;
+    init.on_error           = ws_stream_on_error;
+    init.connect_timeout_ms = c->connect_timeout_ms;
+    init.recv_buf_size      = c->recv_cap / 2;
+    return init;
+}
+
+/* 数据推送: 攒入 recv_buf → 按 state 分发处理.
+ * 缓冲数学 (设计定案): 非流式帧 ≤ recv_cap/2 (帧路由阈值) → 残留 (帧前缀)
+ * ≤ recv_cap/2; stream 推送 ≤ recv_cap/2 (stream recv_buf_size = cap/2) →
+ * 残留 + 推送 ≤ cap 恒成立, 无需扩容/停读. */
+static void ws_stream_on_data(void *d, const uint8_t *data, size_t len) {
+    struct sevent_ws_conn *c = (struct sevent_ws_conn *)d;
     WS_LOCK(c);
-
-    /* 只读一次 (select 确保可读), 然后纯处理 buffer 已有数据 */
-    int n = recv_read(c);
-    if(n == 0) {
-        /* EOF: 对端关连接. 之前每次 on_data 已通过 process_frames 处理完
-         * 所有完整帧, 无需再处理. on_message 中可能调 close (设 destroyed=1). */
-        if(c->destroyed) {
-            WS_UNLOCK(c);
-            return;
-        }
-        ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, SEVENT_WS_REASON_EOF, sizeof(SEVENT_WS_REASON_EOF) - 1);
+    if(c->destroyed) {
         WS_UNLOCK(c);
         return;
     }
-    if(n < 0 && errno != EAGAIN && errno != EINTR) {
+    /* compact (原 recv_read 头部搬移; 握手响应 skip 后 recv_pos > 0) */
+    if(c->recv_pos > 0) {
+        size_t rem = c->recv_len - c->recv_pos;
+        if(rem > 0)
+            memmove(c->recv_buf, c->recv_buf + c->recv_pos, rem);
+        c->recv_len = rem;
+        c->recv_pos = 0;
+    }
+    if(c->recv_len + len > c->recv_cap) {
+        /* 数学上不可达 (帧 ≤ cap/2 + 推送 ≤ cap/2); 防御: 协议错误 */
+        WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
+        return;
+    }
+    memcpy(c->recv_buf + c->recv_len, data, len);
+    c->recv_len += len;
+    if(c->state == WS_STATE_HANDSHAKE)
+        ws_handshake_data(c);
+    else
+        ws_frame_data(c);
+    WS_UNLOCK(c);
+}
+
+/* 对端关闭 (EOF): 按 state 分发 (原 on_data n==0 分支 + 握手期) */
+static void ws_stream_on_close(void *d) {
+    struct sevent_ws_conn *c = (struct sevent_ws_conn *)d;
+    WS_LOCK(c);
+    if(c->destroyed || c->state == WS_STATE_CLOSED) {
+        WS_UNLOCK(c);
+        return;
+    }
+    if(c->state == WS_STATE_HANDSHAKE) {
+        WS_UNLOCK(c);
+        ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE); /* 握手期对端关闭 */
+        return;
+    }
+    WS_UNLOCK(c);
+    ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, SEVENT_WS_REASON_EOF, sizeof(SEVENT_WS_REASON_EOF) - 1);
+}
+
+/* stream 层错误: 建连失败/TLS 握手失败/数据期致命.
+ * 数据期读致命 = 原 recv_read n<0 语义 (写错误经 send 返回值同步上报) */
+static void ws_stream_on_error(void *d, int err) {
+    struct sevent_ws_conn *c = (struct sevent_ws_conn *)d;
+    WS_LOCK(c);
+    if(c->destroyed || c->state == WS_STATE_CLOSED) {
+        WS_UNLOCK(c);
+        return;
+    }
+    WS_UNLOCK(c);
+    if(err == SEVENT_ERR_HANDSHAKE)
+        ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
+    else if(err == SEVENT_ERR_CONNECT)
+        ws_fatal(c, SEVENT_WS_ERR_CONNECT);
+    else
         ws_enter_closed(c, SEVENT_WS_CLOSE_ABNORMAL, SEVENT_WS_REASON_READ_ERR, sizeof(SEVENT_WS_REASON_READ_ERR) - 1);
-        WS_UNLOCK(c);
-        return;
-    }
+}
 
+/* 数据期处理 (锁由调用方持有): 纯缓冲处理 — 数据已由 stream 推送攒入 */
+static void ws_frame_data(struct sevent_ws_conn *c) {
     if(c->msg.mode == WS_MSG_STREAM) {
         /* 流式模式: stream_consume 每次消费 up to recv_cap;
          * 当前帧消费完 (stream_remaining==0) 后必须交还 process_frames
@@ -1308,23 +1146,16 @@ static void on_data(void *data) {
                 break;
         }
         if(err) {
-            WS_UNLOCK(c);
             ws_fatal(c, err);
             return;
         }
     } else {
         int err = process_frames(c);
         if(err) {
-            WS_UNLOCK(c);
             ws_fatal(c, err);
             return;
         }
     }
-    if(c->destroyed) {
-        WS_UNLOCK(c);
-        return;
-    }
-    WS_UNLOCK(c);
 }
 
 /* ====================================================================
@@ -1332,36 +1163,14 @@ static void on_data(void *data) {
  * ==================================================================== */
 
 /* 握手响应处理 (5 个职责段, 按顺序串联; 3xx 与协商段互斥前置 return):
- *   1. 读响应 (recv_read)
- *   2. 解析 HTTP 响应 (ws_parse_response; 不完整 → 等下一轮)
- *   3. 3xx 重定向 (解析 Location → ws_redirect_reconnect, 前置 return)
- *   4. on_http_response 回调 / accept 校验 (非 101 或 accept 不匹配 → 收尾)
- *   5. deflate 协商 + 设 OPEN + on_open + 粘包残留帧处理
- * 若将来拆分, 协商段 (5) 可独立为 ws_negotiate_deflate(). */
-static void on_handshake_data(void *data) {
-    struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
-    WS_LOCK(c);
-    if(c->destroyed) {
-        WS_UNLOCK(c);
-        return;
-    }
-    int n = recv_read(c);
-    if(n < 0) {
-        if(errno != EAGAIN && errno != EINTR) {
-            WS_UNLOCK(c);
-            ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
-        } else {
-            WS_UNLOCK(c);
-        }
-        return;
-    }
-    /* n >= 0: 刚读到数据或缓冲区满 (recv_read 返回 0, 但 recv_len > 0).
-     * 只要有数据就尝试解析; 空缓冲区则是对端关闭连接. */
-    if(c->recv_len == 0) {
-        WS_UNLOCK(c);
-        ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
-        return;
-    }
+ *   1. 解析 HTTP 响应 (ws_parse_response; 不完整 → 等下一轮; 数据由 stream 推送)
+ *   2. 3xx 重定向 (解析 Location → ws_redirect_reconnect, 前置 return)
+ *   3. on_http_response 回调 / accept 校验 (非 101 或 accept 不匹配 → 收尾)
+ *   4. deflate 协商 + 设 OPEN + on_open + 粘包残留帧处理
+ * 若将来拆分, 协商段 (4) 可独立为 ws_negotiate_deflate(). */
+/* 握手响应处理 (锁由调用方持有): 数据已由 stream 推送攒入; 对端关闭经
+ * ws_stream_on_close 通知 (握手期 → HANDSHAKE 错误) */
+static void ws_handshake_data(struct sevent_ws_conn *c) {
     ws_handshake_response resp;
     int                   ret = ws_parse_response(c->recv_buf, c->recv_len, &resp);
     if(ret == 0) {
@@ -1492,7 +1301,6 @@ static void on_handshake_data(void *data) {
 
     c->recv_pos = (size_t)ret; /* 跳过 HTTP 响应, 保留可能的 WS 帧 */
     c->state    = WS_STATE_OPEN;
-    ws_update_io(c, on_data);
     if(c->on_open)
         c->on_open(c->user_data);
     if(c->destroyed) {
@@ -1518,38 +1326,11 @@ static void on_handshake_data(void *data) {
     WS_UNLOCK(c);
 }
 
-/* 连接超时回调 */
-static void on_connect_timeout(void *data) {
-    struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
+/* stream 建连完成 (TCP connect 完成; TLS 模式=握手完成) — 原 on_connect_ready
+ * 成功分支: SO_ERROR 检查已由 stream 层做, 连接超时已由 stream init 覆盖 */
+static void ws_stream_on_open(void *d) {
+    struct sevent_ws_conn *c = (struct sevent_ws_conn *)d;
     WS_LOCK(c);
-    if(c->destroyed || c->state != WS_STATE_CONNECTING) {
-        WS_UNLOCK(c);
-        return;
-    }
-    /* 先关定时器再 ws_fatal, 防止 destroy 路径下 c 释放后定时器悬空 */
-    sevent_timer *t  = c->connect_timer;
-    c->connect_timer = NULL;
-    if(t)
-        sevent_timer_unregister(c->ev, t);
-    WS_UNLOCK(c);
-    ws_fatal(c, SEVENT_WS_ERR_CONNECT);
-}
-
-static void on_connect_ready(void *data) {
-    struct sevent_ws_conn *c = (struct sevent_ws_conn *)data;
-    WS_LOCK(c);
-    /* 连接有结果了, 关超时定时器 */
-    if(c->connect_timer) {
-        sevent_timer_unregister(c->ev, c->connect_timer);
-        c->connect_timer = NULL;
-    }
-    int       err = 0;
-    socklen_t el  = sizeof(err);
-    if(getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &err, &el) != 0 || err != 0) {
-        WS_UNLOCK(c);
-        ws_fatal(c, SEVENT_WS_ERR_CONNECT);
-        return;
-    }
     ws_gen_key(c->sec_ws_key);
     /* 压缩 offer 参数: nct 承诺 + 降窗请求 */
     ws_deflate_params pmd_offer = {0};
@@ -1577,27 +1358,13 @@ static void on_connect_ready(void *data) {
         ws_fatal(c, SEVENT_ERR_NOMEM);
         return;
     }
-    /* 握手请求入写队列: 非阻塞 socket 可能部分写, 复用 ws_flush/on_write_ready
-     * 的续写机制 (请求节点拷贝到堆, 节点引用调用者 buffer 需生命周期一致) */
-    uint8_t *req_buf = (uint8_t *)sevent_i_malloc((size_t)req_len);
-    if(!req_buf) {
-        WS_UNLOCK(c);
-        ws_fatal(c, SEVENT_ERR_NOMEM);
-        return;
-    }
-    memcpy(req_buf, req, (size_t)req_len);
-    if(ws_enqueue(c, req_buf, (size_t)req_len, true) != 0) {
-        WS_UNLOCK(c); /* OOM: ws_enqueue 已 free req_buf */
-        ws_fatal(c, SEVENT_ERR_NOMEM);
-        return;
-    }
     c->state = WS_STATE_HANDSHAKE;
-    if(ws_flush(c) < 0) {
+    /* 握手请求入 stream 写队列 (stream_write 拷贝 + 自动 flush + 写兴趣续写) */
+    if(sevent_stream_write(c->stream, req, (size_t)req_len) != 0) {
         WS_UNLOCK(c);
         ws_fatal(c, SEVENT_WS_ERR_CONNECT);
         return;
     }
-    ws_update_io(c, on_handshake_data);
     WS_UNLOCK(c);
 }
 
@@ -1618,7 +1385,6 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
     }
 #endif
     c->ev    = ev;
-    c->fd    = SEVENT_INVALID_SOCKET;
     c->state = WS_STATE_CONNECTING;
     {
         /* 用地址+时间+PID 播种 per-connection mask 序列 */
@@ -1662,16 +1428,31 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
         goto cleanup;
     c->recv_cap = bufsz;
 
-    int fd = ws_tcp_connect(c->host, c->port);
-    if(fd < 0)
+    /* stream 配置 (TLS 字段透传; enable_tls=false 行为与现状一致) */
+    memset(&c->stream_cfg, 0, sizeof(c->stream_cfg));
+    c->stream_cfg.enable_tls             = cfg->enable_tls;
+    c->stream_cfg.ca_path                = cfg->ca_path;
+    c->stream_cfg.ca_pem                 = cfg->ca_pem;
+    c->stream_cfg.cert_path              = cfg->cert_path;
+    c->stream_cfg.cert_pem               = cfg->cert_pem;
+    c->stream_cfg.key_path               = cfg->key_path;
+    c->stream_cfg.key_pem                = cfg->key_pem;
+    c->stream_cfg.enable_peer_verify     = cfg->enable_peer_verify;
+    c->stream_cfg.enable_hostname_verify = cfg->enable_hostname_verify;
+    c->stream_cfg.tls_hostname           = cfg->tls_hostname;
+    c->stream                            = sevent_stream_create(ev, &c->stream_cfg);
+    if(!c->stream)
         goto cleanup;
-    if(!ws_register_connect_io(c, fd))
+
+    c->state                     = WS_STATE_CONNECTING;
+    sevent_stream_conn_init init = ws_stream_init(c);
+    if(sevent_stream_open(c->stream, c->host, c->port, &init) < 0)
         goto cleanup;
     return c;
 
 cleanup:
-    if(c->fd >= 0)
-        close(c->fd);
+    if(c->stream)
+        sevent_stream_destroy(c->stream);
     sevent_i_free(c->recv_buf);
     sevent_i_free(c->frag_buf);
 #ifdef SEVENT_THREAD_SAFE
@@ -1761,10 +1542,6 @@ void sevent_ws_close(sevent_ws_conn *c) {
     c->destroyed = 1;
     c->state     = WS_STATE_CLOSED;
     ws_close_socket(c);
-    if(c->connect_timer) {
-        sevent_timer_unregister(c->ev, c->connect_timer);
-        c->connect_timer = NULL;
-    }
     if(c->ping_timer) {
         sevent_timer_unregister(c->ev, c->ping_timer);
         c->ping_timer = NULL;
@@ -1781,7 +1558,10 @@ static void ws_cleanup_conn(void *data) {
         ws_deflate_destroy(c->deflate);
         c->deflate = NULL;
     }
-    ws_queue_clear(c);
+    if(c->stream) {
+        sevent_stream_destroy(c->stream); /* 内部再 post 延迟释放 (tcp/tls cleanup) */
+        c->stream = NULL;
+    }
 #ifdef SEVENT_THREAD_SAFE
     sevent_mutex_destroy(&c->lock);
 #endif
