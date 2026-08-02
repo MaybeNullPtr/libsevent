@@ -859,3 +859,15 @@ const char *sevent_http_conn_i_upgrade_key(sevent_http_conn *conn) {
         return NULL;
     return c->upgrade_key;
 }
+
+/* 消费完毕 (ws_upgrade 内 i_detach/i_take_recv/key 取走全部资源后) 释放壳.
+ * 不能同步 free: 调用发生在 on_upgrade 回调栈内, 返回后 http_process 仍读
+ * c->released (conn_dispatch 返回判断) — post 延迟释放, 回调栈安全展开.
+ * 约束: 仅 RELEASED 态可调 (未 release 连接归 http server 管理, 空操作). */
+void sevent_http_conn_i_destroy(sevent_http_conn *conn) {
+    struct sevent_http_conn *c = (struct sevent_http_conn *)conn;
+    if(!c || !c->released)
+        return;
+    if(sevent_post(c->srv->ev, conn_cleanup, c) != 0)
+        conn_cleanup(c); /* post 失败 (OOM): 直接释放 */
+}

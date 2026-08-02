@@ -27,6 +27,10 @@ uint8_t *sevent_http_conn_i_take_recv(sevent_http_conn *conn, size_t *len, size_
 /* 升级请求的 Sec-WebSocket-Key (on_upgrade 分派时保存). 返回 NULL=无. */
 const char *sevent_http_conn_i_upgrade_key(sevent_http_conn *conn);
 
+/* 消费完毕释放壳 (ws_upgrade 内三件套取走后调用): post 延迟释放 —
+ * 调用在 on_upgrade 回调栈内, 返回后 http_process 仍读 conn. 仅 RELEASED 态. */
+void sevent_http_conn_i_destroy(sevent_http_conn *conn);
+
 #ifdef __cplusplus
 }
 #endif
