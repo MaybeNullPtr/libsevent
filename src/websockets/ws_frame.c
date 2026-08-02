@@ -78,8 +78,12 @@ int ws_frame_parse_header(const uint8_t *buf, size_t len, ws_frame_header *hdr) 
 }
 
 void ws_frame_apply_mask(uint8_t *payload, uint64_t len, const uint8_t mask_key[4]) {
+    ws_frame_apply_mask_offset(payload, len, mask_key, 0);
+}
+
+void ws_frame_apply_mask_offset(uint8_t *payload, uint64_t len, const uint8_t mask_key[4], uint64_t offset) {
     for(uint64_t i = 0; i < len; i++) {
-        payload[i] ^= mask_key[i & 3];
+        payload[i] ^= mask_key[(offset + i) & 3];
     }
 }
 

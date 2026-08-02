@@ -55,6 +55,11 @@ int ws_frame_parse_header(const uint8_t *buf, size_t len, ws_frame_header *hdr);
  */
 void ws_frame_apply_mask(uint8_t *payload, uint64_t len, const uint8_t mask_key[4]);
 
+/* 带偏移掩码应用: 流式大帧边收边消费时, chunk 是 payload 的片段 —
+ * XOR 周期按 payload 内全局偏移推进 (key[(offset+i) & 3]), 非从头重算.
+ * offset = 本 chunk 在 payload 内的起始偏移 (帧总长 - 未消费剩余). */
+void ws_frame_apply_mask_offset(uint8_t *payload, uint64_t len, const uint8_t mask_key[4], uint64_t offset);
+
 /* ===== 帧头构建 =====
  *
  * 构建帧头到 buf. mask_key 为 NULL 表示不掩码 (server→client),
