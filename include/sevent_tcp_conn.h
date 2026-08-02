@@ -64,6 +64,9 @@ typedef struct tcp_conn sevent_tcp_conn; /* 实现: struct tcp_conn (tcp_conn.c)
  * 线程:     串行 (loop 线程).
  */
 sevent_tcp_conn *sevent_tcp_conn_create(sevent_context *ev);
+void             sevent_tcp_conn_set_no_delay(sevent_tcp_conn *c, bool on);
+/* 按需开启 TCP_NODELAY (关 Nagle): 延迟敏感小包交替协议 (HTTP/WS) 建议开,
+ * 默认关. 建连前调用生效; [loop 线程]. */
 
 /*
  * 客户端: 异步建立连接.

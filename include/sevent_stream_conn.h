@@ -54,7 +54,9 @@ typedef struct sevent_stream_conn sevent_stream_conn;
  *   SEVENT_ERR_HANDSHAKE — TLS 握手失败 (含证书验证失败)
  *   SEVENT_ERR_READ / SEVENT_ERR_WRITE — 读写致命错误 */
 
-/* ===== 配置 (create 时一次性传入) ===== */
+/* ===== 配置 (create 时一次性传入) =====
+ * 注: TCP_NODELAY 不做配置项 — 连接建立后 (on_open 回调内) 按需
+ * sevent_stream_set_no_delay 设置 (见下). */
 typedef struct sevent_stream_conn_config {
     bool        enable_tls; /* false=tcp_conn, true=tls_conn (sevent_stream_create 分发用) */
     /* --- TLS 配置 (tls_conn 用; tcp_conn 忽略) ---
@@ -120,6 +122,11 @@ int sevent_stream_accept(sevent_stream_conn *s, int fd, const sevent_stream_conn
  * 前置条件: on_open 后 (OPEN); 之前返回 SEVENT_ERR_INVAL.
  * 返回: 0 = 已接受 (失败经 on_error 通知); <0 = SEVENT_ERR_* (见 tcp_conn.h). */
 int sevent_stream_write(sevent_stream_conn *s, const void *data, size_t len);
+
+/* 按需开启 TCP_NODELAY (关 Nagle): 小包请求-响应交替协议 (HTTP/WS) 建议开 —
+ * Nagle+delayed ACK 交互引入 ~40ms/轮延迟. 连接建立后 (on_open 回调内) 调用.
+ * 默认关 (框架不替应用决定延迟/吞吐权衡). 线程: [loop 线程]. */
+void sevent_stream_set_no_delay(sevent_stream_conn *s, bool on);
 
 /* 关闭底层连接 (TCP close; TLS 模式不做 close_notify, 直接关闭 — WebSocket
  * 场景 Close 帧已由 ws 层处理). 任意状态可调, 幂等; 回调内可安全调用;

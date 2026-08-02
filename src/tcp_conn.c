@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h> /* TCP_NODELAY */
 #include <arpa/inet.h>
 
 #include "sevent_i.h"
@@ -102,6 +103,13 @@ struct tcp_write_node {
     size_t                 len;    /* 总长度 */
     size_t                 offset; /* 已写入偏移 */
 };
+
+/* 建连完成即关 Nagle (TCP_NODELAY): HTTP/WS 均为小包请求-响应交替协议,
+ * Nagle + delayed ACK 交互会引入 ~40ms 每轮延迟 (压测实测 41ms p50) */
+static void tcp_set_nodelay(int fd) {
+    int one = 1;
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+}
 
 /* ---- 前向声明 ---- */
 static void on_write_ready(void *data);
@@ -477,6 +485,26 @@ int sevent_tcp_conn_open(sevent_tcp_conn *c, const char *host, uint16_t port, co
     return 0;
 }
 
+/* 按需开启 TCP_NODELAY (连接建立后调用 — on_open 回调内; 直接生效).
+ * 延迟敏感的小包交替协议 (HTTP/WS) 建议开 — 否则 Nagle+delayed ACK
+ * 交互引入 ~40ms/轮延迟. 默认关. 线程: [loop 线程]. */
+void sevent_tcp_conn_set_no_delay(sevent_tcp_conn *c, bool on) {
+    struct tcp_conn *t = (struct tcp_conn *)c;
+    if(!t || t->fd < 0)
+        return; /* 未建立连接: 无可设置 */
+    if(on)
+        tcp_set_nodelay(t->fd);
+    else {
+        int zero = 0;
+        (void)setsockopt(t->fd, IPPROTO_TCP, TCP_NODELAY, &zero, sizeof(zero));
+    }
+}
+
+/* tcp ops: stream 层 set_no_delay 转发 */
+static void tcp_op_set_no_delay(sevent_stream_conn *s, bool on) {
+    sevent_tcp_conn_set_no_delay((sevent_tcp_conn *)s->impl, on);
+}
+
 int sevent_tcp_conn_accept(sevent_tcp_conn *c, int fd, const sevent_stream_conn_init *init) {
     struct tcp_conn *t = (struct tcp_conn *)c;
     if(fd < 0 || !init || !init->on_open || !init->on_data || t->state != TCP_STATE_IDLE)
@@ -486,6 +514,7 @@ int sevent_tcp_conn_accept(sevent_tcp_conn *c, int fd, const sevent_stream_conn_
         close(fd); /* accept 失败 = fd 已由本层关闭 (所有权无条件移交) */
         return SEVENT_ERR_INVAL;
     }
+
     if(tcp_setup_recv(t, init->recv_buf_size) != 0) {
         close(fd);
         return SEVENT_ERR_NOMEM;
@@ -653,12 +682,13 @@ static int tcp_shutdown(sevent_stream_conn *s, int flag) {
 }
 
 static const sevent_stream_ops tcp_ops = {
-        .open     = tcp_open,
-        .accept   = tcp_accept,
-        .write    = tcp_write,
-        .shutdown = tcp_shutdown,
-        .close    = tcp_close,
-        .destroy  = tcp_destroy,
+        .open         = tcp_open,
+        .accept       = tcp_accept,
+        .write        = tcp_write,
+        .shutdown     = tcp_shutdown,
+        .close        = tcp_close,
+        .destroy      = tcp_destroy,
+        .set_no_delay = tcp_op_set_no_delay,
 };
 
 /* 供 stream_conn.c 工厂分发: 创建 TCP 实现 + 包壳挂接 ops */

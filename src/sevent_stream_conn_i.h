@@ -23,6 +23,7 @@ typedef struct sevent_stream_ops {
     int (*shutdown)(sevent_stream_conn *s, int flag); /* 半关: 队列 flush 后 shutdown(fd, flag) */
     void (*close)(sevent_stream_conn *s);
     void (*destroy)(sevent_stream_conn *s);
+    void (*set_no_delay)(sevent_stream_conn *s, bool on); /* 按需 TCP_NODELAY (tcp 直接/tls 转发) */
 } sevent_stream_ops;
 
 /* 统一壳: ops 表 + 具体实现指针 (tcp_conn / tls_conn) */

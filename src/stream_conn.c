@@ -69,3 +69,9 @@ void sevent_stream_destroy(sevent_stream_conn *s) {
         return;
     s->ops->destroy(s);
 }
+
+void sevent_stream_set_no_delay(sevent_stream_conn *s, bool on) {
+    if(!s || !s->ops || !s->ops->set_no_delay)
+        return;
+    s->ops->set_no_delay(s, on);
+}
