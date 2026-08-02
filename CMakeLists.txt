@@ -22,6 +22,7 @@ set_property(CACHE SEVENT_WS_TLS_BACKEND PROPERTY STRINGS MBEDTLS OPENSSL)
 
 option(SEVENT_ASAN "Build with AddressSanitizer (memory/leak detection)" OFF)
 option(SEVENT_TSAN "Build with ThreadSanitizer (data race detection)" OFF)
+option(SEVENT_FUZZ "Build HTTP fuzz target (fuzz-http-parse)" OFF)
 
 if(SEVENT_ASAN AND SEVENT_TSAN)
     message(FATAL_ERROR "ASan and TSan are incompatible, enable only one at a time")
@@ -102,7 +103,13 @@ set(WEBSOCKET_SOURCES
     src/websockets/ws_deflate.c
 )
 
-add_library(sevent_ws STATIC ${WEBSOCKET_SOURCES} ${TRANSPORT_SOURCES})
+# HTTP 层 (语法层 + 服务器层; ws 与纯 http 共用, 编译进 libsevent_ws)
+set(HTTP_SOURCES
+    src/http_parse.c
+    src/http_server.c
+)
+
+add_library(sevent_ws STATIC ${WEBSOCKET_SOURCES} ${TRANSPORT_SOURCES} ${HTTP_SOURCES})
 target_include_directories(sevent_ws PUBLIC
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -193,6 +200,7 @@ target_link_libraries(test_sevent PRIVATE sevent)
 add_custom_target(check
     COMMAND ctest --output-on-failure
     DEPENDS test_sevent test-ws test-ws-conn test-frag-stream test-redirect test-deflate
+            test-stream-conn test-tcp-conn test-http-parse test-http-server
 )
 
 # ---------- 代码格式化 (需要 clang-format) ----------
@@ -228,6 +236,45 @@ add_test(NAME frag_stream_tests COMMAND test-frag-stream)
 add_test(NAME redirect_tests COMMAND test-redirect)
 add_test(NAME deflate_tests COMMAND test-deflate)
 add_test(NAME stream_conn_tests COMMAND test-stream-conn)
+
+# ---------- HTTP 层测试 ----------
+
+add_executable(test-http-parse
+    tests/test_http_parse.c
+)
+target_include_directories(test-http-parse PRIVATE include)
+target_link_libraries(test-http-parse PRIVATE sevent_ws)
+add_test(NAME http_parse_tests COMMAND test-http-parse)
+
+add_executable(test-http-server
+    tests/test_http_server.c
+)
+target_include_directories(test-http-server PRIVATE include)
+target_link_libraries(test-http-server PRIVATE sevent_ws)
+add_test(NAME http_server_tests COMMAND test-http-server)
+
+# ---------- autobahn 合规客户端 (手动跑, 需 wstest fuzzingserver) ----------
+
+if(SEVENT_WS_DEFLATE)
+    enable_language(CXX) # autobahn_client.cpp 需要 C++ 编译器
+    add_executable(autobahn_client
+        tests/autobahn_client.cpp
+    )
+    target_include_directories(autobahn_client PRIVATE include)
+    target_link_libraries(autobahn_client PRIVATE sevent_ws)
+endif()
+
+# ---------- fuzz ----------
+# 语法层变异 fuzzer (零外部依赖: gcc + ASAN 可跑; SEVENT_ASAN=ON 时效果最佳)
+if(SEVENT_FUZZ)
+    add_executable(fuzz-http-parse
+        tests/fuzz/fuzz_http_parse.c
+    )
+    target_include_directories(fuzz-http-parse PRIVATE include)
+    target_link_libraries(fuzz-http-parse PRIVATE sevent_ws)
+    # 常规回归: 固定小规模 (1ms 级) — 完整 fuzz 手动跑大迭代数
+    add_test(NAME http_parse_fuzz_smoke COMMAND fuzz-http-parse 100000)
+endif()
 
 # ---------- examples ----------
 
@@ -397,11 +444,12 @@ target_link_libraries(example-thread-worker PRIVATE Threads::Threads)
 
 # ---------- WebSocket example ----------
 
-# ws_conn 已组合 stream_conn: 需含 TRANSPORT_SOURCES (tcp_conn/stream_conn)
+# ws_conn 已组合 stream_conn + http_parse: 需含 TRANSPORT_SOURCES + HTTP_SOURCES
 add_executable(example-ws-client
     examples/ws_client.c
     ${WEBSOCKET_SOURCES}
     ${TRANSPORT_SOURCES}
+    ${HTTP_SOURCES}
     ${SEVENT_SOURCES}
 )
 target_include_directories(example-ws-client PRIVATE include)
@@ -483,3 +531,5 @@ install(FILES include/sevent_stream_conn.h DESTINATION include)
 install(FILES include/sevent_tcp_conn.h DESTINATION include)
 install(FILES include/sevent_tcp_acceptor.h DESTINATION include)
 install(FILES include/sevent_tls_conn.h DESTINATION include)
+install(FILES include/sevent_http_parse.h DESTINATION include)
+install(FILES include/sevent_http_server.h DESTINATION include)

@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **开发前先看 [doc/testing.md](doc/testing.md)** — 模块 ↔ 测试套件映射 + 变更检查表
+> （改哪个模块跑哪些测试、构建矩阵、提交纪律）。
+
 ## Build
 
 ```bash
