@@ -42,9 +42,9 @@ extern "C" {
 /* ==================== 版本 ==================== */
 
 #define SEVENT_VERSION_MAJOR 1
-#define SEVENT_VERSION_MINOR 4
-#define SEVENT_VERSION_PATCH 2
-#define SEVENT_VERSION "1.4.2"
+#define SEVENT_VERSION_MINOR 5
+#define SEVENT_VERSION_PATCH 0
+#define SEVENT_VERSION "1.5.0"
 
 /* ==================== 错误码 ==================== */
 
