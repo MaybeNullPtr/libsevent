@@ -16,7 +16,9 @@ option(SEVENT_ENABLE_PIPE     "Use pipe for wakeup (POSIX)" ON)
 option(SEVENT_THREAD_SAFE
     "WebSocket client with thread-safe API (adds per-connection mutex locking)" OFF)
 option(SEVENT_WS_DEFLATE "WebSocket permessage-deflate compression (requires zlib)" OFF)
-option(SEVENT_WS_TLS "WebSocket TLS transport (requires OpenSSL)" OFF)
+option(SEVENT_WS_TLS "WebSocket TLS transport (backend: mbedtls / openssl)" OFF)
+set(SEVENT_WS_TLS_BACKEND "MBEDTLS" CACHE STRING "TLS backend: MBEDTLS | OPENSSL (default MBEDTLS)")
+set_property(CACHE SEVENT_WS_TLS_BACKEND PROPERTY STRINGS MBEDTLS OPENSSL)
 
 option(SEVENT_ASAN "Build with AddressSanitizer (memory/leak detection)" OFF)
 option(SEVENT_TSAN "Build with ThreadSanitizer (data race detection)" OFF)
@@ -122,13 +124,62 @@ if(SEVENT_WS_DEFLATE)
     target_link_libraries(sevent_ws PRIVATE ${ZLIB_LIBRARIES})
 endif()
 
-# TLS 传输 (stream_conn/tls_conn), 需要 OpenSSL
+# TLS 传输: ssl 抽象层 (src/ssl/ssl.c + 选中后端) + tls_conn (组合 tcp_conn).
+# 只编译选中后端 (D1).
+# ssl 层独立单测 (直链 ssl.c + 选中后端, 不经 sevent_ws — 与库互不依赖)
 if(SEVENT_WS_TLS)
-    find_package(OpenSSL REQUIRED)
-    target_compile_definitions(sevent_ws PRIVATE SEVENT_WS_TLS)
-    target_include_directories(sevent_ws PRIVATE ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(sevent_ws PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    target_sources(sevent_ws PRIVATE src/tls_conn.c)
+    add_executable(test-ssl tests/test_ssl.c src/ssl/ssl.c)
+    target_include_directories(test-ssl PRIVATE
+        include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/ssl)
+    target_compile_definitions(test-ssl PRIVATE
+        TEST_CERTS_DIR="${CMAKE_SOURCE_DIR}/tests/certs")
+    target_link_libraries(test-ssl PRIVATE sevent) # sevent_ignore_sigpipe (库契约)
+    add_custom_command(TARGET test-ssl POST_BUILD
+        COMMAND bash ${CMAKE_SOURCE_DIR}/tests/gen_certs.sh)
+    add_test(NAME ssl_tests COMMAND test-ssl)
+endif()
+
+if(SEVENT_WS_TLS)
+    target_sources(sevent_ws PRIVATE src/ssl/ssl.c src/tls_conn.c)
+    if(SEVENT_WS_TLS_BACKEND STREQUAL "MBEDTLS")
+        # mbedtls 2.x (目标 2.25): 无系统信任库概念 (verify_peer=true 须提供 CA).
+        # 自编译安装: -DCMAKE_PREFIX_PATH=$HOME/documents/thirdparty/install
+        find_path(MBEDTLS_INCLUDE_DIR mbedtls/ssl.h)
+        find_library(MBEDTLS_LIBRARY mbedtls)
+        find_library(MBEDX509_LIBRARY mbedx509)
+        find_library(MBEDCRYPTO_LIBRARY mbedcrypto)
+        if(NOT MBEDTLS_INCLUDE_DIR OR NOT MBEDTLS_LIBRARY OR NOT MBEDX509_LIBRARY
+           OR NOT MBEDCRYPTO_LIBRARY)
+            message(FATAL_ERROR
+                "mbedtls 未找到 (默认后端=MBEDTLS). 解决: "
+                "1) 用 -DCMAKE_PREFIX_PATH=<mbedtls 安装前缀> 指向安装位置; "
+                "2) 或切换系统自带后端: -DSEVENT_WS_TLS_BACKEND=OPENSSL")
+        endif()
+        target_compile_definitions(sevent_ws PRIVATE SEVENT_WS_TLS SEVENT_WS_TLS_MBEDTLS)
+        target_include_directories(sevent_ws PRIVATE ${MBEDTLS_INCLUDE_DIR})
+        target_link_libraries(sevent_ws PRIVATE
+            ${MBEDTLS_LIBRARY} ${MBEDX509_LIBRARY} ${MBEDCRYPTO_LIBRARY})
+        target_sources(sevent_ws PRIVATE src/ssl/ssl_mbedtls.c)
+        # test-ssl: 后端宏 + 链接
+        target_compile_definitions(test-ssl PRIVATE SEVENT_WS_TLS_MBEDTLS)
+        target_sources(test-ssl PRIVATE src/ssl/ssl_mbedtls.c)
+        target_include_directories(test-ssl PRIVATE ${MBEDTLS_INCLUDE_DIR})
+        target_link_libraries(test-ssl PRIVATE
+            ${MBEDTLS_LIBRARY} ${MBEDX509_LIBRARY} ${MBEDCRYPTO_LIBRARY})
+    elseif(SEVENT_WS_TLS_BACKEND STREQUAL "OPENSSL")
+        find_package(OpenSSL REQUIRED)
+        target_compile_definitions(sevent_ws PRIVATE SEVENT_WS_TLS)
+        target_include_directories(sevent_ws PRIVATE ${OPENSSL_INCLUDE_DIR})
+        target_link_libraries(sevent_ws PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        target_sources(sevent_ws PRIVATE src/ssl/ssl_openssl.c)
+        # test-ssl: 后端源 + 链接
+        target_sources(test-ssl PRIVATE src/ssl/ssl_openssl.c)
+        target_include_directories(test-ssl PRIVATE ${OPENSSL_INCLUDE_DIR})
+        target_link_libraries(test-ssl PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    else()
+        message(FATAL_ERROR
+            "SEVENT_WS_TLS_BACKEND 必须是 MBEDTLS 或 OPENSSL, 当前: ${SEVENT_WS_TLS_BACKEND}")
+    endif()
 endif()
 
 # ---------- tests ----------
@@ -233,6 +284,40 @@ target_include_directories(test-stream-conn PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test-stream-conn PRIVATE sevent_ws)
 if(SEVENT_THREAD_SAFE)
     target_compile_definitions(test-stream-conn PRIVATE SEVENT_THREAD_SAFE)
+endif()
+
+# tcp_conn 公开 API 独立单测 (不经 stream 抽象)
+add_executable(test-tcp-conn
+    tests/test_tcp_conn.c
+)
+target_include_directories(test-tcp-conn PRIVATE include)
+target_link_libraries(test-tcp-conn PRIVATE sevent_ws)
+if(SEVENT_THREAD_SAFE)
+    target_compile_definitions(test-tcp-conn PRIVATE SEVENT_THREAD_SAFE)
+endif()
+add_test(NAME tcp_conn_tests COMMAND test-tcp-conn)
+
+# tls_conn 公开 API 独立单测 (不经 stream 抽象; 证书经 TEST_CERTS_DIR 注入)
+if(SEVENT_WS_TLS)
+    add_executable(test-tls-conn
+        tests/test_tls_conn.c
+    )
+    target_include_directories(test-tls-conn PRIVATE include)
+    target_compile_definitions(test-tls-conn PRIVATE
+        SEVENT_WS_TLS TEST_CERTS_DIR="${CMAKE_SOURCE_DIR}/tests/certs")
+    target_link_libraries(test-tls-conn PRIVATE sevent_ws)
+    add_custom_command(TARGET test-tls-conn POST_BUILD
+        COMMAND bash ${CMAKE_SOURCE_DIR}/tests/gen_certs.sh)
+    if(SEVENT_WS_TLS_BACKEND STREQUAL "MBEDTLS")
+        # 后端符号在 sevent_ws 静态库内, 静态链接不传递 — 测试自身链后端
+        target_include_directories(test-tls-conn PRIVATE ${MBEDTLS_INCLUDE_DIR})
+        target_link_libraries(test-tls-conn PRIVATE
+            ${MBEDTLS_LIBRARY} ${MBEDX509_LIBRARY} ${MBEDCRYPTO_LIBRARY})
+    elseif(SEVENT_WS_TLS_BACKEND STREQUAL "OPENSSL")
+        target_include_directories(test-tls-conn PRIVATE ${OPENSSL_INCLUDE_DIR})
+        target_link_libraries(test-tls-conn PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    add_test(NAME tls_conn_tests COMMAND test-tls-conn)
 endif()
 
 add_executable(test-deflate
