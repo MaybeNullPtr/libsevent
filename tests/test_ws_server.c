@@ -828,6 +828,137 @@ static int t_accept_bad_request(void) {
     return ok ? 0 : 1;
 }
 
+/* ==================== H1 回归: CLOSE + 数据帧粘包 ====================
+ * 单 TCP 段 CLOSE 帧 + 数据帧 → 数据帧必须被忽略 (RFC 6455 §5.5: 收到
+ * CLOSE 后不处理后续数据). 修复前 process_frames 在 CLOSED 态继续解析 →
+ * on_message 在 on_close 之后回调 (user_data 可能已释放 → UAF). */
+
+static int  g_ci_open, g_ci_close, g_ci_msg;
+static void ci_on_open(void *d) {
+    (void)d;
+    g_ci_open = 1;
+}
+static void ci_on_close(void *d, uint16_t code, const char *r, size_t rl) {
+    (void)d;
+    (void)code;
+    (void)r;
+    (void)rl;
+    g_ci_close = 1;
+}
+static void ci_on_message(void *d, const void *m, size_t l, bool b, bool fin, uint64_t t) {
+    (void)d;
+    (void)m;
+    (void)l;
+    (void)b;
+    (void)fin;
+    (void)t;
+    g_ci_msg++;
+}
+static void ci_on_error(void *d, int err) {
+    (void)d;
+    (void)err;
+    g_ci_msg = -1; /* 错误标记: 意外协议错误也算失败 */
+}
+static void ci_on_accept(void *d, int fd) {
+    (void)d;
+    static const sevent_ws_config cfg = {
+            .on_open    = ci_on_open,
+            .on_message = ci_on_message,
+            .on_close   = ci_on_close,
+            .on_error   = ci_on_error,
+    };
+    g_srv = sevent_ws_accept(g_ev, fd, &cfg);
+    if(!g_srv)
+        close(fd);
+}
+
+static int t_close_sticky_ignore(void) {
+    /* H1: CLOSE(1000) + TEXT("hello") 粘包单段发送 → 数据帧被忽略:
+     * on_message 不触发 (0), on_close 触发, 客户端收到 CLOSE 回应 (0x88). */
+    sevent_context *ev = sevent_create();
+    if(!ev)
+        return 1;
+    g_ev  = ev;
+    g_acc = sevent_tcp_acceptor_create(ev);
+    if(!g_acc)
+        return 1;
+    if(sevent_tcp_acceptor_listen(g_acc, "127.0.0.1", 0, 8, ci_on_accept, NULL) < 0) {
+        sevent_tcp_acceptor_destroy(g_acc);
+        flush_posts(ev); /* destroy 是 post 延迟 — 推进执行 cleanup */
+        sevent_destroy(ev);
+        return 1;
+    }
+    int port  = sevent_tcp_acceptor_port(g_acc);
+    g_ci_open = g_ci_close = g_ci_msg = 0;
+    g_srv                             = NULL;
+    int fd                            = raw_connect(port);
+    if(fd < 0)
+        return 1;
+    char req[512];
+    int  n = raw_build_upgrade(req, sizeof(req), "dGhlIHNhbXBsZSBub25jZQ==", "13", NULL);
+    if(n < 0) {
+        close(fd);
+        return 1;
+    }
+    if(send(fd, req, (size_t)n, 0) < 0) {
+        close(fd);
+        return 1;
+    }
+    run_until(ev, &g_ci_open, 500); /* 握手完成 */
+    char   rbuf101[256];
+    size_t he101 = 0;
+    raw_read_response(fd, rbuf101, sizeof(rbuf101), &he101); /* 消费 101 响应 */
+    int ok = g_ci_open;
+    if(ok) {
+        /* 粘包帧: CLOSE(1000, mask) + TEXT("hello", mask) 单次 send */
+        uint8_t pkt[64];
+        uint8_t mkey[4] = {1, 2, 3, 4};
+        uint8_t cc[2]   = {0x03, 0xE8}; /* 1000 */
+        int     off     = 0;
+        int     hl      = ws_frame_build_header(pkt, 1, 0, WS_OPCODE_CLOSE, mkey, 2);
+        memcpy(pkt + hl, cc, 2);
+        ws_frame_apply_mask(pkt + hl, 2, mkey);
+        off += hl + 2;
+        hl  = ws_frame_build_header(pkt + off, 1, 0, WS_OPCODE_TEXT, mkey, 5);
+        memcpy(pkt + off + hl, "hello", 5);
+        ws_frame_apply_mask(pkt + off + hl, 5, mkey);
+        off += hl + 5;
+        if(send(fd, pkt, (size_t)off, 0) < 0) {
+            ok = 0;
+        } else {
+            run_until(ev, &g_ci_close, 500); /* 服务端收到 CLOSE → 回 CLOSE → on_close */
+            /* 客户端读 CLOSE 回应帧 (0x88, 服务端不 mask) */
+            char rbuf[16];
+            int  rn = (int)read(fd, rbuf, sizeof(rbuf));
+            if(rn < 2 || (uint8_t)rbuf[0] != 0x88) {
+                fprintf(stderr,
+                        "  [close_sticky] no CLOSE reply (rn=%d first=0x%02x)\n",
+                        rn,
+                        rn > 0 ? (uint8_t)rbuf[0] : 0);
+                ok = 0;
+            }
+            if(g_ci_msg != 0) {
+                fprintf(stderr, "  [close_sticky] on_message fired %d times after CLOSE\n", g_ci_msg);
+                ok = 0;
+            }
+            if(!g_ci_close) {
+                fprintf(stderr, "  [close_sticky] on_close not fired\n");
+                ok = 0;
+            }
+        }
+        close(fd);
+        if(g_srv) {
+            sevent_ws_destroy(g_srv);
+            g_srv = NULL;
+        }
+        flush_posts(ev);
+    }
+    sevent_tcp_acceptor_destroy(g_acc);
+    flush_posts(ev); /* destroy 是 post 延迟 — 推进执行 cleanup */
+    sevent_destroy(ev);
+    return ok ? 0 : 1;
+}
+
 /* ==================== OOM 注入 (D2/D4/D7 回归) ====================
  * 用可替换 allocator 注入分配失败, 验证失败路径的资源收尾:
  *   - ws_upgrade 内部 OOM → NULL + 连接壳经 i_destroy 回收 (alloc 计数平衡)
@@ -1040,6 +1171,7 @@ int main(void) {
             {"upgrade_sticky", t_upgrade_sticky},
             {"accept_unmasked", t_accept_unmasked},
             {"accept_bad_request", t_accept_bad_request},
+            {"close_sticky_ignore", t_close_sticky_ignore},
             {"upgrade_oom", t_upgrade_oom},
             {"accept_oom_fd", t_accept_oom_fd},
 #ifdef SEVENT_WS_TLS

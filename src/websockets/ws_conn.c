@@ -624,9 +624,11 @@ static int ws_redirect_parse(struct sevent_ws_conn *c, const char *loc) {
         p++;
         while(*p >= '0' && *p <= '9') {
             port = port * 10 + (long)(*p - '0');
+            if(port > 65535)
+                return -1; /* 循环内提前检查: 超长数字串防 long 溢出 (UB) */
             p++;
         }
-        if(port <= 0 || port > 65535)
+        if(port <= 0)
             return -1;
         c->port = (uint16_t)port;
     } else {
@@ -918,7 +920,10 @@ static int handle_close(struct sevent_ws_conn *c, const ws_frame_header *hdr, co
  *   5. opcode 分发 (handle_*)
  * 流式路由段与正常路径的协议检查必须保持一致 (曾因不一致漏检). */
 static int process_frames(struct sevent_ws_conn *c) {
-    while(c->recv_pos < c->recv_len) {
+    while(c->recv_pos < c->recv_len && c->state != WS_STATE_CLOSED) {
+        /* CLOSED 检查: handle_close 置 CLOSED 后同缓冲粘包帧不得继续处理
+         * (RFC 6455 §5.5: 收到 CLOSE 后忽略后续数据) — 否则 on_message 在
+         * on_close 之后回调, 用户上下文可能已释放 (UAF) */
         if(c->destroyed)
             return 0;
         size_t          avail = c->recv_len - c->recv_pos;
@@ -1106,7 +1111,9 @@ static sevent_stream_conn_init ws_stream_init(struct sevent_ws_conn *c) {
 static void ws_stream_on_data(void *d, const uint8_t *data, size_t len) {
     struct sevent_ws_conn *c = (struct sevent_ws_conn *)d;
     WS_LOCK(c);
-    if(c->destroyed) {
+    if(c->destroyed || c->state == WS_STATE_CLOSED) {
+        /* CLOSED 防御: 同轮粘包由 process_frames 循环条件拦截; stream 层
+         * CLOSED 后已摘事件, 此处兜底 (对端 EOF 与 close 竞争窗口) */
         WS_UNLOCK(c);
         return;
     }
