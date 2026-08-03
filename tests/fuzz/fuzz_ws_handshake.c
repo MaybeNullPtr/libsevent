@@ -244,11 +244,14 @@ static int roundtrip_response(uint64_t iter) {
         printf("iter %llu: roundtrip accept 校验失败\n", (unsigned long long)iter);
         return -1;
     }
-    /* deflate=true 的响应必须确认 PMD (A 方案) */
+    /* deflate=true 的响应必须确认 PMD (A 方案); 仅库启用压缩时成立 —
+     * OFF 构建 ws_build_response 不输出扩展头 (宏由 CMake 按选项传递) */
+#ifdef SEVENT_WS_DEFLATE
     if(strlen(resp.extensions) == 0 || strstr(resp.extensions, WS_EXT_PMD) == NULL) {
         printf("iter %llu: roundtrip 缺 PMD 确认\n", (unsigned long long)iter);
         return -1;
     }
+#endif
     /* 容量不足路径: 返回 <0 且不写 buf */
     uint8_t small[8] = {0};
     if(ws_build_response((char *)small, 1, key, false) >= 0) {
@@ -281,10 +284,12 @@ static int roundtrip_request(uint64_t iter) {
         printf("iter %llu: roundtrip key 不匹配\n", (unsigned long long)iter);
         return -1;
     }
+#ifdef SEVENT_WS_DEFLATE
     if(!req.deflate_offered || !req.client_no_context_takeover) {
         printf("iter %llu: roundtrip deflate offer 丢失\n", (unsigned long long)iter);
         return -1;
     }
+#endif
     return 0;
 }
 

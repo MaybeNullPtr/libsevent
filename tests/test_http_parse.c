@@ -121,7 +121,7 @@ static void t_target_split(void) {
 
 static void t_query_get(void) {
     const char *q = "a=1&b=2&flag&c=&utm_source=x";
-    size_t      vl;
+    size_t      vl = 0; /* query_get 未找到时不写 val_len, 初始化防 -Wmaybe-uninitialized */
     const char *v;
     /* 正常查找 */
     v = sevent_http_query_get(q, strlen(q), "b", &vl);
