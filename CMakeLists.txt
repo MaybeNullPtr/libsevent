@@ -394,6 +394,20 @@ if(SEVENT_WS_TLS)
     add_test(NAME wss_tests COMMAND test-wss)
 endif()
 
+# ws 服务端入口 (ws_accept / ws_upgrade) 端到端 + 握手单测
+add_executable(test-ws-server
+    tests/test_ws_server.c
+)
+target_include_directories(test-ws-server PRIVATE include ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test-ws-server PRIVATE sevent_ws)
+if(SEVENT_WS_TLS)
+    target_compile_definitions(test-ws-server PRIVATE
+        SEVENT_WS_TLS TEST_CERTS_DIR="${CMAKE_SOURCE_DIR}/tests/certs")
+    add_custom_command(TARGET test-ws-server POST_BUILD
+        COMMAND bash ${CMAKE_SOURCE_DIR}/tests/gen_certs.sh)
+endif()
+add_test(NAME ws_server_tests COMMAND test-ws-server)
+
 add_executable(test-deflate
     tests/test_deflate.c
     src/websockets/ws_deflate.c
@@ -405,7 +419,7 @@ target_link_libraries(test-deflate PRIVATE sevent)
 find_package(Threads REQUIRED)
 
 if(SEVENT_WS_DEFLATE)
-    foreach(t test-ws test-ws-conn test-frag-stream test-redirect test-deflate)
+    foreach(t test-ws test-ws-conn test-frag-stream test-redirect test-deflate test-ws-server)
         target_compile_definitions(${t} PRIVATE SEVENT_WS_DEFLATE)
         target_include_directories(${t} PRIVATE ${ZLIB_INCLUDE_DIRS})
         target_link_libraries(${t} PRIVATE ${ZLIB_LIBRARIES})
