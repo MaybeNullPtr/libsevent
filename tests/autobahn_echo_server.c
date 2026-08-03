@@ -30,7 +30,7 @@ struct app {
 };
 
 static void app_msg_reset(struct app *a) {
-    a->msg_len = 0;
+    a->msg_len    = 0;
     a->msg_binary = false;
 }
 
@@ -46,14 +46,12 @@ static int app_msg_append(struct app *a, const void *m, size_t l, bool binary) {
         a->msg_cap = nc;
     }
     memcpy(a->msg_buf + a->msg_len, m, l);
-    a->msg_len += l;
+    a->msg_len    += l;
     a->msg_binary = binary;
     return 0;
 }
 
-static void on_open(void *d) {
-    (void)d;
-}
+static void on_open(void *d) { (void)d; }
 
 static void on_message(void *d, const void *m, size_t l, bool binary, bool fin, uint64_t total) {
     (void)total;
