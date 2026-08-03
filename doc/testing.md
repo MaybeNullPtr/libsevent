@@ -19,6 +19,7 @@
 | redirect_tests | test-redirect | ws_conn+ws_handshake | 301 自动重定向 | — |
 | deflate_tests | test-deflate | ws_deflate | 压缩/解压正确性 | SEVENT_WS_DEFLATE |
 | wss_tests | test-wss | ws+stream TLS 链路 | wss 端到端/证书验证失败/hostname 映射 | SEVENT_WS_TLS |
+| ws_server_tests | test-ws-server | ws 服务端入口 | accept/upgrade 端到端/掩码双向/非法握手/CLOSE 粘包忽略/OOM 注入（fd 归还 + alloc 平衡） | — |
 | http_parse_tests | test-http-parse | http_parse 语法层 | 分帧/预解析/构建骨架 | — |
 | http_server_tests | test-http-server | http_server 服务器层 | 8 态状态机/keep-alive/空闲超时/升级出口 | — |
 | http_parse_fuzz_smoke | fuzz-http-parse | http_parse 语法层 | 变异输入回归（10 万次，~0.1s） | SEVENT_FUZZ |
@@ -27,7 +28,7 @@
 
 | 套件 | 入口 | 覆盖 | 何时跑 |
 |---|---|---|---|
-| Autobahn 全合规 | `make autobahn_client`（需 `SEVENT_WS_DEFLATE=ON`）+ wstest fuzzingserver | ws 客户端 517 用例（帧/分片/流式/压缩） | ws 层任何改动后、发布前 |
+| Autobahn 全合规（双向） | `MODE=fuzzingserver ./tests/run_autobahn_docker.sh`（测 client）+ `MODE=fuzzingclient ./tests/run_autobahn_docker.sh`（测 server，需 deflate=ON） | 双向各 517 用例（帧/分片/流式/压缩/关闭握手） | ws 层任何改动后、发布前 |
 | fuzz 大跑 | `./fuzz-http-parse [iterations] [seed]` | http_parse 深度模糊（ASAN 下亿级迭代） | http_parse 改动后 |
 | ASAN 全量 | `bash tools/test-asan.sh` | 全测试 + 内存/泄漏检测 | 提交前（CI 级验证） |
 

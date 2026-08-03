@@ -156,6 +156,19 @@ ws_upgrade:  请求已由 http_server 解析完 → 校验/算 accept → 写 10
 - **升级期超时（审查更新）**：**upgrade 入口已被覆盖**——http server 的 idle_timeout 计入"连接建立后到首个完整请求"的等待，客户端连上不发升级请求会被超时关；**accept 入口仍无**（stream accept 不启动 timer），与 client 握手期现状一致，用户自管
 - HANDSHAKE/OPEN/CLOSING/CLOSED 其余逻辑零改动
 
+**WS_STATE 状态机闭环（完整审查后定稿）**：
+
+```
+CONNECTING ──stream on_open──▶ HANDSHAKE ──握手成功──▶ OPEN ──收到 CLOSE/对端 EOF/协议错──▶ CLOSING/CLOSED
+    ▲                          │  │                        │ 发 CLOSE (shutdown) → CLOSING
+    └───── 重定向 reconnect ───┘  └──失败 (400/426/对端关)──▶ CLOSED
+    任意态 ── close/destroy ──▶ CLOSED (终态, 幂等)
+```
+
+- **闭环保证**：终态操作幂等（ws_fatal/ws_enter_closed 的 CLOSED/destroyed 重入防护）；重定向完整重置接收状态（msg/frag/stream）
+- **CLOSED 后停止处理粘包帧（H1 修复）**：单 TCP 段 CLOSE 帧 + 数据帧 → handle_close 置 CLOSED 后，`process_frames` 循环条件 `state != CLOSED` 拦截剩余帧（RFC 6455 §5.5：收到 CLOSE 后忽略后续数据）——否则 on_message 在 on_close 之后回调（user_data 可能已释放 → UAF）。回归测试 `close_sticky_ignore` 固化
+- 消息级状态机（MSG_NONE/FRAG/STREAM）转换完整：NONE→FRAG/STREAM（首帧）、FRAG→STREAM（大帧路由，积压先刷）、→NONE（msg_end 统一收尾 + fin 回调恰好一次 + 压缩补 tail）
+
 ## 5. 协议差异处理
 
 ### 5.1 掩码方向（唯一数据面差异 + 现状合规修正）
@@ -237,6 +250,11 @@ int ws_build_response(char *buf, size_t cap, const char *key, bool enable_deflat
 ## 7. 生命周期与线程模型
 
 - 全部 [loop 线程]；SEVENT_WS_THREAD_SAFE 时跨线程 send/close/destroy 由既有锁保护
+- **锁纪律（审查重构定稿）**：锁不越过函数边界，函数内 LOCK/UNLOCK 严格对称——
+  - 锁边界仅两处：loop 回调入口（on_data/on_close/on_error/on_open/on_ping_timer）+ 公开 API（send/close/destroy/get_state）
+  - 内部处理函数（ws_handshake_data/_server/ws_frame_data/ws_server_establish/ws_fatal/ws_enter_closed）一律不碰锁，契约"调用方持锁"；用户回调在持锁状态直调（递归锁，回调内 send/destroy 重入安全）
+  - 原缺陷：握手处理函数内部解锁与调用方尾部解锁冲突（每次握手二次解锁，glibc EPERM 静默、规范 UB）+ upgrade 直调时锁泄漏——重构后消除
+  - **验证**：build-ts 套（SEVENT_THREAD_SAFE=ON）锁路径首次真实执行（OFF 构建锁是空宏，测不到）
 - http_server destroy 不触碰已升级的 ws 连接（所有权已转移）
 - **升级转移的释放链**：ws_upgrade 消费（i_detach/i_take_recv/key）→ i_destroy（post 释放 http 壳）→ 101 入队 + OPEN → 后续 ws 生命周期与 client 完全一致（ws_cleanup_conn 统一释放）
 
