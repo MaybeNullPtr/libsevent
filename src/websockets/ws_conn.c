@@ -1631,19 +1631,19 @@ sevent_ws_conn *sevent_ws_accept(sevent_context *ev, int fd, const sevent_ws_con
         return NULL;
     struct sevent_ws_conn *c = ws_conn_new(ev, cfg, false);
     if(!c)
-        return NULL;
+        return NULL; /* fd 所有权未移交 — 失败归调用方关闭 */
     if(ws_conn_alloc_bufs(c, cfg->recv_buf_size) != 0) {
         ws_conn_abort(c);
-        return NULL;
+        return NULL; /* 同上: fd 归调用方 */
     }
     c->stream = sevent_stream_create(ev, &c->stream_cfg);
     if(!c->stream) {
         ws_conn_abort(c);
-        return NULL;
+        return NULL; /* 同上: fd 归调用方 */
     }
     sevent_stream_conn_init init = ws_stream_init(c);
     if(sevent_stream_accept(c->stream, fd, &init) < 0) {
-        /* stream 层已关闭 fd (所有权移交失败即关闭) */
+        /* stream 层已归还 fd (失败不关闭) — 调用方负责 close */
         ws_conn_abort(c);
         return NULL;
     }

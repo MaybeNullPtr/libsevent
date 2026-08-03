@@ -89,7 +89,8 @@ int sevent_tls_conn_open(sevent_tls_conn *c, const char *host, uint16_t port, co
  * 前置条件: fd >= 0; init 非 NULL 且 on_open/on_data 非 NULL; 状态为 IDLE;
  *           create 时已提供 cert_path/key_path (服务端必填, 缺失则建立失败
  *           on_error(SEVENT_ERR_HANDSHAKE)).
- *           fd 所有权移交本层 (失败时 fd 已由本层关闭).
+ *           fd 所有权契约: 成功 → 移交本层; 失败 → 归还调用方 (本层不关闭,
+ *           调用方负责 close — 谁拥有谁关闭).
  * 返回:     0 = 已接受; <0 = SEVENT_ERR_INVAL / SEVENT_ERR_NOMEM.
  * 回调:     同 open.
  * 线程:     [loop 线程].

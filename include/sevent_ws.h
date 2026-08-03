@@ -157,7 +157,8 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
  * 流程: stream 建连 (enable_tls 时含 TLS 服务端握手, 证书来自 cfg cert/key —
  *       必填) → 收升级请求回 101 → on_open; 请求非法 → 回 400/426 + on_error.
  * 返回: 句柄 (失败经 on_error 通知), NULL=参数错误/内存不足.
- * fd 所有权移交本层 (失败时已由 stream 层关闭).
+ * fd 所有权契约: 成功 → 移交本层 (调用方不得再使用); 失败 → 归还调用方,
+ * 调用方负责 close (谁拥有谁关闭 — 失败后库不关闭 fd).
  * 线程: [loop 线程].
  */
 sevent_ws_conn *sevent_ws_accept(sevent_context *ev, int fd, const sevent_ws_config *cfg);

@@ -324,7 +324,7 @@ static void acc_on_accept(void *d, int fd) {
     };
     g_srv = sevent_ws_accept(g_ev, fd, &cfg);
     if(!g_srv)
-        close(fd);
+        close(fd); /* 契约: 失败后 fd 归调用方 — 谁拥有谁关闭 */
 }
 
 static int t_accept_echo(void) {
@@ -426,7 +426,7 @@ static void acc_on_accept_tls(void *d, int fd) {
     };
     g_srv = sevent_ws_accept(g_ev, fd, &cfg);
     if(!g_srv)
-        close(fd);
+        close(fd); /* 契约: 失败后 fd 归调用方 */
 }
 
 static void acc_on_accept_mtls(void *d, int fd) {
@@ -443,7 +443,7 @@ static void acc_on_accept_mtls(void *d, int fd) {
     };
     g_srv = sevent_ws_accept(g_ev, fd, &cfg);
     if(!g_srv)
-        close(fd);
+        close(fd); /* 契约: 失败后 fd 归调用方 */
 }
 
 static int t_wss_accept_echo(void) {

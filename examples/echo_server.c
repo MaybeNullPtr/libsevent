@@ -66,8 +66,10 @@ static void on_accept(void *d, int fd) {
     printf("[accept] fd=%d\n", fd);
     sevent_stream_conn_init init = {
             .user_data = c, .on_open = on_open, .on_data = on_data, .on_close = on_close, .on_error = on_error};
-    if(sevent_tcp_conn_accept(c, fd, &init) < 0)
-        sevent_tcp_conn_destroy(c); /* 失败: fd 已由本层关闭 */
+    if(sevent_tcp_conn_accept(c, fd, &init) < 0) {
+        sevent_tcp_conn_destroy(c); /* 失败: 对象销毁 */
+        close(fd);                  /* fd 归还调用方 — 谁拥有谁关闭 */
+    }
 }
 
 /* ---- main ---- */

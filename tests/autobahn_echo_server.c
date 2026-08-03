@@ -110,7 +110,7 @@ static void on_accept(void *d, int fd) {
     a->ws              = sevent_ws_accept(g_ctx, fd, &cfg);
     if(!a->ws) {
         free(a);
-        close(fd);
+        close(fd); /* fd 契约: 失败后 fd 归调用方 — 谁拥有谁关闭 */
     }
 }
 

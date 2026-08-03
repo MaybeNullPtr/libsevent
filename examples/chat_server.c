@@ -118,9 +118,10 @@ static void on_accept(void *d, int fd) {
     sevent_stream_conn_init init = {
             .user_data = cl, .on_open = on_open, .on_data = on_data, .on_close = on_close, .on_error = on_error};
     if(sevent_tcp_conn_accept(cl->c, fd, &init) < 0) {
-        /* 失败: fd 已由本层关闭 */
+        /* 失败: fd 归还调用方 */
         client_list_remove(cl);
         sevent_tcp_conn_destroy(cl->c);
+        close(fd);
         free(cl);
     }
 }

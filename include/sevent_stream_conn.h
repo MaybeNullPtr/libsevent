@@ -114,8 +114,8 @@ sevent_stream_conn *sevent_stream_create(sevent_context *ev, const sevent_stream
 int sevent_stream_open(sevent_stream_conn *s, const char *host, uint16_t port, const sevent_stream_conn_init *init);
 
 /* 服务端: 包装已 accept 的连接 (TCP 模式直接可读写; TLS 模式做服务端握手).
- * fd 所有权移交 sevent_stream_conn (失败时已由本层关闭). 语义同 open:
- * 回调由事件循环触发. */
+ * fd 所有权契约: 成功 → 移交本层; 失败 → 归还调用方 (本层不关闭, 调用方
+ * 负责 close). 语义同 open: 回调由事件循环触发. */
 int sevent_stream_accept(sevent_stream_conn *s, int fd, const sevent_stream_conn_init *init);
 
 /* 发送数据 (异步, 立即返回).

@@ -523,15 +523,11 @@ int sevent_tcp_conn_accept(sevent_tcp_conn *c, int fd, const sevent_stream_conn_
     if(fd < 0 || !init || !init->on_open || !init->on_data || t->state != TCP_STATE_IDLE)
         return SEVENT_ERR_INVAL;
     int fl = fcntl(fd, F_GETFL);
-    if(fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) {
-        close(fd); /* accept 失败 = fd 已由本层关闭 (所有权无条件移交) */
-        return SEVENT_ERR_INVAL;
-    }
+    if(fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0)
+        return SEVENT_ERR_INVAL; /* fd 所有权未移交 — 失败归调用方关闭 */
 
-    if(tcp_setup_recv(t, init->recv_buf_size) != 0) {
-        close(fd);
-        return SEVENT_ERR_NOMEM;
-    }
+    if(tcp_setup_recv(t, init->recv_buf_size) != 0)
+        return SEVENT_ERR_NOMEM; /* 同上: fd 归调用方 */
     t->on_open            = init->on_open;
     t->on_data            = init->on_data;
     t->on_close           = init->on_close;
@@ -545,8 +541,9 @@ int sevent_tcp_conn_accept(sevent_tcp_conn *c, int fd, const sevent_stream_conn_
     t->io_handle          = sevent_io_register(
             t->ev, &(sevent_io_handler){.fd = fd, .io_read = on_first_ready, .io_write = on_first_ready, .data = t});
     if(!t->io_handle) {
-        tcp_close_io(t);
-        t->state = TCP_STATE_IDLE; /* 失败后回 IDLE (fd 已由本层关闭) */
+        /* 归还: 不关闭 fd, 仅清除内部所有权 (t->fd 置 INVALID 防 destroy 误关) */
+        t->fd    = SEVENT_INVALID_SOCKET;
+        t->state = TCP_STATE_IDLE; /* 失败后回 IDLE (fd 归调用方关闭) */
         return SEVENT_ERR_NOMEM;
     }
     return 0;

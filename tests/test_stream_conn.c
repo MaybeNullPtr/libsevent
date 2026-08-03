@@ -89,8 +89,9 @@ static void on_accept(void *d, int fd) {
                                   .on_close  = srv_on_close,
                                   .on_error  = srv_on_error};
     if(sevent_stream_accept(s, fd, &cb) < 0) {
-        /* accept 失败: fd 已由本层关闭 */
+        /* accept 失败: fd 归还调用方 */
         sevent_stream_destroy(s);
+        close(fd); /* 谁拥有谁关闭 */
     }
 }
 

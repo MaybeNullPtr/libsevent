@@ -113,7 +113,7 @@ static void on_accept(void *d, int fd) {
     if(!a->ws) {
         free(a->msg_buf);
         free(a);
-        close(fd); /* 库未接管 fd (入口失败) */
+        close(fd); /* fd 契约: 失败后 fd 归调用方 — 谁拥有谁关闭 */
     }
 }
 

@@ -706,11 +706,12 @@ void sevent_http_response_clear(sevent_http_response *resp) {
 
 /* ===== 服务器 ===== */
 
-/* 建连失败清理 (stream 未建/未入列表时安全; conn_cleanup 同步直调语义等价) */
-static void srv_conn_abort(struct sevent_http_conn *c, int fd) {
+/* 建连失败清理 (stream 未建/未入列表时安全; conn_cleanup 同步直调语义等价).
+ * fd 关闭职责: http 层是 fd 的最终拥有者 (acceptor 回调内部) — 全部失败
+ * 分支由调用点 close (stream 层失败归还 fd, 谁拥有谁关闭) */
+static void srv_conn_abort(struct sevent_http_conn *c) {
     conn_stream_kill(c); /* stream 未建 (NULL) 时为空操作 */
     conn_cleanup(c);
-    close(fd);
 }
 
 static void srv_on_accept(void *d, int fd) {
@@ -726,7 +727,8 @@ static void srv_on_accept(void *d, int fd) {
     c->recv_cap = s->cfg.recv_buf_size ? s->cfg.recv_buf_size : HTTP_RECV_BUF_DEFAULT;
     c->recv_buf = (uint8_t *)sevent_i_malloc(c->recv_cap);
     if(!c->recv_buf) {
-        srv_conn_abort(c, fd);
+        close(fd); /* fd 未移交 stream — 归本层关闭 */
+        srv_conn_abort(c);
         return;
     }
 
@@ -744,16 +746,20 @@ static void srv_on_accept(void *d, int fd) {
     scfg.enable_hostname_verify = false; /* 服务端不对对端做 hostname 校验 */
     c->stream                   = sevent_stream_create(s->ev, &scfg);
     if(!c->stream) {
-        srv_conn_abort(c, fd);
+        close(fd); /* fd 未移交 stream — 归本层关闭 */
+        srv_conn_abort(c);
         return;
     }
 
     sevent_stream_conn_init init = conn_stream_init(c);
-    if(sevent_stream_accept(c->stream, fd, &init) < 0) {
-        /* 同步失败 (TLS 握手错误等) → on_error */
-        srv_conn_abort(c, fd);
+    int                     rc   = sevent_stream_accept(c->stream, fd, &init);
+    if(rc < 0) {
+        /* 同步失败: fd 归还本层 (stream 层失败不关闭) — http 层是 fd 的
+         * 最终拥有者 (acceptor 回调内部, 用户不可见), 负责关闭 */
+        srv_conn_abort(c);
+        close(fd);
         if(s->on_error)
-            s->on_error(s->ud, SEVENT_ERR_HANDSHAKE);
+            s->on_error(s->ud, rc);
         return;
     }
     /* 入列表 (on_open 前, 回调栈内不摘除) */

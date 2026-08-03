@@ -75,8 +75,10 @@ static void on_accept(void *d, int fd) {
                                   .on_data   = srv_on_data,
                                   .on_close  = srv_on_close,
                                   .on_error  = srv_on_error};
-    if(sevent_tcp_conn_accept(c, fd, &cb) < 0)
-        sevent_tcp_conn_destroy(c); /* accept 失败: fd 已由本层关闭 */
+    if(sevent_tcp_conn_accept(c, fd, &cb) < 0) {
+        sevent_tcp_conn_destroy(c); /* accept 失败: 对象销毁 */
+        close(fd);                  /* fd 归还调用方 — 谁拥有谁关闭 */
+    }
 }
 
 /* 跑完 pending post: destroy 统一 post 后, 延迟 free 由 run_posts 执行 —
