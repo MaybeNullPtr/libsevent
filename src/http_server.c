@@ -23,6 +23,7 @@
 
 #include <stdarg.h>
 #include <string.h>
+#include <strings.h> /* strcasecmp */
 #include <stdio.h>
 #include <unistd.h> /* close */
 
@@ -143,6 +144,83 @@ static bool conn_dead(const struct sevent_http_conn *c) {
     return c->state == HTTP_CONN_CLOSED || c->state == HTTP_CONN_RELEASED;
 }
 
+/* ===== 状态机: 显式转换 + 日志 =====
+ * 全部状态转换收敛到 http_state_set — 每笔转换打印日志 (stderr, 验证用;
+ * HTTP_STATE_LOG=0 编译关闭), 未注册的转换 (见 http_state_ok 矩阵) 打印
+ * 告警 — 不靠调用时序的侥幸保证, 转换路径自身可观测、可校验. */
+#ifndef HTTP_STATE_LOG
+#define HTTP_STATE_LOG 1
+#endif
+
+static const char *http_state_name(int st) {
+    switch(st) {
+    case HTTP_CONN_NEW:
+        return "NEW";
+    case HTTP_CONN_PARSING:
+        return "PARSING";
+    case HTTP_CONN_REQUEST:
+        return "REQUEST";
+    case HTTP_CONN_AWAIT_RESP:
+        return "AWAIT_RESP";
+    case HTTP_CONN_RESPONDING:
+        return "RESPONDING";
+    case HTTP_CONN_RELEASED:
+        return "RELEASED";
+    case HTTP_CONN_CLOSING:
+        return "CLOSING";
+    case HTTP_CONN_CLOSED:
+        return "CLOSED";
+    default:
+        return "?";
+    }
+}
+
+/* 转换合法性矩阵 (http_server.h 状态注释的显式化):
+ *   NEW → PARSING (on_open) / CLOSING (on_accept close) / CLOSED (srv_cleanup)
+ *   PARSING → REQUEST (分派) / CLOSING (400/413/溢出/超时) / CLOSED
+ *   REQUEST → AWAIT_RESP|RESPONDING (回调返回) / RELEASED (升级) /
+ *             PARSING|CLOSING (回调内完成) / CLOSED
+ *   AWAIT_RESP → PARSING|CLOSING (respond) / RESPONDING (write) / CLOSED
+ *   RESPONDING → PARSING|CLOSING (write_end) / CLOSED
+ *   CLOSING → CLOSED (EOF/错误)   RELEASED|CLOSED: 终态, 无转换 */
+static bool http_state_ok(int old, int ns) {
+    switch(old) {
+    case HTTP_CONN_NEW:
+        return ns == HTTP_CONN_PARSING || ns == HTTP_CONN_CLOSING || ns == HTTP_CONN_CLOSED;
+    case HTTP_CONN_PARSING:
+        return ns == HTTP_CONN_REQUEST || ns == HTTP_CONN_CLOSING || ns == HTTP_CONN_CLOSED;
+    case HTTP_CONN_REQUEST:
+        return ns == HTTP_CONN_AWAIT_RESP || ns == HTTP_CONN_RESPONDING || ns == HTTP_CONN_RELEASED ||
+                ns == HTTP_CONN_PARSING || ns == HTTP_CONN_CLOSING || ns == HTTP_CONN_CLOSED;
+    case HTTP_CONN_AWAIT_RESP:
+        return ns == HTTP_CONN_PARSING || ns == HTTP_CONN_RESPONDING || ns == HTTP_CONN_CLOSING ||
+                ns == HTTP_CONN_CLOSED;
+    case HTTP_CONN_RESPONDING:
+        return ns == HTTP_CONN_PARSING || ns == HTTP_CONN_CLOSING || ns == HTTP_CONN_CLOSED;
+    case HTTP_CONN_CLOSING:
+        return ns == HTTP_CONN_CLOSED;
+    case HTTP_CONN_RELEASED:
+    case HTTP_CONN_CLOSED:
+        return false; /* 终态 */
+    }
+    return false;
+}
+
+static void http_state_set(struct sevent_http_conn *c, int new_state, const char *where) {
+    int old = c->state;
+#if HTTP_STATE_LOG
+    fprintf(stderr, "[http] conn=%p %s→%s (%s)\n", (void *)c, http_state_name(old), http_state_name(new_state), where);
+#endif
+    if(!http_state_ok(old, new_state))
+        fprintf(stderr,
+                "[http] conn=%p ILLEGAL %s→%s (%s)!\n",
+                (void *)c,
+                http_state_name(old),
+                http_state_name(new_state),
+                where);
+    c->state = new_state;
+}
+
 /* 摘列表 (conn_free / release 共用) */
 static void conn_unlink(struct http_server *s, struct sevent_http_conn *c) {
     struct sevent_http_conn **pp = &s->conns;
@@ -197,7 +275,7 @@ static void conn_idle_reset(struct sevent_http_conn *c) {
 static void conn_close_graceful(struct sevent_http_conn *c) {
     if(conn_dying(c))
         return;
-    c->state = HTTP_CONN_CLOSING;
+    http_state_set(c, HTTP_CONN_CLOSING, "close_graceful");
     if(c->stream)
         (void)sevent_stream_shutdown(c->stream, SEVENT_SHUT_WR);
     /* 半关后空闲超时继续适用 (防挂起): timer 已存在, 活动停止后到期关 */
@@ -207,7 +285,7 @@ static void conn_close_graceful(struct sevent_http_conn *c) {
 static void conn_terminate(struct sevent_http_conn *c) {
     if(conn_dead(c))
         return;
-    c->state = HTTP_CONN_CLOSED;
+    http_state_set(c, HTTP_CONN_CLOSED, "terminate");
     conn_idle_stop(c);
     conn_stream_kill(c);
     conn_free(c);
@@ -242,15 +320,14 @@ static void conn_on_open(void *d) {
     struct http_server      *s = c->srv;
     if(c->released)
         return;
-    c->state = HTTP_CONN_NEW;
-    /* 用户 on_accept: 可 close 拒绝 / 持有引用 */
+    /* 用户 on_accept: 可 close 拒绝 / 持有引用 (状态保持 NEW — srv_on_accept 创建时设置) */
     if(s->on_accept)
         s->on_accept(s->ud, c);
     if(conn_dying(c)) {
         conn_idle_reset(c); /* 拒绝分支: CLOSING 挂起也要空闲超时兜底 (防对端不关) */
         return;
     }
-    c->state = HTTP_CONN_PARSING;
+    http_state_set(c, HTTP_CONN_PARSING, "on_open");
     conn_idle_reset(c);
 }
 
@@ -264,11 +341,12 @@ static void conn_on_data(void *d, const uint8_t *data, size_t len) {
          * burst — 残留+新数据超界不代表单请求超限; 处理有轮数上限防 DoS),
          * 仍放不下才关连接 (连接级缓冲不足, 非 413 语义) */
         if(c->state == HTTP_CONN_PARSING) {
-            for(int k = 0;
-                k < HTTP_OVERFLOW_PROCESS_LIMIT && !conn_dying(c) && c->recv_len > 0 && len > c->recv_cap - c->recv_len;
+            for(int k = 0; k < HTTP_OVERFLOW_PROCESS_LIMIT && !conn_dying(c) && c->state == HTTP_CONN_PARSING &&
+                c->recv_len > 0 && len > c->recv_cap - c->recv_len;
                 k++)
                 http_process(c);
-            if(!conn_dying(c) && len <= c->recv_cap - c->recv_len)
+            /* 消费后仍非 PARSING (请求挂起异步) → 下方关闭; 腾出空间则接收 */
+            if(!conn_dying(c) && c->state == HTTP_CONN_PARSING && len <= c->recv_cap - c->recv_len)
                 goto receive; /* 消费后腾出空间 — 接收新数据 */
         }
         conn_close_graceful(c);
@@ -331,22 +409,23 @@ static void request_after_callback(struct sevent_http_conn *c, size_t consumed) 
     if(c->state == HTTP_CONN_PARSING || conn_dying(c) || c->state == HTTP_CONN_RESPONDING)
         return;
     if(c->state == HTTP_CONN_REQUEST)
-        c->state = c->wrote ? HTTP_CONN_RESPONDING : HTTP_CONN_AWAIT_RESP;
+        http_state_set(c, c->wrote ? HTTP_CONN_RESPONDING : HTTP_CONN_AWAIT_RESP, "after_callback");
     conn_idle_reset(c); /* 异步窗口/流式中: 空闲超时适用 (RESPONDING 由超时回调豁免) */
 }
 
 /* 请求分派 (升级预处理 + 回调) — http_process 主循环每完整请求调用一次.
- * 返回 true = 已移交 ws (released), 主循环直接退出 */
+ * 返回 true = 连接已移交/销毁 (TAKEN), 主循环直接退出 — 回调返回后不再
+ * 触碰 c (升级路径回调内可能已释放连接壳, 见 on_upgrade 契约) */
 static bool conn_dispatch(struct sevent_http_conn *c, const sevent_http_msg *m) {
     if(m->upgrade) {
-        /* on_upgrade: 用户决定 拒绝 (respond) / 升级 (release + ws_upgrade).
-         * 升级语义 (Sec-WebSocket-Key/扩展协商) 全部由 ws 层处理 — 请求在
-         * 缓冲中完整移交 (i_take_recv), http 层零 ws 感知 (架构边界) */
+        /* on_upgrade: 用户决定 拒绝 (respond → DECLINED) / 升级
+         * (ws_upgrade → TAKEN). 升级语义 (Sec-WebSocket-Key/扩展协商) 全部
+         * 由 ws 层处理 — 请求在缓冲中完整移交 (i_take_recv), http 层零
+         * ws 感知 (架构边界). 返回值即唯一信息源 — 之后零访问 c */
         if(c->srv->on_upgrade)
-            c->srv->on_upgrade(c->srv->ud, m, c);
-        else
-            http_respond_internal(c, 400, true); /* 未注册升级处理: 明确拒绝 (不静默挂死) */
-        return c->released;                      /* 已移交 ws — http 侧不再管理 */
+            return c->srv->on_upgrade(c->srv->ud, m, c) == SEVENT_HTTP_UPGRADE_TAKEN;
+        http_respond_internal(c, 400, true); /* 未注册升级处理: 明确拒绝 (不静默挂死) */
+        return false;
     }
     if(c->srv->on_request)
         c->srv->on_request(c->srv->ud, m, c);
@@ -356,8 +435,11 @@ static bool conn_dispatch(struct sevent_http_conn *c, const sevent_http_msg *m) 
 static void http_process(struct sevent_http_conn *c) {
     int budget = HTTP_PROCESS_BUDGET;
     for(;;) {
-        /* 关闭/移交后不再处理残留 (状态机: CLOSING/CLOSED/RELEASED 全禁) */
-        if(c->recv_len == 0 || conn_dying(c))
+        /* 仅 PARSING 态可消费分派: 关闭/移交后 (CLOSING/CLOSED/RELEASED)
+         * 不再处理残留; 回调内请求挂起异步 (AWAIT_RESP/RESPONDING) 期间
+         * 不得再分派下一请求 — 一请求一响应契约 (溢出循环反复调本函数
+         * 腾位的前提只在 PARSING 态成立) */
+        if(c->recv_len == 0 || conn_dying(c) || c->state != HTTP_CONN_PARSING)
             return;
         /* 事件循环公平性: 单轮处理预算 — 超限且残留未处理完 → post 让出
          * (粘包海量请求不饿死其他连接; 下一轮 run_posts 续处理) */
@@ -383,9 +465,9 @@ static void http_process(struct sevent_http_conn *c) {
         /* 完整请求 */
         size_t consumed   = (size_t)((const char *)m.body - (const char *)c->recv_buf) + m.body_len;
         c->req_keep_alive = m.keep_alive;
-        c->state          = HTTP_CONN_REQUEST;
-        c->close_pending  = !m.keep_alive; /* 关闭条件①: 请求带 close / HTTP/1.0 */
-        c->wrote          = false;         /* 新请求: 清互斥/流式标记 */
+        http_state_set(c, HTTP_CONN_REQUEST, "dispatch");
+        c->close_pending = !m.keep_alive; /* 关闭条件①: 请求带 close / HTTP/1.0 */
+        c->wrote         = false;         /* 新请求: 清互斥/流式标记 */
 
         if(conn_dispatch(c, &m))
             return; /* 已移交 ws — http 侧不再管理 */
@@ -427,6 +509,16 @@ static int head_append(char *head, size_t cap, size_t *hn, const char *fmt, ...)
     return 0;
 }
 
+/* 自动头注入前查重: 用户已显式设置 Content-Length/Connection → 跳过注入
+ * (用户负责正确性 — 库不生成重复头, RFC 9112 §6.3 重复字段非法) */
+static bool resp_has_header(const sevent_http_response *resp, const char *name) {
+    for(const sevent_http_header *h = resp->headers; h; h = h->next) {
+        if(h->name && strcasecmp(h->name, name) == 0)
+            return true;
+    }
+    return false;
+}
+
 /* 构造头区 (状态行 + 头 + 自动 CL + close 注入) → 入写队列. 返回 0=OK.
  * 校验全部先于任何写入 (body/头非法时不产生半截响应). */
 static int conn_respond_build(struct sevent_http_conn    *c,
@@ -440,6 +532,11 @@ static int conn_respond_build(struct sevent_http_conn    *c,
         return SEVENT_ERR_INVAL;
     if(resp->body_len > 0 && !resp->body)
         return SEVENT_ERR_INVAL; /* body_len>0 但 body=NULL — 校验先于写入 */
+    /* 无 body 状态码 (RFC 9110 §15.3.6 204 / §15.4.5 304 / 1xx): 禁止 CL 与
+     * body — body_len>0 报错显性化, 不生成协议非法报文 */
+    bool no_body_status = resp->status == 204 || resp->status == 304 || (resp->status >= 100 && resp->status < 200);
+    if(no_body_status && resp->body_len > 0)
+        return SEVENT_ERR_INVAL;
 
     /* 头区构造: 4096 超栈预算 → 堆分配, 错误路径 goto 统一释放 */
     char  *head = (char *)sevent_i_malloc(HTTP_HEADER_BUF_SIZE);
@@ -458,13 +555,17 @@ static int conn_respond_build(struct sevent_http_conn    *c,
             goto out;
     }
 
-    /* 自动 Content-Length */
-    if(head_append(head, HTTP_HEADER_BUF_SIZE, &hn, "Content-Length: %zu\r\n", resp->body_len) != 0)
-        goto out;
+    /* 自动 Content-Length: 无 body 状态码 (204/304/1xx, RFC 9110 §8.6.1) 或
+     * 用户已显式设置 → 跳过注入 (用户负责正确性) */
+    if(!no_body_status && !resp_has_header(resp, "Content-Length")) {
+        if(head_append(head, HTTP_HEADER_BUF_SIZE, &hn, "Content-Length: %zu\r\n", resp->body_len) != 0)
+            goto out;
+    }
 
-    /* close 注入: 响应 close 字段 / 内部关闭 / 请求 keep_alive=false */
+    /* close 注入: 响应 close 字段 / 内部关闭 / 请求 keep_alive=false;
+     * 用户已显式设置 Connection → 跳过 (用户负责正确性) */
     bool close_it = resp->close || internal_close || !c->req_keep_alive;
-    if(close_it) {
+    if(close_it && !resp_has_header(resp, "Connection")) {
         if(head_append(head, HTTP_HEADER_BUF_SIZE, &hn, "Connection: close\r\n") != 0)
             goto out;
     }
@@ -499,10 +600,12 @@ static void conn_response_complete(struct sevent_http_conn *c, bool was_async) {
     if(c->close_pending) {
         conn_close_graceful(c);
     } else {
-        c->state = HTTP_CONN_PARSING;
+        http_state_set(c, HTTP_CONN_PARSING, "response_complete");
         conn_idle_reset(c);
-        if(was_async && c->recv_len > 0)
-            (void)sevent_post(c->srv->ev, http_process_post, c);
+        if(was_async && c->recv_len > 0) {
+            if(sevent_post(c->srv->ev, http_process_post, c) != 0)
+                conn_close_graceful(c); /* post 失败 (OOM): 残留不再处理 — 半关收尾 */
+        }
     }
 }
 
@@ -559,7 +662,7 @@ int sevent_http_conn_write(sevent_http_conn *conn, const uint8_t *buf, size_t le
     /* 仅异步窗口转 RESPONDING; 回调内 (REQUEST) 保持 — request_after_callback
      * 按 wrote 区分"回调内已流式"(→RESPONDING) vs "未写"(→AWAIT_RESP) */
     if(c->state == HTTP_CONN_AWAIT_RESP)
-        c->state = HTTP_CONN_RESPONDING;
+        http_state_set(c, HTTP_CONN_RESPONDING, "write");
     return 0;
 }
 
@@ -612,7 +715,7 @@ int sevent_http_conn_i_release(sevent_http_conn *conn) {
     if(c->state != HTTP_CONN_REQUEST)
         return SEVENT_ERR_INVAL; /* 仅 on_upgrade 回调内 (REQUEST 态) */
     c->released = true;
-    c->state    = HTTP_CONN_RELEASED;
+    http_state_set(c, HTTP_CONN_RELEASED, "release");
     conn_idle_stop(c);
     /* 摘列表 (壳由 ws_upgrade 消费释放) */
     conn_unlink(c->srv, c);
@@ -723,7 +826,7 @@ static void srv_on_accept(void *d, int fd) {
         return;
     }
     c->srv      = s;
-    c->state    = HTTP_CONN_NEW;
+    c->state    = HTTP_CONN_NEW; /* 创建初始化 (非转换 — 不经过 http_state_set) */
     c->recv_cap = s->cfg.recv_buf_size ? s->cfg.recv_buf_size : HTTP_RECV_BUF_DEFAULT;
     c->recv_buf = (uint8_t *)sevent_i_malloc(c->recv_cap);
     if(!c->recv_buf) {
@@ -851,7 +954,7 @@ static void srv_cleanup(void *data) {
     struct sevent_http_conn *c = s->conns;
     while(c) {
         struct sevent_http_conn *next = c->next;
-        c->state                      = HTTP_CONN_CLOSED;
+        http_state_set(c, HTTP_CONN_CLOSED, "srv_cleanup");
         conn_idle_stop(c);
         if(s->on_conn_close && !c->released)
             s->on_conn_close(s->ud, c);

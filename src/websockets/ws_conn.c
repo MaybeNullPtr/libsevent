@@ -1672,7 +1672,10 @@ sevent_ws_conn *sevent_ws_upgrade(sevent_http_conn *conn, const sevent_ws_config
     }
     struct sevent_ws_conn *c = ws_conn_new(ev, cfg, false);
     if(!c) {
+        /* 失败收尾: stream 已取走销毁; conn 壳 + 未取的接收缓冲经 i_destroy
+         * 回收 (RELEASED 态 — 升级决定已下, 收尾责任在 ws 层) */
         sevent_stream_destroy(stream);
+        sevent_http_conn_i_destroy(conn);
         return NULL;
     }
     /* 缓冲移交: 完整请求 + 残留 (粘包帧) 拷贝到新缓冲.
@@ -1689,6 +1692,8 @@ sevent_ws_conn *sevent_ws_upgrade(sevent_http_conn *conn, const sevent_ws_config
     if(!c->recv_buf || !c->frag_buf) {
         c->stream = stream; /* 让 abort 收尾 stream */
         ws_conn_abort(c);
+        sevent_i_free(rbuf);              /* 已取走的 http 缓冲 — 失败路径必须归还 (泄漏回归) */
+        sevent_http_conn_i_destroy(conn); /* 同上: conn 壳回收 */
         return NULL;
     }
     if(rbuf) {

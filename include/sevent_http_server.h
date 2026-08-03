@@ -7,7 +7,8 @@
  *      (stream_shutdown(WR): 发完响应 + FIN, 半双工)
  *    - 响应构造: 声明式结构体 + 辅助函数 (set 查重/add/del), http 层自己
  *      构造发送 (自动 Content-Length / Connection: close 注入)
- *    - 升级出口: release(conn) → ws_upgrade 消费 (两段式, 决定权在用户)
+ *    - 升级出口: on_upgrade 内调用 ws_upgrade (升级决定 = 调用), 返回值
+ *      TAKEN/DECLINED 告知 http 层是否继续管理连接 (回调后 http 层零访问)
  *
  *  线程: 全部 [loop 线程] — 连接对象 API 仅事件循环线程调用
  *        (回调内外均可, 跨线程调用无保护).
@@ -46,7 +47,20 @@ typedef struct sevent_http_server_config {
 /* 连接就绪 (stream/TLS 完成, 解析前): 可 close 拒绝 (黑名单/连接数超限), 可持有引用 */
 typedef void (*sevent_http_on_accept_fn)(void *ud, sevent_http_conn *conn);
 typedef void (*sevent_http_on_request_fn)(void *ud, const sevent_http_msg *req, sevent_http_conn *conn);
-typedef void (*sevent_http_on_upgrade_fn)(void *ud, const sevent_http_msg *req, sevent_http_conn *conn);
+
+/* 升级回调返回: 连接是否已由回调处理完毕 (http 层不再触碰).
+ * 契约: 调用了 sevent_ws_upgrade → 无论返回句柄是否非 NULL 一律 TAKEN
+ * (调用即接管 — 升级决定已下, 连接成功归 ws / 失败已销毁, 均脱离 http 管理);
+ * 仅未调用 (respond 拒绝等) → DECLINED (http 层继续管理). 误用返回
+ * DECLINED 而连接已移交 = 编程错误 (对已脱离管理的连接操作). */
+typedef enum {
+    SEVENT_HTTP_UPGRADE_TAKEN = 0, /* 已接管: 连接归 ws (或已销毁) — http 层零访问 */
+    SEVENT_HTTP_UPGRADE_DECLINED,  /* 未接管: 连接仍在 http 管理下, 正常流程继续 */
+} sevent_http_upgrade_result_t;
+
+typedef sevent_http_upgrade_result_t (*sevent_http_on_upgrade_fn)(void                  *ud,
+                                                                  const sevent_http_msg *req,
+                                                                  sevent_http_conn      *conn);
 /* 连接将销毁 (用户清理引用); 升级转交的连接不走本回调 */
 typedef void (*sevent_http_on_conn_close_fn)(void *ud, sevent_http_conn *conn);
 /* 传输层错误 (stream accept/TLS 握手失败): 连接从未建立 — 无 conn 参数.
@@ -55,13 +69,13 @@ typedef void (*sevent_http_on_error_fn)(void *ud, int err);
 
 sevent_http_server *sevent_http_server_create(sevent_context *ev, const sevent_http_server_config *cfg);
 
-int      sevent_http_server_listen(sevent_http_server          *s,
-                                   const char                  *host,
-                                   uint16_t                     port,
-                                   int                          backlog,
-                                   sevent_http_on_accept_fn     on_accept,     /* 可选 */
-                                   sevent_http_on_request_fn    on_request,    /* 必填其一 */
-                                   sevent_http_on_upgrade_fn    on_upgrade,    /* 必填其一 */
+int      sevent_http_server_listen(sevent_http_server       *s,
+                                   const char               *host,
+                                   uint16_t                  port,
+                                   int                       backlog,
+                                   sevent_http_on_accept_fn  on_accept,  /* 可选 */
+                                   sevent_http_on_request_fn on_request, /* 必填其一 */
+                                   sevent_http_on_upgrade_fn on_upgrade, /* 必填其一; 返回 TAKEN=已接管/DECLINED=继续 */
                                    sevent_http_on_conn_close_fn on_conn_close, /* 可选 */
                                    sevent_http_on_error_fn      on_error,      /* 可选 */
                                    void                        *ud);

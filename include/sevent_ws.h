@@ -21,6 +21,7 @@
 #define SEVENT_WS_H
 
 #include "sevent.h"
+#include "sevent_http_server.h" /* SEVENT_HTTP_UPGRADE_TAKEN (upgrade 回调返回契约) */
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -173,7 +174,9 @@ sevent_ws_conn *sevent_ws_accept(sevent_context *ev, int fd, const sevent_ws_con
  *       移交时库负责关闭底层连接, 用户无需善后.
  * 约束: 仅 on_upgrade 回调内调用 (REQUEST 态); cfg 中 host/port/path/TLS
  *       字段忽略 (连接已建立); on_http_response 不触发; 成功后 http_conn
- *       句柄作废 (壳由库延迟释放).
+ *       句柄作废 (壳由库延迟释放). on_upgrade 回调返回契约: 调用了本函数
+ *       一律返回 SEVENT_HTTP_UPGRADE_TAKEN (调用即接管 — 无论句柄是否
+ *       NULL, 连接已脱离 http 管理).
  * 线程: [loop 线程].
  */
 sevent_ws_conn *sevent_ws_upgrade(sevent_http_conn *conn, const sevent_ws_config *cfg);

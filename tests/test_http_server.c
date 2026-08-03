@@ -48,18 +48,20 @@ static char   g_last_body[512];
 static size_t g_last_body_len;
 static int    g_last_req_keepalive;
 
-static int               g_reject_accept;           /* on_accept 里 close 拒绝 */
-static int               g_use_write_path;          /* on_request 走 write 路径 (全手写 + write_end) */
-static int               g_async_mode;              /* on_request 走异步 respond (post 延迟, 栈外调用) */
-static int               g_async_write_end;         /* 回调内 write 开始流式 → 栈外 write_end 收尾 */
-static int               g_try_respond_after_write; /* 回调内 write 后尝试 respond (互斥验证) */
-static int               g_write_respond_rc;
-static int               g_destroy_on_first; /* 首请求回调内 destroy server (UAF 回归) */
-static int               g_destroy_done;
-static int               g_respond_close; /* on_request 走 resp.close=true */
-static int               g_matrix_mode;   /* 矩阵非法调用: 回调内记录 rc */
-static int               g_no_upgrade;    /* listen 时 on_upgrade=NULL */
-static int               g_m_rc_respond_ok, g_m_rc_respond2, g_m_rc_write, g_m_rc_write_end;
+static int g_reject_accept;           /* on_accept 里 close 拒绝 */
+static int g_use_write_path;          /* on_request 走 write 路径 (全手写 + write_end) */
+static int g_async_mode;              /* on_request 走异步 respond (post 延迟, 栈外调用) */
+static int g_async_write_end;         /* 回调内 write 开始流式 → 栈外 write_end 收尾 */
+static int g_try_respond_after_write; /* 回调内 write 后尝试 respond (互斥验证) */
+static int g_write_respond_rc;
+static int g_destroy_on_first; /* 首请求回调内 destroy server (UAF 回归) */
+static int g_destroy_done;
+static int g_respond_close; /* on_request 走 resp.close=true */
+static int g_matrix_mode;   /* 矩阵非法调用: 回调内记录 rc */
+static int g_no_upgrade;    /* listen 时 on_upgrade=NULL */
+static int g_hang_mode;     /* 回调内挂起: 不 respond 不 post (AWAIT_RESP 永久窗口) */
+static int g_resp_mode;     /* D5 头注入规则: 1=204 2=304 3=200空body 4=用户CL 5=用户Connection 6=204+body */
+static int g_m_rc_respond_ok, g_m_rc_respond2, g_m_rc_write, g_m_rc_write_end;
 static sevent_http_conn *g_async_conn;
 
 static void async_respond_cb(void *data) {
@@ -105,6 +107,47 @@ static void on_request(void *ud, const sevent_http_msg *req, sevent_http_conn *c
         g_last_body[req->body_len] = 0;
     }
     g_last_body_len = req->body_len;
+    if(g_hang_mode) {
+        /* 挂起: 不 respond 不 post — AWAIT_RESP 永久窗口 (溢出契约测试用) */
+        g_async_conn = conn;
+        return;
+    }
+    if(g_resp_mode) {
+        /* D5 头注入规则验证 (rc 记录到 g_m_rc_respond_ok) */
+        sevent_http_response resp = {0};
+        switch(g_resp_mode) {
+        case 1: /* 204: 禁止 CL */
+            resp.status = 204;
+            break;
+        case 2: /* 304: 禁止 CL */
+            resp.status = 304;
+            break;
+        case 3: /* 200 空 body: 仍注入 CL:0 (keep-alive 终止边界) */
+            resp.status = 200;
+            break;
+        case 4: /* 用户显式 CL: 库跳过注入 (不重复) */
+            resp.status   = 200;
+            resp.body     = "x";
+            resp.body_len = 1;
+            sevent_http_response_header_set(&resp, "Content-Length", "99");
+            break;
+        case 5: /* 用户显式 Connection: 库跳过 close 注入 */
+            resp.status   = 200;
+            resp.body     = "x";
+            resp.body_len = 1;
+            resp.close    = true;
+            sevent_http_response_header_set(&resp, "Connection", "keep-alive");
+            break;
+        case 6: /* 204 + body: 协议禁止 → INVAL */
+            resp.status       = 204;
+            resp.body         = "x";
+            resp.body_len     = 1;
+            g_m_rc_respond_ok = sevent_http_conn_respond(conn, &resp);
+            return;
+        }
+        g_m_rc_respond_ok = sevent_http_conn_respond(conn, &resp);
+        return;
+    }
     if(g_destroy_on_first && !g_destroy_done) {
         /* 首请求回调内 destroy server — 连接仍活跃 (srv_cleanup 排队中),
          * 主循环继续处理剩余粘包 → budget 耗尽让出 → 与 srv_cleanup 同轮 post */
@@ -180,18 +223,19 @@ static void on_request(void *ud, const sevent_http_msg *req, sevent_http_conn *c
     sevent_http_conn_respond(conn, &resp);
 }
 
-static void on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *conn) {
+static sevent_http_upgrade_result_t on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *conn) {
     (void)ud;
     (void)req;
     if(g_cb_count < MAX_CB) {
         g_cb_type[g_cb_count] = 2;
         g_cb_count++;
     }
-    /* 默认: 拒绝 */
+    /* 默认: 拒绝 (respond → DECLINED, 连接留 http server) */
     sevent_http_response resp = {0};
     resp.status               = 404;
     resp.close                = true;
     sevent_http_conn_respond(conn, &resp);
+    return SEVENT_HTTP_UPGRADE_DECLINED;
 }
 
 static void on_conn_close(void *ud, sevent_http_conn *conn) {
@@ -268,6 +312,12 @@ static void pump_until(int (*cond)(void)) {
 
 /* 连接已建立 (on_accept 触发) */
 static int conn_established(void) { return g_cb_count >= 1; }
+
+/* 请求1 已分派 (hang_overflow: accept + request) */
+static int req1_hung(void) { return g_cb_count >= 2; }
+
+/* respond 返回值已记录 (header_rules) */
+static int resp_rc_set(void) { return g_m_rc_respond_ok != 0; }
 
 /* ===== 客户端工具 ===== */
 
@@ -966,6 +1016,102 @@ static void t_write_respond_mutex(void) {
     server_stop();
 }
 
+static void t_hang_overflow(void) {
+    /* D1 行为契约: 异步挂起 (AWAIT_RESP) + 缓冲溢出 → 关连接, 不二次分派.
+     * 构造: 请求1 (小, 回调挂起) + 请求2 (大, 完整) 粘包一次发送 (≤ 4096
+     * 接收缓冲) → 请求1 挂起, 残留请求2 → 触发数据使缓冲溢出 → 溢出分支
+     * state!=PARSING → 半关. 断言: 请求回调仅 1 次 + 连接 EOF. */
+    int port = server_start(60000);
+    CHECK(port > 0, "server listen");
+    g_hang_mode = 1;
+    g_cb_count  = 0;
+    int fd      = tcp_connect_to((uint16_t)port);
+    CHECK(fd >= 0, "connect");
+    if(fd >= 0) {
+        char req1[] = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+        char req2[4100];
+        int  n = snprintf(req2, sizeof(req2), "GET /big HTTP/1.1\r\nHost: x\r\n");
+        for(int i = 0; i < 39; i++)
+            n += snprintf(req2 + n, sizeof(req2) - (size_t)n, "X-Big-%02d: %-90s\r\n", i, "a");
+        n            += snprintf(req2 + n, sizeof(req2) - (size_t)n, "\r\n");
+        size_t s2    = (size_t)n;
+        size_t total = sizeof(req1) - 1 + s2;
+        CHECK(total <= 4096, "sticky fits recv buf (total=%zu)", total);
+        char *pkt = (char *)malloc(total);
+        CHECK(pkt != NULL, "pkt alloc");
+        if(pkt) {
+            memcpy(pkt, req1, sizeof(req1) - 1);
+            memcpy(pkt + sizeof(req1) - 1, req2, s2);
+            CHECK(send_all(fd, pkt, total) == 0, "send sticky");
+            free(pkt);
+        }
+        /* 请求1 挂起 (AWAIT_RESP), 残留请求2 占缓冲 */
+        pump_until(req1_hung);
+        CHECK(g_cb_count == 2 && g_cb_type[1] == 1, "request1 dispatched once");
+        /* 触发数据: 使残留+新数据溢出接收缓冲 */
+        char trig[128];
+        memset(trig, 't', sizeof(trig));
+        CHECK(send_all(fd, trig, sizeof(trig)) == 0, "send trigger");
+        /* 溢出 → 半关 → EOF; 请求2 不得被分派 */
+        CHECK(wait_eof(fd) == 1, "connection closed by overflow");
+        CHECK(g_cb_count == 2, "request2 NOT dispatched (count=%d)", g_cb_count);
+        close(fd);
+    }
+    g_hang_mode = 0;
+    server_stop();
+}
+
+static void t_header_rules(void) {
+    /* D5: 自动头注入规则 —
+     * 204/304 不注入 CL (RFC 9110 §8.6.1 MUST NOT); 200 空 body 仍注入 CL:0
+     * (keep-alive 响应终止边界); 用户显式设置 CL/Connection → 库跳过注入
+     * (不生成重复头, RFC 9112 §6.3); 204 + body → respond 返回 INVAL. */
+    int port = server_start(60000);
+    CHECK(port > 0, "server listen");
+    static const char *req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+    static const struct {
+        int         mode;
+        const char *has;
+        const char *not_has;
+    } cases[] = {
+            {1, "HTTP/1.1 204 No Content", "Content-Length"},
+            {2, "HTTP/1.1 304 Not Modified", "Content-Length"},
+            {3, "Content-Length: 0", NULL},
+            {4, "Content-Length: 99", "Content-Length: 1"},
+            {5, "Connection: keep-alive", "Connection: close"},
+    };
+    for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        g_resp_mode = cases[i].mode;
+        g_cb_count  = 0;
+        int fd      = tcp_connect_to((uint16_t)port);
+        CHECK(fd >= 0, "connect");
+        if(fd >= 0) {
+            CHECK(send_all(fd, req, strlen(req)) == 0, "send");
+            char buf[1024];
+            int  n = recv_until(fd, buf, sizeof(buf), "\r\n\r\n");
+            CHECK(n > 0, "got response");
+            CHECK(strstr(buf, cases[i].has) != NULL, "expect: %s", cases[i].has);
+            if(cases[i].not_has)
+                CHECK(strstr(buf, cases[i].not_has) == NULL, "not expect: %s", cases[i].not_has);
+            close(fd);
+        }
+    }
+    /* 204 + body → INVAL (协议禁止, 错误显性化) */
+    g_resp_mode       = 6;
+    g_cb_count        = 0;
+    g_m_rc_respond_ok = 0;
+    int fd            = tcp_connect_to((uint16_t)port);
+    CHECK(fd >= 0, "connect 204+body");
+    if(fd >= 0) {
+        CHECK(send_all(fd, req, strlen(req)) == 0, "send");
+        pump_until(resp_rc_set);
+        CHECK(g_m_rc_respond_ok == SEVENT_ERR_INVAL, "204+body → INVAL (rc=%d)", g_m_rc_respond_ok);
+        close(fd);
+    }
+    g_resp_mode = 0;
+    server_stop();
+}
+
 /* ===== 注册 ===== */
 
 typedef struct {
@@ -995,6 +1141,8 @@ static const test_entry tests[] = {
         {"write_respond_mutex", t_write_respond_mutex},
         {"idle_timeout", t_idle_timeout},
         {"on_accept_reject", t_on_accept_reject},
+        {"hang_overflow", t_hang_overflow},
+        {"header_rules", t_header_rules},
         {NULL, NULL},
 };
 

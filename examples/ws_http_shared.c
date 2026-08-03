@@ -107,7 +107,7 @@ static void on_request(void *ud, const sevent_http_msg *req, sevent_http_conn *c
     (void)sevent_http_conn_respond(conn, &resp);
 }
 
-static void on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *conn) {
+static sevent_http_upgrade_result_t on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *conn) {
     (void)ud;
     (void)req;
     struct ws_app *a = (struct ws_app *)calloc(1, sizeof(*a));
@@ -117,7 +117,7 @@ static void on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *c
         sevent_http_response_init(&resp);
         resp.status = 503;
         (void)sevent_http_conn_respond(conn, &resp);
-        return;
+        return SEVENT_HTTP_UPGRADE_DECLINED;
     }
     /* cfg 为栈局部: 库内部自有拷贝, 返回后可安全释放.
      * 升级即调用 (release 已并入): stream + 缓冲移交, 同步握手 */
@@ -133,6 +133,8 @@ static void on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *c
         free(a->msg_buf);
         free(a);
     }
+    /* 契约: 调用了 ws_upgrade 一律 TAKEN (调用即接管 — 连接已脱离 http 管理) */
+    return SEVENT_HTTP_UPGRADE_TAKEN;
 }
 
 static void on_conn_close(void *ud, sevent_http_conn *conn) {

@@ -33,6 +33,7 @@
 #include <sys/poll.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <dirent.h> /* count_fds (/proc/self/fd) */
 
 #ifdef SEVENT_WS_TLS
 #ifndef TEST_CERTS_DIR
@@ -118,7 +119,13 @@ static void flush_posts(sevent_context *ev) {
         int post_count = -1;
         sevent_get_counts(ev, NULL, NULL, &post_count);
         if(post_count <= 0)
-            return;
+            break;
+        sevent_wakeup(ev);
+        sevent_run_once(ev);
+    }
+    /* death_io/death_timer 由下一轮 loop 阶段 0 释放 — OOM 注入遍 (所有
+     * post 同步执行) 时 post 队列可能本就为空, 补跑轮次确保死亡链表清空 */
+    for(int i = 0; i < 3; i++) {
         sevent_wakeup(ev);
         sevent_run_once(ev);
     }
@@ -400,7 +407,7 @@ static int cli_connect(sevent_context *ev, int port, int tls, sevent_ws_conn **w
 
 static sevent_http_server *g_hsrv;
 
-static void http_on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *conn) {
+static sevent_http_upgrade_result_t http_on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *conn) {
     (void)ud;
     (void)req;
     static const sevent_ws_config cfg = {
@@ -409,6 +416,8 @@ static void http_on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_co
             .on_error   = srv_on_error,
     };
     g_srv = sevent_ws_upgrade(conn, &cfg);
+    /* 契约: 调用了 ws_upgrade 一律 TAKEN (调用即接管) */
+    return SEVENT_HTTP_UPGRADE_TAKEN;
 }
 
 /* ==================== wss (SEVENT_WS_TLS) ==================== */
@@ -819,6 +828,201 @@ static int t_accept_bad_request(void) {
     return ok ? 0 : 1;
 }
 
+/* ==================== OOM 注入 (D2/D4/D7 回归) ====================
+ * 用可替换 allocator 注入分配失败, 验证失败路径的资源收尾:
+ *   - ws_upgrade 内部 OOM → NULL + 连接壳经 i_destroy 回收 (alloc 计数平衡)
+ *   - ws_accept 各失败分支 → fd 一律已由库关闭 (fcntl → EBADF) */
+
+static int   g_fail_after; /* 0=不失败; N=本轮第 N 次分配请求起失败 */
+static int   g_alloc_req;  /* 分配请求数 (fail_after 判定) */
+static int   g_alloc_ok;   /* 成功分配数 (平衡断言: == g_frees) */
+static int   g_frees;
+static void *fail_malloc(size_t sz) {
+    g_alloc_req++;
+    if(g_fail_after > 0 && g_alloc_req >= g_fail_after)
+        return NULL;
+    g_alloc_ok++;
+    return malloc(sz);
+}
+static void fail_free(void *p) {
+    if(p)
+        g_frees++;
+    free(p);
+}
+
+/* upgrade OOM: 记录回调时已发生分配数 (探测 ws_upgrade 内部分配序号) */
+static int                          g_upg_at_cb; /* 升级回调时的 g_alloc_req */
+static int                          g_upg_ok;    /* 1=回调内 ws_upgrade 返回句柄 */
+static int                          g_upg_oom;   /* 1=回调内 ws_upgrade 返回 NULL */
+static sevent_http_upgrade_result_t upg_oom_cb(void *ud, const sevent_http_msg *req, sevent_http_conn *conn) {
+    (void)ud;
+    (void)req;
+    g_upg_at_cb                       = g_alloc_req;
+    static const sevent_ws_config cfg = {0};
+    g_srv                             = sevent_ws_upgrade(conn, &cfg);
+    if(g_srv)
+        g_upg_ok = 1;
+    else
+        g_upg_oom = 1;
+    return SEVENT_HTTP_UPGRADE_TAKEN; /* 契约: 调用即接管 */
+}
+
+static int t_upgrade_oom(void) {
+    /* D2+D4: ws_upgrade 内部分配失败 (ws_conn_new NEW0 / recv_buf / frag_buf)
+     * → 返回 NULL + i_destroy 回收连接壳 (成功分配数与释放数平衡, 无泄漏) +
+     * 无崩溃. 分配序 (upgrade 路径, 回调后): 1=NEW0 2=recv_buf 3=frag_buf. */
+    sevent_context *ev = sevent_create();
+    if(!ev)
+        return 1;
+    g_ev   = ev;
+    g_hsrv = sevent_http_server_create(ev, &(sevent_http_server_config){0});
+    if(!g_hsrv)
+        return 1;
+    if(sevent_http_server_listen(g_hsrv, "127.0.0.1", 0, 8, NULL, NULL, upg_oom_cb, NULL, NULL, NULL) < 0)
+        return 1;
+    int port = sevent_http_server_port(g_hsrv);
+    if(port <= 0)
+        return 1;
+    if(sevent_set_allocator(fail_malloc, fail_free) != SEVENT_SUCCESS)
+        return 1;
+
+    char req[512];
+    int  n = raw_build_upgrade(req, sizeof(req), "dGhlIHNhbXBsZSBub25jZQ==", "13", NULL);
+    if(n < 0)
+        return 1;
+    int ok = 1;
+
+    /* 基线遍 (不失败): 数升级回调时的分配数 */
+    g_fail_after = 0;
+    g_alloc_req = g_alloc_ok = g_frees = 0;
+    g_upg_ok = g_upg_oom = 0;
+    g_srv                = NULL;
+    int fd               = raw_connect(port);
+    if(fd < 0 || send(fd, req, (size_t)n, 0) < 0) {
+        ok = 0;
+    } else {
+        run_until(ev, &g_upg_ok, 200); /* 升级成功 → 回调内句柄非 NULL */
+        if(!g_upg_ok)
+            ok = 0;
+        close(fd);
+        if(g_srv) {
+            sevent_ws_destroy(g_srv);
+            g_srv = NULL;
+        }
+        flush_posts(ev);
+        int base = g_upg_at_cb;
+        if(g_alloc_ok != g_frees)
+            ok = 0; /* 基线遍也应平衡 */
+        /* 注入遍: 升级回调后第 1/2/3 次分配失败 */
+        for(int k = 1; k <= 3 && ok; k++) {
+            g_fail_after = base + k;
+            g_alloc_req  = 0;
+            g_upg_oom    = 0;
+            g_srv        = NULL;
+            int fd2      = raw_connect(port);
+            if(fd2 < 0 || send(fd2, req, (size_t)n, 0) < 0) {
+                ok = 0;
+                if(fd2 >= 0)
+                    close(fd2);
+                break;
+            }
+            run_until(ev, &g_upg_oom, 200); /* ws_upgrade 返回 NULL */
+            close(fd2);
+            flush_posts(ev); /* i_destroy 的 conn_cleanup 是 post 延迟 */
+            if(!g_upg_oom) {
+                fprintf(stderr, "  [upgrade_oom] k=%d: ws_upgrade did NOT fail\n", k);
+                ok = 0;
+                break;
+            }
+            if(g_alloc_ok != g_frees) {
+                fprintf(stderr,
+                        "  [upgrade_oom] k=%d: alloc leak (ok=%d frees=%d, req=%d, at_cb=%d, fail_after=%d, oom=%d)\n",
+                        k,
+                        g_alloc_ok,
+                        g_frees,
+                        g_alloc_req,
+                        g_upg_at_cb,
+                        g_fail_after,
+                        g_upg_oom);
+                ok = 0;
+                break;
+            }
+        }
+    }
+    sevent_set_allocator(NULL, NULL);
+    sevent_http_server_destroy(g_hsrv);
+    g_hsrv = NULL;
+    flush_posts(ev);
+    sevent_destroy(ev);
+    return ok ? 0 : 1;
+}
+
+/* fd 计数 (/proc/self/fd) — fd 泄漏兜底验证 */
+static int count_fds(void) {
+    DIR *d = opendir("/proc/self/fd");
+    int  n = 0;
+    if(d) {
+        struct dirent *e;
+        while((e = readdir(d))) {
+            if(e->d_name[0] != '.')
+                n++;
+        }
+        closedir(d);
+    }
+    return n;
+}
+
+static int t_accept_oom_fd(void) {
+    /* 契约 B (失败归还): ws_accept 各失败分支 → fd 仍归调用方 (fcntl 成功)
+     * → 调用方负责 close; 库误关 fd (fcntl→EBADF) 或漏关 (fd 计数增长) 均失败.
+     * 注入分支: 1=NEW0 2=recv_buf 3=frag_buf 4=stream tcp NEW0 5=stream 壳
+     * 6=stream accept 内部缓冲. */
+    sevent_context *ev = sevent_create();
+    if(!ev)
+        return 1;
+    g_ev = ev;
+    if(sevent_set_allocator(fail_malloc, fail_free) != SEVENT_SUCCESS)
+        return 1;
+    static const sevent_ws_config cfg     = {.on_open = srv_on_open};
+    int                           ok      = 1;
+    int                           base_fd = count_fds();
+    for(int k = 1; k <= 6 && ok; k++) {
+        g_fail_after = k;
+        g_alloc_req  = 0;
+        g_srv        = NULL;
+        int sv[2];
+        if(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+            ok = 0;
+            break;
+        }
+        g_srv = sevent_ws_accept(ev, sv[0], &cfg);
+        if(g_srv) {
+            fprintf(stderr, "  [accept_oom_fd] k=%d: accept unexpectedly succeeded\n", k);
+            ok = 0;
+            sevent_ws_destroy(g_srv);
+            g_srv = NULL;
+        }
+        /* 失败后 fd 必须仍归调用方 (打开) — 库不得关闭 */
+        int fl = fcntl(sv[0], F_GETFL);
+        if(fl < 0) {
+            fprintf(stderr, "  [accept_oom_fd] k=%d: fd closed by lib (fcntl errno=%d)\n", k, errno);
+            ok = 0;
+        }
+        close(sv[0]); /* 调用方负责关闭 */
+        close(sv[1]);
+        flush_posts(ev);
+    }
+    /* fd 泄漏兜底: 全部归还并关闭后, fd 数不得增长 */
+    int end_fd = count_fds();
+    if(end_fd != base_fd) {
+        fprintf(stderr, "  [accept_oom_fd] fd leak (base=%d end=%d)\n", base_fd, end_fd);
+        ok = 0;
+    }
+    sevent_set_allocator(NULL, NULL);
+    sevent_destroy(ev);
+    return ok ? 0 : 1;
+}
+
 /* ==================== main ==================== */
 
 int main(void) {
@@ -836,6 +1040,8 @@ int main(void) {
             {"upgrade_sticky", t_upgrade_sticky},
             {"accept_unmasked", t_accept_unmasked},
             {"accept_bad_request", t_accept_bad_request},
+            {"upgrade_oom", t_upgrade_oom},
+            {"accept_oom_fd", t_accept_oom_fd},
 #ifdef SEVENT_WS_TLS
             {"wss_accept_echo", t_wss_accept_echo},
             {"wss_upgrade_echo", t_wss_upgrade_echo},
