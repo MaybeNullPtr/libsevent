@@ -14,9 +14,10 @@
 
 共用端口:  sevent_http_server 监听 (端口宿主)
              ├─ 普通请求 → on_request → 应用层 http 处理 (keep-alive 多请求)
-             └─ Upgrade 请求 → on_upgrade
-                    ├─ 拒绝: respond(4xx) → 连接留 http server
-                    └─ 升级: release(conn) → sevent_ws_upgrade(conn, ws_cfg) → ws_conn
+             └─ Upgrade 请求 → on_upgrade (返回 TAKEN/DECLINED 告知接管与否)
+                    ├─ 拒绝: respond(4xx) → DECLINED → 连接留 http server
+                    └─ 升级: sevent_ws_upgrade(conn, ws_cfg) → TAKEN
+                           (调用即接管: 无论句柄是否 NULL, 连接已脱离 http 管理)
 
 独立端口:  tcp_acceptor → sevent_ws_accept(fd, ws_cfg) → ws_conn
              (内部 sevent_http_parse, 非升级请求 → 400)
@@ -33,11 +34,14 @@
 ### 3.1 独立端口入口
 
 ```c
-/* fd 来自 tcp_acceptor 的 on_accept; 所有权移交本层 (失败时已关闭).
+/* fd 来自 tcp_acceptor 的 on_accept; 所有权契约: 成功 → 移交本层 (调用方不得
+ * 再使用); 失败 → 归还调用方, 调用方负责 close (谁拥有谁关闭 — 库不关闭).
  * 流程: stream 建连 (enable_tls 时含 TLS 服务端握手) → ws 升级 (收请求回 101).
  * 返回: 句柄 (on_open 通知升级完成, on_error 通知失败), NULL=参数错误/内存不足. */
 sevent_ws_conn *sevent_ws_accept(sevent_context *ev, int fd, const sevent_ws_config *cfg);
 ```
+
+**fd 契约（全 accept 系统一）**：`sevent_tcp_conn_accept` / `sevent_stream_accept` / `sevent_ws_accept` 同规则——**成功才接管，失败归还**（失败时 fd 仍打开、归调用方）。http_server 内部同理：`srv_on_accept` 是 fd 最终拥有者（acceptor 回调内部，用户不可见），stream accept 失败由 http 层自关。
 
 ### 3.2 共用端口入口（升级转移）
 
@@ -48,11 +52,13 @@ sevent_ws_conn *sevent_ws_accept(sevent_context *ev, int fd, const sevent_ws_con
  *         缓冲含完整升级请求 + 粘包残留) → ws 层自行解析请求 (与 accept
  *         同一条 ws_handshake_data_server 路径, http 零 ws 感知) → 同步握手.
  * 升级成功: conn 句柄作废 (http_conn 壳由库延迟释放), 回调返回后 http server
- *      检测 RELEASED → 跳过收尾; ws_cfg 中 TLS 字段一律忽略 (stream 已在
+ *      检测 TAKEN → 跳过收尾; ws_cfg 中 TLS 字段一律忽略 (stream 已在
  *      http_server 侧完成 TLS 握手); ws_conn 已 OPEN, on_open 在 ws_upgrade
  *      调用栈内同步触发.
- * 失败 (NULL): 非法状态 → 连接留 http server; 资源已移交后失败 → 库关闭底层
- *      连接 (无人管理) — 用户无需善后. */
+ * 失败 (NULL): 非法状态 → 连接留 http server; 资源已移交后失败 (OOM) →
+ *      ws 层负责收尾 (stream 销毁 + 移交缓冲释放 + conn 壳 i_destroy),
+ *      用户无需善后. on_upgrade 返回契约: 调用了本函数一律 TAKEN
+ *      (无论句柄是否 NULL — 连接已脱离 http 管理). */
 sevent_ws_conn *sevent_ws_upgrade(sevent_http_conn *conn, const sevent_ws_config *ws_cfg);
 ```
 
@@ -60,11 +66,14 @@ sevent_ws_conn *sevent_ws_upgrade(sevent_http_conn *conn, const sevent_ws_config
 
 | 内部接口 | 职责 | 状态 |
 |---|---|---|
+| `sevent_http_conn_i_release` | 升级决定: 置 RELEASED + 摘列表 + 停空闲超时 (仅 on_upgrade 内, REQUEST 态) | 已实现 |
 | `sevent_http_conn_i_detach_stream` | 取走 stream 所有权 (RELEASED 态) | 已实现 |
 | `sevent_http_conn_i_take_recv` | 取走解析缓冲 (含**完整升级请求** + 粘包残留, len/cap 输出) | 已实现 |
 | `sevent_http_conn_i_destroy` | 消费完成后延迟释放 http_conn 壳 (post) | 已实现 |
 | `sevent_http_conn_i_ev` | 事件循环上下文 (ws_upgrade 建 ws_conn 用) | 已实现 |
 | `sevent_stream_conn_i_set_callbacks` | 换 stream 回调组 (http 回调 → ws 回调) | 已实现 |
+
+**升级失败路径收尾（OOM 全链，测试验证）**：`ws_conn_new` 失败 / ws 缓冲分配失败 → `sevent_stream_destroy(stream)`（fd 由 stream 层关）+ **`sevent_i_free(rbuf)`**（已取走的 http 缓冲必须归还 — 泄漏回归）+ `sevent_http_conn_i_destroy(conn)`（壳 + 未取的 http 缓冲回收）。三条缺一即泄漏（allocator 计数平衡断言覆盖）。
 
 ### 3.3 `sevent_ws_config` 字段按入口的语义
 
@@ -96,7 +105,7 @@ sevent_ws_conn *sevent_ws_upgrade(sevent_http_conn *conn, const sevent_ws_config
 
 **a. `sevent_http_conn_i_destroy(conn)` — http_conn 壳延迟释放**
 - RELEASED 连接已摘出 server 列表（release 时 conn_unlink），http server 不再管理——**内存必须由 ws_upgrade 消费完毕后释放**
-- 不能同步 free：ws_upgrade 在 on_upgrade 回调栈内，on_upgrade 返回后 http_process 还读 `c->released`（conn_dispatch 返回判断）→ **post 延迟释放**（复用 conn_cleanup：free 缓冲 [已取走, NULL] + free 壳），OOM 时直调
+- post 延迟释放：ws_upgrade 在 on_upgrade 回调栈内；回调返回后 http 层**零访问 c**（D4 枚举返回值 TAKEN/DECLINED 是唯一信息源，conn_dispatch 不再读 `c->released`）→ post 延迟是为了回调栈内安全展开，OOM 直调同样安全（无后续读）
 - 约束：仅 RELEASED 态可调（未 release → 空操作）
 
 **b. `sevent_stream_conn_i_set_callbacks(s, init)` — 换 stream 回调组**

@@ -74,8 +74,8 @@
 |---|---|---|
 | http_parse.c 语法层 | http_parse_tests + fuzz smoke/大跑 | 纯函数解析器，fuzz 优先；**改动也影响 ws 握手（共用底座）** |
 | http_parse.c 任何改动 | **+ ws_conn_tests + redirect_tests** | ws 客户端握手已重构到 http_parse 底座上 |
-| http_server.c 服务器层 | http_server_tests | 23 用例：状态机/keep-alive/超时/升级分派/矩阵非法调用 |
-| http_server_i.h（内部接口） | http_server_tests（release 路径） | ws 阶段③ 接入后补 ws 侧用例 |
+| http_server.c 服务器层 | http_server_tests | 25 用例：状态机/keep-alive/超时/升级分派/矩阵非法调用/溢出契约/头注入规则（204/304/用户头） |
+| http_server_i.h（内部接口） | ws_server_tests（upgrade_oom / accept_oom_fd） | OOM 注入: ws_upgrade 失败收尾 alloc 平衡 + ws_accept fd 归还 |
 | sevent_http_*.h 公开头 | 对应层测试 + examples 编译 | 接口变更看 example 是否能编过 |
 
 ### 示例（examples/）

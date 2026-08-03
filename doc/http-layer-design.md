@@ -95,7 +95,18 @@ void     sevent_http_server_destroy(sevent_http_server *s);
 
 typedef void (*sevent_http_on_accept_fn)(void *ud, sevent_http_conn *conn); /* 连接已就绪: 可 close 拒绝 (黑名单/连接数超限), 可持有引用 */
 typedef void (*sevent_http_on_request_fn)(void *ud, const sevent_http_msg *req, sevent_http_conn *conn);
-typedef void (*sevent_http_on_upgrade_fn)(void *ud, const sevent_http_msg *req, sevent_http_conn *conn);
+
+/* 升级回调返回值: 连接是否已由回调处理完毕 (http 层不再触碰) */
+typedef enum {
+    SEVENT_HTTP_UPGRADE_TAKEN = 0,    /* 已接管: 连接归 ws (或已销毁) — http 层零访问 */
+    SEVENT_HTTP_UPGRADE_DECLINED,     /* 未接管: 连接仍在 http 管理下, 正常流程继续 */
+} sevent_http_upgrade_result_t;
+
+typedef sevent_http_upgrade_result_t (*sevent_http_on_upgrade_fn)(void *ud, const sevent_http_msg *req,
+                                                                  sevent_http_conn *conn);
+/* 契约: 调用了 sevent_ws_upgrade → 一律 TAKEN (调用即接管, 无论句柄是否 NULL
+ * — 成功归 ws / 失败已销毁, 均脱离 http 管理); 仅未调用 (respond 拒绝) → DECLINED.
+ * 误用返回 DECLINED 而连接已移交 = 编程错误 (对已脱离管理的连接操作). */
 typedef void (*sevent_http_on_conn_close_fn)(void *ud, sevent_http_conn *conn);
 typedef void (*sevent_http_on_error_fn)(void *ud, int err);
     /* 传输层错误 (stream accept/TLS 握手失败): 连接从未建立 — 无 conn 参数,
@@ -132,6 +143,12 @@ void sevent_http_response_clear(sevent_http_response *resp);                /* �
 int  sevent_http_conn_respond(sevent_http_conn *conn, sevent_http_response *resp);
     /* 库内: 状态行 + 遍历头 + 自动 Content-Length + close 时注入 Connection: close
      *     → 入写队列 (同步拷贝) → close 标记 → 半关 (shutdown WR: 发完 + FIN).
+     * 自动头注入规则 (D5, RFC 9110 §8.6.1 / RFC 9112 §6.3):
+     *   - Content-Length: 204/304/1xx 不注入 (MUST NOT); 其余状态注入
+     *     (含 body_len=0 的 "Content-Length: 0" — keep-alive 响应终止边界);
+     *     用户已显式设置 → 跳过注入 (不生成重复头, 用户负责正确性)
+     *   - Connection: close: 用户已显式设置 → 跳过注入
+     *   - 204/304/1xx + body_len>0 → 返回 INVAL (错误显性化, 不生成非法报文)
      * 返回: 0=已接受; <0=错误 (INVAL/状态非法/已响应/本请求已 write/NOMEM/头区溢出).
      *     无论成败 resp 头节点都已释放 (调用后 resp 即弃 — 重试场景用户重新 set).
      *     一请求一响应: 重复 respond 报错. */
@@ -172,17 +189,17 @@ typedef enum {
 /* write       |  ✗  |   ✗     |   ✓     |     ✓      |  ✓(流式续写)|    ✗    |   ✗    */
 /* write_end   |  ✗  |   ✗     |   ✓     |     ✗      |   ✓        |    ✗    |   ✗    */
 /* close       |  ✓(on_accept 拒绝) | ✓ |   ✓     |     ✓      |  ✓(提前终止)|    ✗    |   ✗    */
-/* release     |  ✗  |   ✗     |   ✓(on_upgrade) |  ✗ |     ✗      |    ✗    |   ✗    */
+/* upgrade      |  ✗  |   ✗     |   ✓(on_upgrade 内调 ws_upgrade, 内部 i_release) |  ✗ |  ✗  |  ✗  |  ✗  */
 ```
 
-**状态转换**（响应完成 = 转换，无独立标记）：
+**状态转换**（响应完成 = 转换，无独立标记）——**全部转换经统一入口 `http_state_set`**：每笔转换打印日志 `[http] conn=.. PARSING→REQUEST (dispatch)`（`HTTP_STATE_LOG` 编译开关，默认 1），未注册的转换（合法性矩阵 `http_state_ok`）打印 `ILLEGAL` 告警——转换路径自身可观测、可校验，不靠调用时序的侥幸（三套构建全量测试 0 ILLEGAL）：
 
 ```
 NEW(stream+TLS) → on_accept(连接就绪; 可 close 拒绝) → PARSING(累积+分帧)
     → 完整请求 → REQUEST (回调 on_request / on_upgrade)
-        ├─ on_upgrade:
-        │    拒绝分支 → respond(4xx, close=true) → CLOSING (半关)
-        │    升级分支 → release(→ RELEASED) → ws_upgrade 消费 (见 §4.4)
+        ├─ on_upgrade (返回 TAKEN/DECLINED):
+        │    拒绝分支 (DECLINED) → respond(4xx, close=true) → CLOSING (半关)
+        │    升级分支 (TAKEN) → i_release(→ RELEASED 终态) → ws_upgrade 消费 (见 §4.4)
         └─ on_request 返回 (request_after_callback):
             ├─ 回调内已 respond/write_end → PARSING (转换已完成) → 处理残留
             ├─ 回调内已 write (未 write_end) → RESPONDING (流式续写, 保持)
@@ -198,6 +215,11 @@ NEW(stream+TLS) → on_accept(连接就绪; 可 close 拒绝) → PARSING(累积
     异步 respond (AWAIT_RESP, 请求已消费) → respond 内 (was_await)
     异步 write_end (RESPONDING, 已消费)  → write_end 内 (was_responding)
     其余数据到达              → conn_on_data (state==PARSING 时 http_process)
+
+缓冲溢出 (conn_on_data): 请求挂起异步 (AWAIT_RESP/RESPONDING) 期间溢出 →
+    直接半关 (不二次分派 — http_process 入口 state==PARSING 守卫 + 溢出循环
+    条件守卫, 一请求一响应契约); PARSING 态溢出 → 先尽力消费腾位 (轮数上限
+    防 DoS) → 仍放不下 → 半关
 
 独立触发 (非转换路径):
     - 用户 close: 任意状态 → CLOSING (半关)
@@ -226,32 +248,27 @@ NEW(stream+TLS) → on_accept(连接就绪; 可 close 拒绝) → PARSING(累积
 - 获得：on_request/on_upgrade 回调拿到 `sevent_http_conn*`
 - **回调外有效**：异步响应（查库后 write）→ 写响应不受"回调返回"限制；状态可查（`state`）；关闭后 write 返回错误
 - 关闭：连接将销毁时回调 `on_conn_close`（用户清理引用）→ 之后句柄作废
-- **升级成功 conn 立即作废且无 on_conn_close**（闭环补）：升级（release）路径不走关闭回调——on_upgrade 里若存了 conn 引用，升级成功分支必须自行置空（on_conn_close 只覆盖未升级连接）
+- **升级成功 conn 立即作废且无 on_conn_close**（闭环补）：升级（TAKEN）路径不走关闭回调——on_upgrade 里若存了 conn 引用，升级成功分支必须自行置空（on_conn_close 只覆盖未升级连接）
 - destroy server：关闭全部连接（已升级转交的 ws 连接不在管理内）；**回调内 destroy server 需延迟**（与 ws destroy 纪律一致：post 延迟，回调栈安全展开）
 
-### 4.4 升级出口（两段式：释放 + 消费，决定权在用户）
+### 4.4 升级出口（单函数 + TAKEN/DECLINED，决定权在用户）
 
 ```c
-/* 段 1 (http 层): 显式释放 — 用户决定"这条连接不再走 http 路径"的声明.
- * 从 http server 摘除 (停止管理/标记已释放/壳延迟销毁计划).
- * release 后: respond/write 返回错误; 只能 ws_upgrade 消费 (或放弃).
- * 返回: 0=成功, <0=错误 (已关闭/已释放). */
-int sevent_http_conn_release(sevent_http_conn *conn);
-
-/* 段 2 (ws 层, 见 ws-server-design §3): 消费已释放的 conn — 前置校验 RELEASED. */
+/* on_upgrade 回调内一步调用 — 调用即升级决定 (无两段式公开 API;
+ * release 已并入内部 i_release). 资源移交 + 同步握手见 ws-server-design §3.2. */
 sevent_ws_conn *sevent_ws_upgrade(sevent_http_conn *conn, const sevent_ws_config *cfg);
 ```
 
-- **决定权在用户**：拒绝（respond 404/403）→ 不调 release，连接留在 http server 正常收尾；升级 → release + upgrade 两段显式
-- release 是承诺：释放后不能反悔（respond/write 已禁），出口只有两个——ws 成功 / 关闭
-- **upgrade 失败善后**：返回 NULL 时库内部关闭底层连接（已摘除+已消费，无人管理）——用户无需善后，conn 作废即可，无悬空
-- 回调返回后 http server 检测 RELEASED → 跳过收尾（等同原 TRANSFERRED）
+- **决定权在用户**：拒绝（respond 404/403）→ 不调 ws_upgrade，返回 `SEVENT_HTTP_UPGRADE_DECLINED`，连接留在 http server 正常收尾；升级 → 调 ws_upgrade，返回 `SEVENT_HTTP_UPGRADE_TAKEN`
+- **TAKEN 契约（D4）**：调用了 ws_upgrade 一律返回 TAKEN——无论句柄是否 NULL（升级成功归 ws / 内部失败已销毁，连接都已脱离 http 管理）。`conn_dispatch` 以返回值作唯一信息源，**回调返回后 http 层零访问 c**——杜绝"回调内释放、栈上再读"类 UAF（i_destroy 的 OOM 同步释放因此安全）
+- **upgrade 失败善后（D2，OOM 全链测试）**：返回 NULL 时 ws 层收尾——stream 销毁（fd 由 stream 层关）+ 移交缓冲释放（`i_take_recv` 取走的 rbuf 必须归还）+ conn 壳 `i_destroy` 回收。用户无需善后，conn 作废即可，无悬空
+- **fd 契约**：accept 系列入口统一"成功才接管，失败归还调用方"（谁拥有谁关闭）——详见 ws-server-design §3.1
 
 ## 5. 与 ws 的关系（双入口）
 
 ```
-共用端口:  http_server 监听 → on_upgrade
-               └─ release(conn) → sevent_ws_upgrade(conn, ws_cfg) → ws_conn (见 §4.4)
+共用端口:  http_server 监听 → on_upgrade (返回 TAKEN/DECLINED)
+               └─ sevent_ws_upgrade(conn, ws_cfg) → ws_conn (见 §4.4)
 独立端口:  tcp_acceptor → sevent_ws_accept(fd, ws_cfg) → ws_conn (内部 sevent_http_parse, 非升级→400)
 ```
 
@@ -274,8 +291,8 @@ static void on_request(void *ud, const sevent_http_msg *req, sevent_http_conn *c
     /* 想响应后关: resp.close = true 再 respond (自动注入 Connection: close) */
 }
 
-/* 升级请求: 两个显式分支 — 拒绝(留 http) 或 release+升级(转 ws) */
-static void on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *conn) {
+/* 升级请求: 两个显式分支 — 拒绝(留 http, DECLINED) 或升级(转 ws, TAKEN) */
+static sevent_http_upgrade_result_t on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *conn) {
     size_t vl;
     const char *proto = sevent_http_find_header(req, "upgrade", &vl);
     if(!proto || vl != 9 || memcmp(proto, "websocket", 9) != 0) {
@@ -283,14 +300,13 @@ static void on_upgrade(void *ud, const sevent_http_msg *req, sevent_http_conn *c
         resp.status = 404;
         resp.close  = true;                        /* 拒绝: conn 留 http server */
         sevent_http_conn_respond(conn, &resp);
-        return;
+        return SEVENT_HTTP_UPGRADE_DECLINED;
     }
-    if(sevent_http_conn_release(conn) != 0)   /* 显式释放 (连接已死则放弃) */
-        return;
     sevent_ws_config cfg = {0};
     cfg.on_message = on_ws_msg;
     cfg.on_close   = on_ws_close;
-    sevent_ws_conn *ws = sevent_ws_upgrade(conn, &cfg);   /* 消费已释放 conn; NULL=失败已由库关闭 */
+    (void)sevent_ws_upgrade(conn, &cfg);          /* 调用即接管; NULL=失败已由 ws 层收尾 */
+    return SEVENT_HTTP_UPGRADE_TAKEN;             /* 契约: 调用了一律 TAKEN */
 }
 
 /* 连接就绪 (可选): 可 close 拒绝 / 持有引用 */
@@ -351,10 +367,11 @@ int main(void) {
 - `sevent_http_build_request` / `sevent_http_build_response` 保留：ws 层握手请求/101 构建 + 高级手拼场景（语法层纯函数）
 - HEAD 请求语义初版不特殊处理；SSE 依赖 chunked → 初版不支持（write 路径可用 CL 已知的大文件流）
 
-**补充定案（升级出口两段式）**：
-- `sevent_http_conn_release(conn)`（http 层，显式）：从 http server 摘除——用户决定"不再走 http 路径"；release 后 respond/write 返回错误，出口只有 ws 成功/关闭
-- `sevent_ws_upgrade(conn, cfg)`（ws 层，消费）：前置校验 RELEASED（未释放 → NULL）→ stream + 缓冲残留移交 → 101/OPEN；失败（NULL）库内部关底层——无悬空
-- 拒绝分支（respond 4xx）不调 release——连接留在 http server 正常收尾
+**补充定案（升级出口，最终版——单函数 + 枚举返回值）**：
+- `sevent_ws_upgrade(conn, cfg)` 一步调用（on_upgrade 内）——调用即升级决定；内部 `i_release`（摘除）+ 资源移交 + 同步握手，无两段式公开 API（release 已并入内部）
+- 回调返回 `SEVENT_HTTP_UPGRADE_TAKEN/DECLINED`——TAKEN = 连接已接管（调用 ws_upgrade 一律 TAKEN，无论句柄是否 NULL）；DECLINED = 未接管（respond 拒绝），http 层继续管理。回调返回后 http 层零访问 c
+- 升级失败（NULL）：ws 层收尾（stream 销毁 + 移交缓冲释放 + conn 壳 i_destroy）——用户无需善后，无悬空
+- 拒绝分支（respond 4xx）不调 ws_upgrade → DECLINED——连接留在 http server 正常收尾
 
 **补充定案（连接状态机）**：
 - 8 态（NEW/PARSING/REQUEST/AWAIT_RESP/RESPONDING/RELEASED/CLOSING/CLOSED）+ 状态 × API 矩阵
@@ -367,7 +384,7 @@ int main(void) {
 | # | 项 | 内容 |
 |---|---|---|
 | 1 | sevent_http_parse 单测 | 行/头/半包/非法/大小写 + **分帧**（CL 收齐/不足/无 body/超限）+ 构建骨架 |
-| 2 | http_server 单测 | 回调分发/keep-alive 多请求复用/关闭条件①②③/400/413/空闲超时覆盖面（PARSING+AWAIT_RESP 适用、RESPONDING 不超时）/待响应异步窗口/on_conn_close/**release+upgrade 两段流程（含拒绝分支）**/升级转移含粘包/TLS + **respond 构造**（状态行/头遍历/CL/close 注入/body/查表/未知码必填/头区溢出/HTTP1.0 自动关）+ **辅助函数**（set 查重覆盖/add 重复/del/clear/节点释放语义）+ **状态机矩阵**（非法状态调用报错：重复 respond/respond 后 write/close=true 后写/RELEASED 后操作）+ **write_end**（write 路径结束后恢复读下一请求/close 后关/调用后 write 报错/respond 后调用报错）+ **on_error**（TLS 握手失败触发/无 conn 上下文） |
+| 2 | http_server 单测 | 回调分发/keep-alive 多请求复用/关闭条件①②③/400/413/空闲超时覆盖面（PARSING+AWAIT_RESP 适用、RESPONDING 不超时）/待响应异步窗口/on_conn_close/**upgrade TAKEN/DECLINED 流程（含拒绝分支）**/升级转移含粘包/TLS + **respond 构造**（状态行/头遍历/CL/close 注入/**204/304/1xx 无 CL + body INVAL/用户头不重复**/body/查表/未知码必填/头区溢出/HTTP1.0 自动关）+ **辅助函数**（set 查重覆盖/add 重复/del/clear/节点释放语义）+ **状态机矩阵**（非法状态调用报错：重复 respond/respond 后 write/close=true 后写/RELEASED 后操作）+ **溢出契约**（挂起+溢出 → 关连接不二次分派）+ **write_end**（write 路径结束后恢复读下一请求/close 后关/调用后 write 报错/respond 后调用报错）+ **on_error**（TLS 握手失败触发/无 conn 上下文）+ **OOM 注入**（ws_upgrade 失败收尾 alloc 平衡 / ws_accept fd 归还） |
 | 3 | ws client 回归 | test-ws-conn 56 + test-redirect + test-deflate（ws_handshake 重构后） |
 | 4 | 共用端口端到端 | 同端口 http 多请求 + ws 升级并存 |
 | 5 | Autobahn | fuzzingclient 连 ws 端口 517 用例零回归 |
@@ -377,6 +394,6 @@ int main(void) {
 | 阶段 | 内容 | 验证 |
 |---|---|---|
 | ① 语法层 | sevent_http_parse（公开，含分帧）+ ws_handshake 重构瘦身 | sevent_http_parse 单测 + client 回归 |
-| ② 服务器层 | http_server（连接状态机/keep-alive/空闲超时/五回调/respond 响应构造/release 升级出口/TLS）+ 单测 | http_server 单测全过 |
+| ② 服务器层 | http_server（连接状态机/keep-alive/空闲超时/五回调/respond 响应构造/upgrade 出口/TLS）+ 单测 | http_server 单测全过 |
 | ③ ws 接入 | ws_accept(fd) + ws_upgrade(http_conn) + is_client/掩码 + 握手 server 侧 | 端到端 + client 回归 |
 | ④ 全量 | 共用端口 + wss/mTLS + Autobahn fuzzingclient + 三套 build + 示例 | 零回归 |
