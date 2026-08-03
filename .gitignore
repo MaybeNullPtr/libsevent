@@ -13,3 +13,6 @@ core
 # 本地诊断用 wstest 源码副本 (docker 已不再映射)
 tests/autobahn_py/
 tests/certs/
+
+# VSCode 代码统计插件输出
+.VSCodeCounter/
