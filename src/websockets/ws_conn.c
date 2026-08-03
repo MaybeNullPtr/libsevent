@@ -3,6 +3,16 @@
  *
  *  send_frame 构造帧后入写队列, 异步 flush.
  *  控制帧 (PING/CLOSE) 插入队首优先发送.
+ *
+ *  锁纪律 (SEVENT_THREAD_SAFE=ON, 每连接递归锁保护共享状态:
+ *  state/接收缓冲游标/写队列/分片与压缩状态/destroyed):
+ *    - 锁边界仅在两处, 各自函数内 LOCK↔UNLOCK 严格对称:
+ *      loop 回调入口 (ws_stream_on_data/on_close/on_error/on_open/on_ping_timer)
+ *      + 公开 API (send_text/binary/ping/shutdown/close/destroy/get_state)
+ *    - 内部处理函数 (ws_handshake_data/ws_handshake_data_server/ws_frame_data
+ *      /ws_server_establish/ws_fatal/ws_enter_closed 等) 一律不碰锁 —
+ *      契约: 调用方持锁; 用户回调在持锁状态直调 (递归锁, 回调内
+ *      send/destroy 重入安全). 锁不越过函数边界.
  *  ========================================================================= */
 
 #include <string.h>
@@ -1219,7 +1229,10 @@ static void ws_server_handshake_fail(struct sevent_ws_conn *c, int status) {
 }
 
 /* 服务端握手 (accept 入口): 解析升级请求 → 101 (+deflate) / 400 / 426.
- * 与 client 101 模式对称: 跳过请求 + 粘包残留帧处理. 锁由调用方持有. */
+ * 与 client 101 模式对称: 跳过请求 + 粘包残留帧处理.
+ * 锁纪律: 本函数不碰锁 (纯处理, 契约: 调用方持锁) — 失败/完成路径上的
+ * 用户回调 (on_open/on_error) 在持锁状态直调 (递归锁, 回调内 send/destroy
+ * 重入安全). */
 static void
 ws_server_establish(struct sevent_ws_conn *c, const char *key, size_t skip, bool deflate_offered, bool client_nct) {
     /* deflate 协商 (A 方案): offer 声明先于响应确认 — 创建失败则不确认
@@ -1235,12 +1248,10 @@ ws_server_establish(struct sevent_ws_conn *c, const char *key, size_t skip, bool
     char resp[512];
     int  n = ws_build_response(resp, sizeof(resp), key, confirm_pmd);
     if(n < 0) {
-        WS_UNLOCK(c);
         ws_fatal(c, SEVENT_ERR_NOMEM);
         return;
     }
     if(sevent_stream_write(c->stream, resp, (size_t)n) != 0) {
-        WS_UNLOCK(c);
         ws_fatal(c, SEVENT_WS_ERR_WRITE);
         return;
     }
@@ -1248,10 +1259,8 @@ ws_server_establish(struct sevent_ws_conn *c, const char *key, size_t skip, bool
     c->state    = WS_STATE_OPEN;
     if(c->on_open)
         c->on_open(c->user_data);
-    if(c->destroyed) {
-        WS_UNLOCK(c);
+    if(c->destroyed)
         return;
-    }
     /* 启动 PING 心跳定时器 */
     if(c->ping_interval_ms > 0 && !c->ping_timer)
         c->ping_timer = sevent_timer_register(c->ev, (unsigned int)c->ping_interval_ms, on_ping_timer, c);
@@ -1259,20 +1268,18 @@ ws_server_establish(struct sevent_ws_conn *c, const char *key, size_t skip, bool
     if(c->recv_len > c->recv_pos) {
         int err = process_frames(c);
         if(err > 0) {
-            WS_UNLOCK(c);
             ws_fatal(c, err);
             return;
         }
     }
-    if(c->destroyed) {
-        WS_UNLOCK(c);
+    if(c->destroyed)
         return;
-    }
-    WS_UNLOCK(c);
 }
 
 /* 服务端握手 (accept 入口): 解析升级请求 → 101 (+deflate) / 400 / 426.
- * 与 client 101 模式对称: 跳过请求 + 粘包残留帧处理. 锁由调用方持有. */
+ * 与 client 101 模式对称: 跳过请求 + 粘包残留帧处理.
+ * 锁纪律: 本函数不碰锁 (契约: 调用方持锁) — 失败路径直调
+ * ws_server_handshake_fail (on_error 在持锁状态回调, 递归锁安全). */
 static void ws_handshake_data_server(struct sevent_ws_conn *c) {
     ws_handshake_request req;
     int                  ret = ws_parse_request(c->recv_buf, c->recv_len, &req);
@@ -1281,7 +1288,6 @@ static void ws_handshake_data_server(struct sevent_ws_conn *c) {
     if(ret < 0 || req.status != 0) {
         /* 语法错/非法请求 → 400; 版本不支持 → 426 (RFC 6455 §4.4) */
         int status = (ret > 0 && req.status == 426) ? 426 : 400;
-        WS_UNLOCK(c);
         ws_server_handshake_fail(c, status);
         return;
     }
@@ -1289,7 +1295,10 @@ static void ws_handshake_data_server(struct sevent_ws_conn *c) {
 }
 
 /* 握手数据分发: 按角色走 server (accept 入口) / client (connect 入口) 处理.
- * 锁由调用方持有; 对端关闭经 ws_stream_on_close 通知 (握手期 → HANDSHAKE 错误) */
+ * 锁纪律: 本函数不碰锁 (纯处理, 契约: 调用方持锁) — 所有路径上的用户回调
+ * (on_http_response/on_open/on_error) 在持锁状态直调 (递归锁, 回调内
+ * send/destroy 重入安全). 对端关闭经 ws_stream_on_close 通知 (握手期 →
+ * HANDSHAKE 错误). */
 static void ws_handshake_data(struct sevent_ws_conn *c) {
     if(!c->is_client) {
         ws_handshake_data_server(c);
@@ -1297,15 +1306,12 @@ static void ws_handshake_data(struct sevent_ws_conn *c) {
     }
     ws_handshake_response resp;
     int                   ret = ws_parse_response(c->recv_buf, c->recv_len, &resp);
-    if(ret == 0) {
-        WS_UNLOCK(c);
-        return;
-    }
+    if(ret == 0)
+        return; /* 数据不足, 等更多 (锁由调用方持有) */
     if(ret < 0) {
         /* 失败时如有 on_http_response 则回调原始数据 */
         if(c->on_http_response)
             c->on_http_response(c->user_data, resp.status_code, (const char *)c->recv_buf, c->recv_len, "", 0);
-        WS_UNLOCK(c);
         ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
         return;
     }
@@ -1313,23 +1319,19 @@ static void ws_handshake_data(struct sevent_ws_conn *c) {
     if(resp.status_code >= WS_HTTP_STATUS_REDIRECT_MIN && resp.status_code < WS_HTTP_STATUS_REDIRECT_MAX &&
        resp.location[0]) {
         if(c->redirect_count >= SEVENT_WS_MAX_REDIRECTS) {
-            WS_UNLOCK(c);
             ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
             return;
         }
         if(ws_redirect_parse(c, resp.location) != 0) {
-            WS_UNLOCK(c);
             ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
             return;
         }
         c->redirect_count++;
         if(!ws_redirect_reconnect(c)) {
-            WS_UNLOCK(c);
             ws_fatal(c, SEVENT_WS_ERR_CONNECT);
             return;
         }
-        WS_UNLOCK(c);
-        return;
+        return; /* 重连后等新响应 */
     }
     /* 分离 header (含状态行) 和 body */
     const char *headers = (const char *)c->recv_buf;
@@ -1341,25 +1343,20 @@ static void ws_handshake_data(struct sevent_ws_conn *c) {
         if(resp.status_code != WS_HTTP_STATUS_SWITCHING || ws_verify_accept(c->sec_ws_key, resp.accept) != 0) {
             /* 非 101 或 accept 不匹配 → 回调让上层处理 */
             c->on_http_response(c->user_data, resp.status_code, headers, hlen, body, blen);
-            if(c->destroyed) {
-                WS_UNLOCK(c);
+            if(c->destroyed)
                 return;
-            }
             ws_enter_closed(c, 0, "", 0);
-            WS_UNLOCK(c);
             return;
         }
     } else {
         /* 兼容旧模式: 库内部校验 accept */
         if(ws_verify_accept(c->sec_ws_key, resp.accept) != 0) {
-            WS_UNLOCK(c);
             ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
             return;
         }
     }
     /* 响应不得含未 offer 的扩展 (RFC 6455 §9/§4.1 第 5 条) */
     if(!ws_extensions_ok(resp.extensions, c->enable_deflate)) {
-        WS_UNLOCK(c);
         ws_fatal(c, SEVENT_WS_ERR_HANDSHAKE);
         return;
     }
@@ -1383,7 +1380,6 @@ static void ws_handshake_data(struct sevent_ws_conn *c) {
                 long    v   = strtol(after + 1, &end, 10);
                 uint8_t req = c->request_client_max_window_bits;
                 if(end == after + 1 || v < 8 || v > 15 || (req && v > req)) {
-                    WS_UNLOCK(c);
                     ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
                     return;
                 }
@@ -1408,7 +1404,6 @@ static void ws_handshake_data(struct sevent_ws_conn *c) {
                 long    v   = strtol(after + 1, &end, 10);
                 uint8_t req = c->request_server_max_window_bits;
                 if(end == after + 1 || v < 8 || v > 15 || (req && v > req)) {
-                    WS_UNLOCK(c);
                     ws_fatal(c, SEVENT_WS_ERR_PROTOCOL);
                     return;
                 }
@@ -1427,10 +1422,8 @@ static void ws_handshake_data(struct sevent_ws_conn *c) {
     c->state    = WS_STATE_OPEN;
     if(c->on_open)
         c->on_open(c->user_data);
-    if(c->destroyed) {
-        WS_UNLOCK(c);
+    if(c->destroyed)
         return;
-    }
     /* 启动 PING 心跳定时器 */
     if(c->ping_interval_ms > 0 && !c->ping_timer)
         c->ping_timer = sevent_timer_register(c->ev, (unsigned int)c->ping_interval_ms, on_ping_timer, c);
@@ -1438,16 +1431,12 @@ static void ws_handshake_data(struct sevent_ws_conn *c) {
     if(c->recv_len > c->recv_pos) {
         int err = process_frames(c);
         if(err > 0) {
-            WS_UNLOCK(c);
             ws_fatal(c, err);
             return;
         }
     }
-    if(c->destroyed) {
-        WS_UNLOCK(c);
+    if(c->destroyed)
         return;
-    }
-    WS_UNLOCK(c);
 }
 
 /* stream 建连完成 (TCP connect 完成; TLS 模式=握手完成) — 原 on_connect_ready
@@ -1707,13 +1696,14 @@ sevent_ws_conn *sevent_ws_upgrade(sevent_http_conn *conn, const sevent_ws_config
     sevent_stream_conn_init init = ws_stream_init(c);
     sevent_stream_conn_i_set_callbacks(stream, &init);
     /* 同步握手: 请求已在缓冲 (skip 由解析偏移决定) — 与 accept 入口同路径.
-     * 锁语义同 ws_stream_on_data 调用 (调用方持锁); 失败 (400/426) 经
-     * ws_server_handshake_fail → on_error, 连接半关 — on_error 内用户
-     * destroy → 句柄作废, 返回 NULL (不返回已销毁对象). http 壳释放
-     * (post 延迟 — on_upgrade 返回后 http_process 仍读 conn) */
+     * 锁纪律: 本函数是锁边界 (LOCK/UNLOCK 对称); ws_handshake_data_server
+     * 不碰锁 (纯处理) — 失败 (400/426) 经 ws_server_handshake_fail → on_error,
+     * 连接半关; on_open/on_error 内用户可能 destroy → 句柄作废, 返回 NULL
+     * (不返回已销毁对象). http 壳释放 (post 延迟 — on_upgrade 返回后
+     * http_process 仍读 conn) */
     WS_LOCK(c);
     ws_handshake_data_server(c);
-    /* 已解锁; on_open/on_error 内用户可能 destroy — 之后不再访问 c */
+    WS_UNLOCK(c); /* 对称解锁; 之后不再访问 c (用户可能已 destroy) */
     bool destroyed = c->destroyed;
     sevent_http_conn_i_destroy(conn);
     return destroyed ? NULL : c;

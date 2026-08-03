@@ -94,7 +94,9 @@
 | build-openssl/ | `-DSEVENT_WS_TLS=ON`（openssl 后端） | TLS 相关测试（ssl/tls_conn/wss） |
 | build-asan/ | `-DSEVENT_ASAN=ON`（+ 需要时 `SEVENT_WS_DEFLATE=ON`） | 内存/泄漏/越界检测 |
 | build-fuzz/ | `-DSEVENT_FUZZ=ON -DSEVENT_ASAN=ON` | fuzz 目标 + smoke |
-| （任选） | `-DSEVENT_THREAD_SAFE=ON` | 线程安全 API 变体（test-ws-conn 自带变体） |
+| build-ts/ | `-DSEVENT_THREAD_SAFE=ON` | **锁路径实际执行**（全量 ctest；锁代码在 OFF 构建是空宏，必须在此套验证） |
+
+改 ws_conn.c / tcp_conn.c / stream_conn.c 的锁逻辑 → **+ build-ts 全量**（锁是编译期宏，OFF 构建测不到）。
 
 mbedtls 后端：`-DSEVENT_WS_TLS=ON -DSEVENT_WS_TLS_BACKEND=MBEDTLS`。
 
