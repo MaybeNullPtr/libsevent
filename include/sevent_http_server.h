@@ -134,12 +134,6 @@ sevent_stream_conn *sevent_http_conn_get_stream(sevent_http_conn *conn);
  * 如 on_accept 内 sevent_stream_set_no_delay(conn_stream, true) (TCP_NODELAY).
  * 约束: 不得 close/destroy/接管; 连接关闭 (on_conn_close) 后指针失效.
  * 连接未建立/已关闭 → NULL. 线程: [loop 线程]. */
-int                 sevent_http_conn_release(sevent_http_conn *conn);
-/* 显式释放 (on_upgrade 内): 从 http server 摘除 — 用户决定"不再走 http 路径".
- * release 后 respond/write 返回错误; 连接脱离 http 管理, 必须由 sevent_ws_upgrade
- * 消费 (stream + 缓冲 + 壳整体移交). 注意: release 后不消费 → 连接不回收
- * (无超时兜底, 调用方负责) — ws 接入前单独调用即泄漏, 仅供升级流程使用.
- * 返回: 0=成功, <0=错误 (已关闭/已释放/非升级回调内). */
 
 #ifdef __cplusplus
 }

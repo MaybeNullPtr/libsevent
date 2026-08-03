@@ -26,8 +26,6 @@
 #include <stdio.h>
 #include <unistd.h> /* close */
 
-#define HTTP_UPGRADE_KEY_MAX 64 /* Sec-WebSocket-Key 缓冲 (实际 24 字节, 留余量) */
-
 /* ===== 内部结构 ===== */
 
 struct sevent_http_conn {
@@ -42,11 +40,10 @@ struct sevent_http_conn {
     size_t   recv_cap;
 
     /* 当前请求预解析字段 (分派/关闭判定用) */
-    bool req_keep_alive;                    /* 请求的 keep_alive (HTTP/1.0 或 Connection: close → false) */
-    char upgrade_key[HTTP_UPGRADE_KEY_MAX]; /* 升级请求的 Sec-WebSocket-Key (on_upgrade 分派时保存, ws_upgrade 消费) */
-    bool close_pending;                     /* 响应后关 (close 字段 / keep_alive=false / 用户 close) */
-    bool released;                          /* RELEASED: ws_upgrade 消费中 */
-    bool wrote;                             /* 本请求已 write 过 (互斥判定: respond 拒绝; 流式判定) */
+    bool req_keep_alive; /* 请求的 keep_alive (HTTP/1.0 或 Connection: close → false) */
+    bool close_pending;  /* 响应后关 (close 字段 / keep_alive=false / 用户 close) */
+    bool released;       /* RELEASED: ws_upgrade 消费中 */
+    bool wrote;          /* 本请求已 write 过 (互斥判定: respond 拒绝; 流式判定) */
 
     /* 空闲超时 (活动时重置; <0 禁用) */
     sevent_timer *idle_timer;
@@ -342,15 +339,9 @@ static void request_after_callback(struct sevent_http_conn *c, size_t consumed) 
  * 返回 true = 已移交 ws (released), 主循环直接退出 */
 static bool conn_dispatch(struct sevent_http_conn *c, const sevent_http_msg *m) {
     if(m->upgrade) {
-        /* 保存 Sec-WebSocket-Key (请求消费后缓冲复用, ws_upgrade 需重算 accept) */
-        c->upgrade_key[0] = '\0';
-        size_t      kl;
-        const char *kv = sevent_http_find_header(m, "sec-websocket-key", &kl);
-        if(kv && kl + 1 < sizeof(c->upgrade_key)) {
-            memcpy(c->upgrade_key, kv, kl);
-            c->upgrade_key[kl] = '\0';
-        }
-        /* on_upgrade: 用户决定 拒绝 (respond) / 升级 (release + ws_upgrade) */
+        /* on_upgrade: 用户决定 拒绝 (respond) / 升级 (release + ws_upgrade).
+         * 升级语义 (Sec-WebSocket-Key/扩展协商) 全部由 ws 层处理 — 请求在
+         * 缓冲中完整移交 (i_take_recv), http 层零 ws 感知 (架构边界) */
         if(c->srv->on_upgrade)
             c->srv->on_upgrade(c->srv->ud, m, c);
         else
@@ -609,7 +600,10 @@ int sevent_http_conn_state(const sevent_http_conn *conn) {
     return (int)c->state;
 }
 
-int sevent_http_conn_release(sevent_http_conn *conn) {
+int sevent_http_conn_i_release(sevent_http_conn *conn) {
+    /* 内部释放 (ws_upgrade 调用 — 升级决定 = 调用本函数, 用户无需两段式):
+     * 置 RELEASED + 摘列表 (on_conn_close 不再触发) + 停空闲超时.
+     * 约束: 仅 on_upgrade 回调内合法 (REQUEST 态); 失败 → 连接留 http server. */
     struct sevent_http_conn *c = (struct sevent_http_conn *)conn;
     if(!c)
         return SEVENT_ERR_INVAL;
@@ -620,7 +614,7 @@ int sevent_http_conn_release(sevent_http_conn *conn) {
     c->released = true;
     c->state    = HTTP_CONN_RELEASED;
     conn_idle_stop(c);
-    /* 摘列表 (on_conn_close 不再触发 — 升级转交; 壳由 ws_upgrade 消费释放) */
+    /* 摘列表 (壳由 ws_upgrade 消费释放) */
     conn_unlink(c->srv, c);
     return 0;
 }
@@ -900,14 +894,7 @@ uint8_t *sevent_http_conn_i_take_recv(sevent_http_conn *conn, size_t *len, size_
     return b;
 }
 
-const char *sevent_http_conn_i_upgrade_key(sevent_http_conn *conn) {
-    struct sevent_http_conn *c = (struct sevent_http_conn *)conn;
-    if(!c || !c->released || c->upgrade_key[0] == '\0')
-        return NULL;
-    return c->upgrade_key;
-}
-
-/* 消费完毕 (ws_upgrade 内 i_detach/i_take_recv/key 取走全部资源后) 释放壳.
+/* 消费完毕 (ws_upgrade 内 i_detach/i_take_recv 取走全部资源后) 释放壳.
  * 不能同步 free: 调用发生在 on_upgrade 回调栈内, 返回后 http_process 仍读
  * c->released (conn_dispatch 返回判断) — post 延迟释放, 回调栈安全展开.
  * 约束: 仅 RELEASED 态可调 (未 release 连接归 http server 管理, 空操作). */
@@ -917,4 +904,11 @@ void sevent_http_conn_i_destroy(sevent_http_conn *conn) {
         return;
     if(sevent_post(c->srv->ev, conn_cleanup, c) != 0)
         conn_cleanup(c); /* post 失败 (OOM): 直接释放 */
+}
+
+sevent_context *sevent_http_conn_i_ev(sevent_http_conn *conn) {
+    struct sevent_http_conn *c = (struct sevent_http_conn *)conn;
+    if(!c || !c->released)
+        return NULL;
+    return c->srv->ev;
 }

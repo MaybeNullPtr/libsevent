@@ -37,4 +37,7 @@ struct sevent_stream_conn {
     void                    *impl;
 };
 
+/* 换回调组 (升级转移用, 见 ops 表 set_callbacks) — 内部接口转发 */
+void sevent_stream_conn_i_set_callbacks(sevent_stream_conn *s, const sevent_stream_conn_init *cb);
+
 #endif /* SEVENT_STREAM_CONN_I_H */

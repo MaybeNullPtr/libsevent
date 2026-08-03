@@ -59,7 +59,8 @@ extern "C" {
 #define SEVENT_WS_STATE_CLOSED 3
 
 /* ===== 不透明句柄 ===== */
-typedef struct sevent_ws_conn sevent_ws_conn;
+typedef struct sevent_ws_conn   sevent_ws_conn;
+typedef struct sevent_http_conn sevent_http_conn; /* 升级转移参数 (前置声明, 不 include http 头) */
 
 /* ===== 回调类型 ===== */
 typedef void (*sevent_ws_on_open_fn)(void *user_data);
@@ -150,6 +151,31 @@ typedef struct sevent_ws_config {
  * 线程: [loop 线程] (IO 注册内部有锁, 但配置副本写入无保护).
  */
 sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cfg);
+
+/*
+ * 服务端入口①: 包装已 accept 的 fd (来自 tcp_acceptor 的 on_accept).
+ * 流程: stream 建连 (enable_tls 时含 TLS 服务端握手, 证书来自 cfg cert/key —
+ *       必填) → 收升级请求回 101 → on_open; 请求非法 → 回 400/426 + on_error.
+ * 返回: 句柄 (失败经 on_error 通知), NULL=参数错误/内存不足.
+ * fd 所有权移交本层 (失败时已由 stream 层关闭).
+ * 线程: [loop 线程].
+ */
+sevent_ws_conn *sevent_ws_accept(sevent_context *ev, int fd, const sevent_ws_config *cfg);
+
+/*
+ * 服务端入口②: 共用端口升级转移 — 在 http_server 的 on_upgrade 回调内调用,
+ * 调用即升级决定 (内部完成释放摘除, 无两段式): stream + 解析缓冲移交
+ * (含完整升级请求 + 粘包残留 — ws 层自行解析), 同步完成握手 —
+ * 101 入队 → OPEN + on_open (本调用栈内触发, 无等待期).
+ * 返回: 句柄 (已 OPEN; 握手失败经 on_error 通知 — 连接半关, 按失败态处理),
+ *       NULL=参数错误/非法状态 (连接留 http server)/内存不足 — 资源已
+ *       移交时库负责关闭底层连接, 用户无需善后.
+ * 约束: 仅 on_upgrade 回调内调用 (REQUEST 态); cfg 中 host/port/path/TLS
+ *       字段忽略 (连接已建立); on_http_response 不触发; 成功后 http_conn
+ *       句柄作废 (壳由库延迟释放).
+ * 线程: [loop 线程].
+ */
+sevent_ws_conn *sevent_ws_upgrade(sevent_http_conn *conn, const sevent_ws_config *cfg);
 
 /*
  * 发送文本消息 (自动掩码).

@@ -19,7 +19,9 @@
 #include <arpa/inet.h>
 
 #include "sevent_i.h"
-#include "sevent_http_parse.h" /* ws_server_handshake_fail 的 400/426 响应构建 */
+#include "sevent_http_parse.h"    /* ws_server_handshake_fail 的 400/426 响应构建 */
+#include "http_server_i.h"        /* sevent_ws_upgrade 消费已释放连接 */
+#include "sevent_stream_conn_i.h" /* sevent_ws_upgrade 换 stream 回调组 */
 #include "ws_conn.h"
 #include "ws_frame.h"
 #include "ws_handshake.h"
@@ -1218,30 +1220,20 @@ static void ws_server_handshake_fail(struct sevent_ws_conn *c, int status) {
 
 /* 服务端握手 (accept 入口): 解析升级请求 → 101 (+deflate) / 400 / 426.
  * 与 client 101 模式对称: 跳过请求 + 粘包残留帧处理. 锁由调用方持有. */
-static void ws_handshake_data_server(struct sevent_ws_conn *c) {
-    ws_handshake_request req;
-    int                  ret = ws_parse_request(c->recv_buf, c->recv_len, &req);
-    if(ret == 0)
-        return; /* 数据不足, 等更多 (锁由调用方持有) */
-    if(ret < 0 || req.status != 0) {
-        /* 语法错/非法请求 → 400; 版本不支持 → 426 (RFC 6455 §4.4) */
-        int status = (ret > 0 && req.status == 426) ? 426 : 400;
-        WS_UNLOCK(c);
-        ws_server_handshake_fail(c, status);
-        return;
-    }
+static void
+ws_server_establish(struct sevent_ws_conn *c, const char *key, size_t skip, bool deflate_offered, bool client_nct) {
     /* deflate 协商 (A 方案): offer 声明先于响应确认 — 创建失败则不确认
      * PMD, 否则客户端按压缩发送而本端无 deflate → 1002 */
     bool confirm_pmd = false;
-    if(c->enable_deflate && req.deflate_offered) {
+    if(c->enable_deflate && deflate_offered) {
         ws_deflate_params p          = {0};
-        p.client_no_context_takeover = req.client_no_context_takeover; /* 解压方向按 offer 声明 */
+        p.client_no_context_takeover = client_nct; /* 解压方向按 offer 声明 */
         p.compression_level          = c->deflate_level;
         if(ws_deflate_create(&c->deflate, &p))
             confirm_pmd = true;
     }
     char resp[512];
-    int  n = ws_build_response(resp, sizeof(resp), req.key, confirm_pmd);
+    int  n = ws_build_response(resp, sizeof(resp), key, confirm_pmd);
     if(n < 0) {
         WS_UNLOCK(c);
         ws_fatal(c, SEVENT_ERR_NOMEM);
@@ -1252,7 +1244,7 @@ static void ws_handshake_data_server(struct sevent_ws_conn *c) {
         ws_fatal(c, SEVENT_WS_ERR_WRITE);
         return;
     }
-    c->recv_pos = (size_t)ret; /* 跳过 HTTP 请求, 保留可能的粘包 WS 帧 */
+    c->recv_pos = skip; /* 跳过 HTTP 请求, 保留可能的粘包 WS 帧 */
     c->state    = WS_STATE_OPEN;
     if(c->on_open)
         c->on_open(c->user_data);
@@ -1277,6 +1269,23 @@ static void ws_handshake_data_server(struct sevent_ws_conn *c) {
         return;
     }
     WS_UNLOCK(c);
+}
+
+/* 服务端握手 (accept 入口): 解析升级请求 → 101 (+deflate) / 400 / 426.
+ * 与 client 101 模式对称: 跳过请求 + 粘包残留帧处理. 锁由调用方持有. */
+static void ws_handshake_data_server(struct sevent_ws_conn *c) {
+    ws_handshake_request req;
+    int                  ret = ws_parse_request(c->recv_buf, c->recv_len, &req);
+    if(ret == 0)
+        return; /* 数据不足, 等更多 (锁由调用方持有) */
+    if(ret < 0 || req.status != 0) {
+        /* 语法错/非法请求 → 400; 版本不支持 → 426 (RFC 6455 §4.4) */
+        int status = (ret > 0 && req.status == 426) ? 426 : 400;
+        WS_UNLOCK(c);
+        ws_server_handshake_fail(c, status);
+        return;
+    }
+    ws_server_establish(c, req.key, (size_t)ret, req.deflate_offered, req.client_no_context_takeover);
 }
 
 /* 握手数据分发: 按角色走 server (accept 入口) / client (connect 入口) 处理.
@@ -1612,6 +1621,97 @@ sevent_ws_conn *sevent_ws_connect(sevent_context *ev, const sevent_ws_config *cf
         return NULL;
     }
     return c;
+}
+
+sevent_ws_conn *sevent_ws_accept(sevent_context *ev, int fd, const sevent_ws_config *cfg) {
+    /* 独立端口入口: 包装已 accept 的 fd. TLS 模式: stream accept 内做服务端
+     * 握手 (证书来自 cfg cert/key — ssl 层服务端必填校验). 建连失败 → on_error
+     * (ws_stream_on_error 映射: HANDSHAKE 优先 — server 模式 stream 失败只有 TLS 场景) */
+    if(!ev || !cfg || fd < 0 || (!cfg->on_open && !cfg->on_error))
+        return NULL;
+    struct sevent_ws_conn *c = ws_conn_new(ev, cfg, false);
+    if(!c)
+        return NULL;
+    if(ws_conn_alloc_bufs(c, cfg->recv_buf_size) != 0) {
+        ws_conn_abort(c);
+        return NULL;
+    }
+    c->stream = sevent_stream_create(ev, &c->stream_cfg);
+    if(!c->stream) {
+        ws_conn_abort(c);
+        return NULL;
+    }
+    sevent_stream_conn_init init = ws_stream_init(c);
+    if(sevent_stream_accept(c->stream, fd, &init) < 0) {
+        /* stream 层已关闭 fd (所有权移交失败即关闭) */
+        ws_conn_abort(c);
+        return NULL;
+    }
+    return c;
+}
+
+sevent_ws_conn *sevent_ws_upgrade(sevent_http_conn *conn, const sevent_ws_config *cfg) {
+    /* 共用端口入口 (两段式, on_upgrade 内 release 后调用):
+     * 消费已释放连接 — stream + 解析缓冲移交 (含完整升级请求 + 粘包残留),
+     * 同步完成握手: 请求在缓冲 (on_upgrade 栈内 http 侧未消费), 由 ws 层
+     * 自行解析 (ws_handshake_data_server — 与 accept 入口同一条路径).
+     * http 层零 ws 感知: 只移交资源, 不解析任何 ws 语义. */
+    if(!conn || !cfg)
+        return NULL;
+    /* 内部释放 (升级决定 = 调用本函数, 用户无需两段式): 仅 on_upgrade 回调内
+     * 合法 (REQUEST 态); 失败 (非法状态/已释放/已关闭) → NULL, 连接留 http server */
+    if(sevent_http_conn_i_release(conn) != 0)
+        return NULL;
+    sevent_stream_conn *stream = sevent_http_conn_i_detach_stream(conn);
+    if(!stream)
+        return NULL;
+    sevent_context *ev = sevent_http_conn_i_ev(conn);
+    if(!ev) {
+        sevent_stream_destroy(stream); /* 已脱离 http — 库负责收尾 */
+        return NULL;
+    }
+    struct sevent_ws_conn *c = ws_conn_new(ev, cfg, false);
+    if(!c) {
+        sevent_stream_destroy(stream);
+        return NULL;
+    }
+    /* 缓冲移交: 完整请求 + 残留 (粘包帧) 拷贝到新缓冲.
+     * 数学: stream 推送上限 = http 侧 recv_buf_size = 移交容量 rcap (非 ws 的
+     * cap/2) — 残留 (≤ rcap) + 推送 (≤ rcap) ≤ 2·rcap 才恒成立 → 重分配 2×,
+     * 与 client 路径的"残留+推送 ≤ cap"数学对齐. 残留 ≤ 4KB, 一次性拷贝. */
+    size_t   rlen = 0, rcap = 0;
+    uint8_t *rbuf   = sevent_http_conn_i_take_recv(conn, &rlen, &rcap);
+    size_t   newcap = (rcap ? rcap : SEVENT_WS_RECV_DEFAULT) * 2;
+    if(newcap < SEVENT_WS_RECV_MIN * 2)
+        newcap = SEVENT_WS_RECV_MIN * 2;
+    c->recv_buf = (uint8_t *)sevent_i_malloc(newcap);
+    c->frag_buf = (uint8_t *)sevent_i_malloc(newcap);
+    if(!c->recv_buf || !c->frag_buf) {
+        c->stream = stream; /* 让 abort 收尾 stream */
+        ws_conn_abort(c);
+        return NULL;
+    }
+    if(rbuf) {
+        memcpy(c->recv_buf, rbuf, rlen);
+        sevent_i_free(rbuf); /* http 缓冲已取走, 归还 */
+    }
+    c->recv_len                  = rlen;
+    c->recv_cap                  = newcap;
+    /* stream 注入 + 回调切换 (http 回调组 → ws 回调组) */
+    c->stream                    = stream;
+    sevent_stream_conn_init init = ws_stream_init(c);
+    sevent_stream_conn_i_set_callbacks(stream, &init);
+    /* 同步握手: 请求已在缓冲 (skip 由解析偏移决定) — 与 accept 入口同路径.
+     * 锁语义同 ws_stream_on_data 调用 (调用方持锁); 失败 (400/426) 经
+     * ws_server_handshake_fail → on_error, 连接半关 — on_error 内用户
+     * destroy → 句柄作废, 返回 NULL (不返回已销毁对象). http 壳释放
+     * (post 延迟 — on_upgrade 返回后 http_process 仍读 conn) */
+    WS_LOCK(c);
+    ws_handshake_data_server(c);
+    /* 已解锁; on_open/on_error 内用户可能 destroy — 之后不再访问 c */
+    bool destroyed = c->destroyed;
+    sevent_http_conn_i_destroy(conn);
+    return destroyed ? NULL : c;
 }
 
 int sevent_ws_send_text(sevent_ws_conn *c, const void *data, size_t len) {
