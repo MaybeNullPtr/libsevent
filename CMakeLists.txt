@@ -199,7 +199,7 @@ target_link_libraries(test_sevent PRIVATE sevent)
 
 add_custom_target(check
     COMMAND ctest --output-on-failure
-    DEPENDS test_sevent test-ws test-ws-conn test-frag-stream test-redirect test-deflate
+    DEPENDS test_sevent test-ws test-ws-conn test-frag-stream test-redirect test-deflate test-ws-server
             test-stream-conn test-tcp-conn test-http-parse test-http-server
 )
 
@@ -443,6 +443,18 @@ add_executable(example-http-server
 )
 target_include_directories(example-http-server PRIVATE include)
 target_link_libraries(example-http-server PRIVATE sevent_ws)
+
+add_executable(example-ws-http-shared
+    examples/ws_http_shared.c
+)
+target_include_directories(example-ws-http-shared PRIVATE include)
+target_link_libraries(example-ws-http-shared PRIVATE sevent_ws)
+
+add_executable(example-ws-server
+    examples/ws_server.c
+)
+target_include_directories(example-ws-server PRIVATE include)
+target_link_libraries(example-ws-server PRIVATE sevent_ws)
 
 add_executable(example-chat-server
     examples/chat_server.c
